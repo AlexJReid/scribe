@@ -1,27 +1,21 @@
 # scribe
 
-`scribe` is a proof of concept for stitching provider-side charge context,
-837 claim submissions, and 835 remittances into versioned claim aggregates and
-ledger-style balance projections.
+Proof of concept for stitching provider charge context, 837 claims, and 835
+remittances into versioned claim aggregates and ledger-style balance projections.
 
 The main fixture is a synthetic stroke recovery encounter:
 
 - Encounter: `ENC-SYN-STROKE-001`
 - Patient: synthetic `ALEX REID`
-- Clinical story: CT head without contrast, CT head with contrast, MRI brain,
-  outpatient rehab, and neurology follow-up
+- Story: CT without contrast, CT with contrast, MRI, rehab, neurology follow-up
+- Fixtures:
+  [tests/fixtures/stroke_encounter](https://github.com/AlexJReid/scribe/tree/main/tests/fixtures/stroke_encounter)
 
-The PHI-looking values in the fixture are fake synthetic data. The clinical
-shape reflects stroke-related treatment I had in the UK, but the patient
-name, identifiers, payer details, dates, amounts, and EDI content are not real
-PHI.
-
-The fixture is intentionally multi-claim. One encounter fans out into several
-837/835 pairs, then the journal and stitcher bring them back together.
+The PHI-looking values are fake synthetic data. The treatment shape reflects
+stroke-related treatment I had in the UK; names, ids, payer details, dates,
+amounts, and EDI content are not real PHI.
 
 ## Build
-
-Only tested on macOS but Linux should work.
 
 ```sh
 cmake -S . -B build
@@ -29,109 +23,52 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-## Fixture
+## Model
 
-The fixture files live in the
-[stroke_encounter fixture directory](https://github.com/AlexJReid/scribe/tree/main/tests/fixtures/stroke_encounter).
+Current POC: NDJSON journal, SQLite read store, SQLite PHI vault.
 
-`charge_transactions.ndjson` is the upstream charge/encounter seed. In a real
-pipeline, these rows would usually come from an EHR, charge capture system,
-patient accounting system, or other provider-side revenue-cycle feed. This file
-creates the encounter context and links each claim id back to
-`ENC-SYN-STROKE-001`.
-
-The X12 pairs are:
-
-- `facility_837.edi` / `facility_835.edi`: facility imaging claim
-- `professional_837.edi` / `professional_835.edi`: radiologist interpretation claim
-- `rehab_837.edi` / `rehab_835.edi`: outpatient rehab claim
-- `neurology_837.edi` / `neurology_835.edi`: neurology follow-up claim
-
-Claim id linkage is through 837 `CLM01` and 835 `CLP01`. Payer control linkage
-is through 835 `CLP07`.
-
-## Build the journal
-
-The journal is the immutable evidence stream. It is not one file per encounter,
-and normal operation should not require replaying one giant journal. Source
-drops (.edi files that appear out of band) are parsed and appended into a
-journal, while a pluggable read store provides random access. SQLite is the
-current proof-of-concept implementation; another document database, search
-index, or custom indexed store can replace it if it satisfies the same lookup
-and aggregate snapshot contract.
-
-The current proof of concept writes an NDJSON event journal and uses SQLite for
-the read store. The intended production shape is a binary segment journal with
-the same event ids and locators. The read-store contract is already shaped for
-that: event ids point to source drops, offsets, lengths, and checksums, while
-aggregate snapshots are stored separately from the immutable evidence.
+Target: binary journal, pluggable read store. The read store owns indexes and
+aggregate snapshots, not raw journal payloads.
 
 **Figure 1: Ingest writes journal evidence and PHI vault mappings.**
 
 ```mermaid
 flowchart LR
-    charges["charge_transactions.ndjson<br/>Encounter + charge rows"]
-    f837["facility_837.edi<br/>claim submission"]
-    f835["facility_835.edi<br/>remittance"]
+    input["charges + 837 + 835"]
     ingest["ingest/parser<br/>tokenize + canonicalize"]
-    journal[("current POC journal<br/>NDJSON events")]
-    binary[("target journal<br/>binary segment log")]
-    vault[("PHI vault/resolver<br/>SQLite POC or audited API")]
-    resolve["authorized resolve<br/>namespace + token -> raw value"]
+    journal[("journal<br/>NDJSON POC / binary target")]
+    vault[("PHI vault<br/>namespace + token -> raw")]
 
-    charges --> ingest
-    f837 --> ingest
-    f835 --> ingest
-
+    input --> ingest
     ingest --> journal
-    journal -. same locator contract .-> binary
     ingest -. raw PHI mappings .-> vault
-    vault --> resolve
 ```
 
-**Figure 2: The read store indexes events and materializes aggregate versions.**
+**Figure 2: The read store indexes events and materializes aggregates.**
 
 ```mermaid
 flowchart LR
-    journal[("journal<br/>append-only evidence")]
-    readstore[("pluggable read store<br/>SQLite POC")]
-    drops["source_drops<br/>input batches/files"]
-    events["events<br/>locator only<br/>event id -> offset/length/checksum"]
-    keys["event_keys<br/>claim/payer/encounter lookup"]
-    versions["claim_aggregate_versions<br/>v1, v2, v3..."]
-    latest["claim_aggregate_latest<br/>cheap restore"]
-    agg1["Claim aggregate v1<br/>charge context"]
-    agg2["Claim aggregate v2<br/>837 submitted"]
-    agg3["Claim aggregate v3<br/>835 remitted"]
-    later837["later corrected/additional 837<br/>new source drop"]
-    agg4["Claim aggregate v4<br/>new submission facts applied"]
-    notify["AggregateVersionRecorded<br/>notification"]
-    balance["balance projection<br/>ledger view"]
-    workq["work queue<br/>follow-up / exceptions"]
-    audit["audit / analytics<br/>external systems"]
+    journal[("journal")]
+    store[("read store<br/>SQLite POC")]
+    keys["event_keys"]
+    events["events<br/>locator only"]
+    versions["claim_aggregate_versions"]
+    latest["claim_aggregate_latest"]
+    notify["AggregateVersionRecorded"]
+    projections["balance / work queues / analytics"]
 
-    journal --> readstore
-    readstore --> drops
-    readstore --> events
-    readstore --> keys
-    readstore --> versions
-    readstore --> latest
-    versions --> agg1
-    agg1 --> agg2
-    agg2 --> agg3
-
-    later837 --> journal
-    latest --> agg4
-    agg3 --> agg4
-
-    agg3 --> notify
-    agg4 --> notify
-    notify --> balance
-    notify --> workq
-    notify --> audit
+    journal --> store
+    store --> keys
+    store --> events
+    store --> versions
+    versions --> latest
+    latest --> notify
+    notify --> projections
 ```
 
-For the stroke fixture:
+## Stroke demo
+
+Create the journal and PHI vault:
 
 ```sh
 build/scribe journal --out stroke.journal.ndjson \
@@ -147,28 +84,7 @@ build/scribe journal --out stroke.journal.ndjson \
   --835 tests/fixtures/stroke_encounter/neurology_835.edi
 ```
 
-That command creates two artifacts:
-
-- `stroke.journal.ndjson`: non-PHI journal events for the source drops
-- `stroke_phi_vault.sqlite`: PHI resolver mappings, such as `claim_id + token`
-  back to the raw claim id
-
-The next step is `stitch`, which reduces the journal into the read store. The
-aggregate versions and latest aggregate snapshots go to `stroke_read_store.sqlite`;
-the optional `stroke_aggregates.ndjson` output is only an inspection/export
-stream of `ClaimAggregateUpdated` snapshots.
-
-`--phi-vault` writes deterministic namespace/token/raw-value mappings to a
-separate SQLite resolver database without putting raw PHI in the normal journal.
-
-SQLite may leave `*.sqlite-wal` and `*.sqlite-shm` sidecars when WAL mode is in
-use. They are part of SQLite's normal on-disk state, not separate application
-artifacts. The close path checkpoints on clean shutdown, but sidecars can still
-exist while a process has the database open or after an interrupted run.
-
-## Stitch
-
-`stitch` derives versioned claim aggregates from the journal:
+Stitch into the read store:
 
 ```sh
 build/scribe stitch \
@@ -178,124 +94,16 @@ build/scribe stitch \
   --out stroke_aggregates.ndjson
 ```
 
-`--read-store` persists the durable read side. In this proof of concept that is
-SQLite; the architecture only requires a store that can maintain the same
-indexes and aggregate snapshots. `--out` is just the current inspection/export
-stream.
+`stroke_read_store.sqlite` gets:
 
-Query the latest aggregate snapshots:
+- `event_keys`
+- `events`
+- `claim_aggregate_versions`
+- `claim_aggregate_latest`
 
-```sh
-sqlite3 -header -column stroke_read_store.sqlite "
-select
-  aggregate_id,
-  version,
-  json_extract(state_json, '$.state.has_835') as has_835,
-  json_extract(state_json, '$.state.submitted_service_line_count') as submitted_lines,
-  json_extract(state_json, '$.state.remittance_service_line_count') as remitted_lines
-from claim_aggregate_latest
-order by aggregate_id;
-"
-```
+`stroke_aggregates.ndjson` is only an inspection/export stream.
 
-Expected shape:
-
-```text
-aggregate_id                              version  has_835  submitted_lines  remitted_lines
-----------------------------------------  -------  -------  ---------------  --------------
-claim:3fd726ba9cc117b277d8afa1f4f98b31  3        1        3                3
-claim:7c58a196e94bc395ebf41df889377bd7  3        1        2                2
-claim:8259c238232f9585e95fc8f45b0bb410  3        1        3                3
-claim:92414452ac04b43a34d117c21cfe469e  3        1        3                3
-```
-
-Inspect the version history for the facility imaging claim:
-
-```sh
-sqlite3 -header -column stroke_read_store.sqlite "
-select
-  version,
-  json_extract(state_json, '$.source_drop_id') as source_drop,
-  json_extract(state_json, '$.updated_by_event_type') as updated_by,
-  json_extract(state_json, '$.state.has_837') as has_837,
-  json_extract(state_json, '$.state.has_835') as has_835
-from claim_aggregate_versions
-where aggregate_id = 'claim:8259c238232f9585e95fc8f45b0bb410'
-order by version;
-"
-```
-
-```text
-version  source_drop  updated_by                    has_837  has_835
--------  -----------  ----------------------------  -------  -------
-1        charge:1     ChargeTransactionObserved      0        0
-2        837:2        ClaimLineDateRecorded          1        0
-3        835:6        RemittanceAdjustmentObserved   1        1
-```
-
-Pull the full latest aggregate JSON when an application needs the snapshot:
-
-```sh
-sqlite3 stroke_read_store.sqlite "
-select state_json
-from claim_aggregate_latest
-where aggregate_id = 'claim:8259c238232f9585e95fc8f45b0bb410';
-"
-```
-
-And use the key index to find the journal locator for the matching 835 payer
-control number. This does not read aggregate state; it finds source evidence:
-
-```sh
-sqlite3 -header -column stroke_read_store.sqlite "
-select
-  ek.event_id,
-  e.source_drop_id,
-  e.event_type,
-  e.segment_id,
-  e.event_offset,
-  e.event_length
-from event_keys ek
-join events e on e.event_id = ek.event_id
-where ek.key_type = 'payer_claim_control_number'
-  and ek.key_value = 'edf29f09740ab104da309e2b036e14d1'
-order by e.event_offset
-limit 5;
-"
-```
-
-Versions are compacted by source drop, not by every X12 segment:
-
-- `v1`: charge/encounter context landed
-- `v2`: matching 837 submission landed
-- `v3`: matching 835 remittance landed
-- `v4`: another later 835, correction, refund, or other new source drop landed
-
-For example, the facility imaging claim reaches version 3 after the facility
-835 has been applied:
-
-```json
-{"event_type":"ClaimAggregateUpdated","aggregate_type":"claim","aggregate_id":"claim:8259c238232f9585e95fc8f45b0bb410","version":3,"updated_by_event_type":"RemittanceAdjustmentObserved","update_scope":"source_drop","source_drop_id":"835:6","compacted_source_event_count":14,"keys":{"claim_id":"8259c238232f9585e95fc8f45b0bb410","payer_claim_control_number":"edf29f09740ab104da309e2b036e14d1","encounter_id":"ENC-SYN-STROKE-001"},"state":{"has_charge_context":true,"has_837":true,"has_835":true,"claim_type":"radiology_facility","claim_status_code":"1","source_event_count":29,"submitted_service_line_count":3,"remittance_service_line_count":3,"adjustment_count":6},"applied_event_ids":[2,3,4,13,14,15,16,17,18,19,20,21,22,23,24,65,66,67,68,69,70,71,72,73,74,75,76,77,78],"update_event_ids":[65,66,67,68,69,70,71,72,73,74,75,76,77,78]}
-```
-
-`applied_event_ids` means every journal event folded into this aggregate so far.
-`update_event_ids` means only the events folded into this specific version. In
-the NDJSON proof of concept these are 1-based journal line numbers; in the
-binary journal they should become durable event ids or locators.
-
-## Projecting a balance
-
-As a demonstration of what can be reduced from a journal, the balance projection
-reduces journal events into:
-
-- encounter -> claim -> service line grouping
-- billed charge ledger entries
-- payer payment entries
-- contractual adjustments
-- patient responsibility
-- patient payments, writeoffs, and refunds when present
-
-Run it with:
+Project balance:
 
 ```sh
 build/scribe project --projection balance \
@@ -304,208 +112,78 @@ build/scribe project --projection balance \
   --out stroke_balance.json
 ```
 
-Expected fixture totals:
+Totals:
 
-- Total billed: `3720.00`
+- Billed: `3720.00`
 - Payer paid: `2340.00`
 - Contractual adjustments: `830.00`
 - Patient responsibility/current balance: `550.00`
 
-## Random access
+## Read store
 
-The storage split is:
+Aggregates are in SQLite:
 
-- Journal: immutable source evidence. The POC is NDJSON; the target is a
-  binary segment log.
-- Read store `source_drops`: one input file or batch
-- Read store `events`: locator metadata only, with no payload and no
-  aggregate state
-- Read store `event_keys`: claim id, payer control, encounter id -> event ids
-- Read store `claim_aggregate_versions`: historical aggregate snapshots
-- Read store `claim_aggregate_latest`: current aggregate snapshot
-- PHI vault/resolver: namespace + token -> raw value, with separate access
-  controls and audit
+```sh
+sqlite3 -header -column stroke_read_store.sqlite "
+select aggregate_id, version, state_json
+from claim_aggregate_latest
+order by aggregate_id;
+"
+```
 
-The `events` table is deliberately small. It stores only:
+Version history:
+
+```sh
+sqlite3 -header -column stroke_read_store.sqlite "
+select version, updated_by_event_id, source_drop_id, state_json
+from claim_aggregate_versions
+where aggregate_id = 'claim:8259c238232f9585e95fc8f45b0bb410'
+order by version;
+"
+```
+
+Journal locator lookup:
+
+```sh
+sqlite3 -header -column stroke_read_store.sqlite "
+select ek.event_id, e.source_drop_id, e.event_type, e.segment_id,
+       e.event_offset, e.event_length
+from event_keys ek
+join events e on e.event_id = ek.event_id
+where ek.key_type = 'payer_claim_control_number'
+  and ek.key_value = 'edf29f09740ab104da309e2b036e14d1';
+"
+```
+
+`events` stores locators only, never payload or aggregate state:
 
 ```text
 event_id, source_drop_id, event_type, segment_id, event_offset, event_length, checksum
 ```
 
-In the current NDJSON POC, `event_offset` and `event_length` point into the
-NDJSON journal file. In the binary journal implementation, the same fields point
-into the binary segment log. The checksum column is part of the locator
-contract; the current POC schema has it, while the binary implementation should
-fill it.
-
-SQLite table names are POC names for the read-store contract. A document
-database could store the same locator, key-index, aggregate-version, and
-latest-aggregate records as documents instead of rows.
-
-If an aggregate is deleted, it can be restored:
-
-```text
-claim id or encounter id
-  -> read-store event_keys
-  -> event locators
-  -> journal records
-  -> rebuilt claim aggregate
-```
-
-A full journal replay is reserved for disaster recovery, for example if both
-indexes and aggregates were deleted.
-
 ## PHI
 
-The default stance is that the operational journal, indexes, aggregates, and
-projections are non-PHI:
+Default path is non-PHI:
 
-- direct names are omitted
-- claim ids and control numbers are deterministically tokenized
-- aggregate keys are tokenized, so developers can work against production-shaped
-  data without seeing raw identifiers
-- 837 `CLM01` and 835 `CLP01` use the same `claim_id` token namespace
-- 835 `CLP07` uses the `payer_claim_control_number` token namespace
-
-Tokenization is deterministic and namespaced. The tokenizer hashes:
+- names omitted
+- claim/control ids tokenized
+- aggregates keyed by tokens
+- 837 `CLM01` and 835 `CLP01` share the `claim_id` namespace
+- 835 `CLP07` uses `payer_claim_control_number`
 
 ```text
 secret + namespace + raw value -> token
 ```
 
-The secret comes from `SCRIBE_TOKEN_KEY`; the code has a development fallback
-only for local tests. Production should provide this value from a secret manager
-or equivalent. Namespacing is part of the join contract: `claim_id + X` and
-`patient_id + X` intentionally produce different tokens, while 837 `CLM01` and
-835 `CLP01` can match because both use the `claim_id` namespace.
-
-The hash is not reversed. Raw-value resolution comes from the PHI vault mapping:
+`SCRIBE_TOKEN_KEY` supplies the secret. Raw lookup goes through the vault:
 
 ```text
 namespace + token -> raw value
 ```
 
-Raw PHI should not be stored in the primary journal or normal aggregate store.
-Instead, ingestion can split the raw source facts into two paths:
+HITRUST-zone apps may create/read PHI-containing aggregates deliberately with
+`--include-phi --read-store`, or render PHI by resolving tokens through the
+vault. Normal developer stores should stay tokenized.
 
-```text
-raw source document
-  -> tokenized canonical event -> journal -> indexes/aggregates
-  -> namespace + token + raw value -> PHI vault/resolver
-```
-
-For the proof of concept, the PHI vault is a separate SQLite database populated
-with `scribe journal --phi-vault path.sqlite`. In production it could be an
-audited resolver API. The interface should be the same either way:
-
-```text
-resolve(namespace, token) -> raw value
-```
-
-Examples:
-
-```text
-claim_id + 8259c238232f9585e95fc8f45b0bb410 -> CLM-STROKE-RAD-FAC-001
-payer_claim_control_number + edf29f09740ab104da309e2b036e14d1 -> PAYER-STROKE-FAC-001
-patient_id_name + 483f7b234ed109f0e2323052f22e4e59 -> REID|ALEX
-```
-
-Names are vaulted too. The vault stores deterministic name-token mappings such
-as `patient_name`, `member_name`, `provider_name`, and `payer_name`. When an
-NM1/N1 identifier is present, it also stores a convenience mapping from the
-identifier token to the name, such as `patient_id_name + <patient_id_token>`.
-Person names use X12 order, `LAST|FIRST`, to avoid ambiguity.
-
-That resolver path should be access-controlled, audited, and unnecessary for
-ordinary development or projection work. It can also be written on a separate
-thread from journal append as long as the source drop records enough provenance
-to repair or re-drive vault writes.
-
-Use `--phi-vault` to populate raw mappings while keeping the journal non-PHI:
-
-```sh
-build/scribe journal --out stroke.journal.ndjson \
-  --phi-vault stroke_phi_vault.sqlite \
-  --charges tests/fixtures/stroke_encounter/charge_transactions.ndjson \
-  --837 tests/fixtures/stroke_encounter/facility_837.edi \
-  --835 tests/fixtures/stroke_encounter/facility_835.edi
-```
-
-Resolve only when an authorized workflow needs raw PHI:
-
-```sh
-build/scribe vault-resolve \
-  --phi-vault stroke_phi_vault.sqlite \
-  --namespace claim_id \
-  --token 8259c238232f9585e95fc8f45b0bb410 \
-  --actor analyst@example.test \
-  --purpose claim-review
-```
-
-Each resolve attempt writes an audit row in the vault database.
-
-Use `--include-phi` only for local debugging. It emits raw identifiers and names
-into the journal output and should not be part of the normal production path.
-With `--include-phi`, raw identifiers and names are emitted where available, and
-token companion fields such as `claim_id_token` and
-`payer_claim_control_number_token` are included so the PHI view can still be
-linked to non-PHI projections.
-
-Some applications inside a HITRUST-controlled zone can be allowed to build or
-read PHI-containing aggregates. That is a separate access tier, not the default
-developer path. In this proof of concept, a PHI read store can be created by
-running `stitch` against a PHI journal with both `--include-phi` and
-`--read-store`. The stored aggregate snapshot includes `contains_phi:true`.
-
-SQLite also makes an authorized rendering workflow possible without copying PHI
-into the normal read store: a HITRUST-zone process can open the tokenized read
-store, `ATTACH` the PHI vault database, resolve only the approved namespaces,
-and render a PHI view. The same idea could be an audited API in production.
-
-### Final aggregate view with PHI
-
-This is the kind of authorized rendering a HITRUST-zone application could show
-after all stroke encounter source drops have landed. The raw values come from a
-PHI-capable aggregate store or from resolving tokens through the vault.
-The PHI-looking values below are fake synthetic data, although the treatment
-pattern reflects stroke-related care I had in the UK.
-
-```text
-Encounter ENC-SYN-STROKE-001
-Patient   ALEX REID
-Status    4 claims stitched across charge rows, 837 submissions, and 835 remits
-
-Total billed                 3720.00
-Payer paid                  -2340.00
-Contractual adjustments      -830.00
-Patient responsibility        550.00
-Current balance               550.00
-```
-
-| Claim | Type | 837/835 state | Billed | Paid | CO adj | PR balance |
-| --- | --- | --- | ---: | ---: | ---: | ---: |
-| `CLM-STROKE-RAD-FAC-001` | Radiology facility | submitted + remitted | 2350.00 | 1450.00 | 550.00 | 350.00 |
-| `CLM-STROKE-RAD-PRO-001` | Radiology professional | submitted + remitted | 390.00 | 260.00 | 90.00 | 40.00 |
-| `CLM-STROKE-REHAB-001` | Outpatient rehab | submitted + remitted | 660.00 | 420.00 | 120.00 | 120.00 |
-| `CLM-STROKE-NEURO-001` | Neurology follow-up | submitted + remitted | 320.00 | 210.00 | 70.00 | 40.00 |
-
-Facility imaging service lines:
-
-| Service | Description | Billed | Paid | CO adj | PR |
-| --- | --- | ---: | ---: | ---: | ---: |
-| `70450` | CT head without contrast facility charge | 450.00 | 250.00 | 150.00 | 50.00 |
-| `70460` | CT head with contrast facility charge | 700.00 | 400.00 | 250.00 | 50.00 |
-| `70551` | MRI brain facility charge | 1200.00 | 800.00 | 150.00 | 250.00 |
-
-## Other commands
-
-The parser can still emit raw mapped events for individual files:
-
-```sh
-build/scribe parse --type 837 tests/fixtures/sample_837.edi --out events_837.ndjson
-build/scribe parse --type 835 tests/fixtures/sample_835.edi --out events_835.ndjson
-build/scribe parse --type 834 tests/fixtures/sample_834.edi --out events_834.ndjson
-```
-
-For `parse`, `stitch`, and `project`, use `--out -` or omit `--out` for stdout.
-`journal` currently requires an explicit `--out` path.
+SQLite may leave `*.sqlite-wal` and `*.sqlite-shm` files in WAL mode. They are
+normal SQLite sidecars, not separate application artifacts.
