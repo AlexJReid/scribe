@@ -1,6 +1,8 @@
 #ifndef SCRIBE_EVENT_WRITER_H
 #define SCRIBE_EVENT_WRITER_H
 
+#include "phi_vault.h"
+#include "tokenise.h"
 #include "x12_parser.h"
 
 #include <stdio.h>
@@ -14,6 +16,8 @@ typedef struct {
     x12_str_t gs06;
     x12_str_t st02;
     int include_phi;
+    phi_vault_t *phi_vault;
+    const char *phi_source_ref;
 } event_writer_t;
 
 int event_writer_open(
@@ -34,6 +38,16 @@ int event_writer_close(event_writer_t *writer);
 
 void event_writer_set_include_phi(event_writer_t *writer, int include_phi);
 int event_writer_include_phi(const event_writer_t *writer);
+void event_writer_set_phi_vault(
+    event_writer_t *writer,
+    phi_vault_t *vault,
+    const char *source_ref
+);
+int event_writer_record_phi_mapping(
+    event_writer_t *writer,
+    token_type_t type,
+    x12_str_t raw
+);
 
 void event_writer_observe_control(
     event_writer_t *writer,

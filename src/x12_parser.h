@@ -41,7 +41,8 @@ typedef enum {
     X12_ERR_ST_SE_CONTROL = -9,
     X12_ERR_BUFFER_TOO_SMALL = -10,
     X12_ERR_UNSUPPORTED = -11,
-    X12_ERR_NOT_FOUND = -12
+    X12_ERR_NOT_FOUND = -12,
+    X12_ERR_CONFLICT = -13
 } x12_error_t;
 
 typedef int (*x12_segment_cb)(

@@ -39,6 +39,7 @@ static int write_phi_string_field(
 }
 
 static int write_tokenized_or_phi_field(
+    event_writer_t *writer,
     FILE *fp,
     const char *name,
     token_type_t type,
@@ -52,6 +53,10 @@ static int write_tokenized_or_phi_field(
     int rc;
 
     if (include_phi) {
+        rc = event_writer_record_phi_mapping(writer, type, raw);
+        if (rc != X12_OK) {
+            return rc;
+        }
         return event_writer_write_string_field(fp, name, raw, prefix_comma);
     }
 
@@ -60,6 +65,10 @@ static int write_tokenized_or_phi_field(
     }
 
     rc = tokenise_value(type, raw, token, sizeof(token));
+    if (rc != X12_OK) {
+        return rc;
+    }
+    rc = event_writer_record_phi_mapping(writer, type, raw);
     if (rc != X12_OK) {
         return rc;
     }
@@ -150,6 +159,7 @@ static int write_member_referenced(
         return X12_ERR_IO;
     }
     if (write_tokenized_or_phi_field(
+            mapper->writer,
             fp,
             "id_value",
             TOK_MEMBER_ID,

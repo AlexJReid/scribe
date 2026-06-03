@@ -34,7 +34,7 @@ static const uint32_t sha256_k[64] = {
     0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u
 };
 
-static const char *token_type_name(token_type_t type)
+const char *tokenise_namespace(token_type_t type)
 {
     switch (type) {
     case TOK_PATIENT_ID:
@@ -287,7 +287,7 @@ int tokenise_value(
 )
 {
     static const char hex[] = "0123456789abcdef";
-    const char *type_name = token_type_name(type);
+    const char *type_name = tokenise_namespace(type);
     const char *key = token_key();
     uint8_t digest[32];
     size_t offset;

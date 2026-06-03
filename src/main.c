@@ -2,6 +2,7 @@
 #include "balance_projector.h"
 #include "event_writer.h"
 #include "journal_builder.h"
+#include "phi_vault.h"
 #include "projection.h"
 #include "x12_mapper_834.h"
 #include "x12_mapper_835.h"
@@ -18,7 +19,8 @@ static void usage(FILE *fp)
         "  scribe parse --type 837 input.edi [--out events.ndjson] [--include-phi]\n"
         "  scribe parse --type 835 input.edi [--out events.ndjson] [--include-phi]\n"
         "  scribe parse --type 834 input.edi [--out events.ndjson] [--include-phi]\n"
-        "  scribe journal --out journal.ndjson [--charges charges.ndjson] [--837 claim.edi] [--835 remit.edi] [--include-phi]\n"
+        "  scribe journal --out journal.ndjson [--charges charges.ndjson] [--837 claim.edi] [--835 remit.edi] [--phi-vault phi.sqlite] [--include-phi]\n"
+        "  scribe vault-resolve --phi-vault phi.sqlite --namespace ns --token token [--actor user] [--purpose reason]\n"
         "  scribe stitch --journal journal.ndjson [--encounter-id id] [--out aggregates.ndjson] [--include-phi]\n"
         "  scribe project --projection balance --journal journal.ndjson [--encounter-id id] [--out balance.json] [--include-phi]\n"
         "  scribe project-balance --journal journal.ndjson [--encounter-id id] [--out balance.json] [--include-phi]\n"
@@ -223,6 +225,83 @@ static int stitch_command(int argc, char **argv)
     return rc;
 }
 
+static int vault_resolve_command(int argc, char **argv)
+{
+    const char *vault_path = NULL;
+    const char *namespace_name = NULL;
+    const char *token = NULL;
+    const char *actor = "cli";
+    const char *purpose = "debug";
+    char resolved[1024];
+    phi_vault_t vault;
+    int i;
+    int rc;
+
+    for (i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--phi-vault") == 0) {
+            if (i + 1 >= argc) {
+                return -1;
+            }
+            vault_path = argv[++i];
+        } else if (strcmp(argv[i], "--namespace") == 0) {
+            if (i + 1 >= argc) {
+                return -1;
+            }
+            namespace_name = argv[++i];
+        } else if (strcmp(argv[i], "--token") == 0) {
+            if (i + 1 >= argc) {
+                return -1;
+            }
+            token = argv[++i];
+        } else if (strcmp(argv[i], "--actor") == 0) {
+            if (i + 1 >= argc) {
+                return -1;
+            }
+            actor = argv[++i];
+        } else if (strcmp(argv[i], "--purpose") == 0) {
+            if (i + 1 >= argc) {
+                return -1;
+            }
+            purpose = argv[++i];
+        } else {
+            return -1;
+        }
+    }
+
+    if (vault_path == NULL || namespace_name == NULL || token == NULL) {
+        return -1;
+    }
+
+    phi_vault_init(&vault);
+    rc = phi_vault_open(&vault, vault_path);
+    if (rc != X12_OK) {
+        fprintf(stderr, "vault open: %s\n", x12_error_message(rc));
+        return rc;
+    }
+    rc = phi_vault_init_schema(&vault);
+    if (rc == X12_OK) {
+        rc = phi_vault_resolve(
+            &vault,
+            namespace_name,
+            token,
+            actor,
+            purpose,
+            resolved,
+            sizeof(resolved)
+        );
+    }
+    if (phi_vault_close(&vault) != X12_OK && rc == X12_OK) {
+        rc = X12_ERR_IO;
+    }
+    if (rc != X12_OK) {
+        fprintf(stderr, "vault resolve: %s\n", x12_error_message(rc));
+        return rc;
+    }
+
+    puts(resolved);
+    return X12_OK;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2) {
@@ -263,6 +342,15 @@ int main(int argc, char **argv)
             return 1;
         }
         return 0;
+    }
+
+    if (strcmp(argv[1], "vault-resolve") == 0) {
+        int rc = vault_resolve_command(argc, argv);
+        if (rc == -1) {
+            usage(stderr);
+            return 1;
+        }
+        return rc == X12_OK ? 0 : 1;
     }
 
     if (strcmp(argv[1], "project") == 0) {

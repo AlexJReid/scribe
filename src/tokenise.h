@@ -16,6 +16,8 @@ typedef enum {
 
 #define TOKENISE_MAX_TOKEN_LEN 40u
 
+const char *tokenise_namespace(token_type_t type);
+
 int tokenise_value(
     token_type_t type,
     x12_str_t raw,

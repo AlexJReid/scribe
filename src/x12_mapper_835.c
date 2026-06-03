@@ -39,6 +39,7 @@ static int write_phi_string_field(
 }
 
 static int write_tokenized_or_phi_field(
+    event_writer_t *writer,
     FILE *fp,
     const char *name,
     token_type_t type,
@@ -52,6 +53,10 @@ static int write_tokenized_or_phi_field(
     int rc;
 
     if (include_phi) {
+        rc = event_writer_record_phi_mapping(writer, type, raw);
+        if (rc != X12_OK) {
+            return rc;
+        }
         return event_writer_write_string_field(fp, name, raw, prefix_comma);
     }
 
@@ -60,6 +65,10 @@ static int write_tokenized_or_phi_field(
     }
 
     rc = tokenise_value(type, raw, token, sizeof(token));
+    if (rc != X12_OK) {
+        return rc;
+    }
+    rc = event_writer_record_phi_mapping(writer, type, raw);
     if (rc != X12_OK) {
         return rc;
     }
@@ -147,6 +156,7 @@ static int write_payload_end(FILE *fp)
 static int write_common_claim_fields(FILE *fp, x12_mapper_835_t *mapper)
 {
     if (write_tokenized_or_phi_field(
+            mapper->writer,
             fp,
             "claim_id",
             TOK_CLAIM_ID,
@@ -324,6 +334,7 @@ static int write_remittance_party_referenced(
         return X12_ERR_IO;
     }
     if (write_tokenized_or_phi_field(
+            mapper->writer,
             fp,
             "id_value",
             token_type,
@@ -389,6 +400,7 @@ static int write_claim_payment_observed(
         return X12_ERR_IO;
     }
     if (write_tokenized_or_phi_field(
+            mapper->writer,
             fp,
             "payer_claim_control_number",
             TOK_PAYER_CLAIM_CONTROL_NUMBER,
@@ -465,6 +477,7 @@ static int write_nm1_reference(
         return X12_ERR_IO;
     }
     if (write_tokenized_or_phi_field(
+            mapper->writer,
             fp,
             "id_value",
             id_token_type,
@@ -618,6 +631,7 @@ static int write_date_observed(
         return X12_ERR_IO;
     }
     if (write_tokenized_or_phi_field(
+            mapper->writer,
             fp,
             "claim_id",
             TOK_CLAIM_ID,

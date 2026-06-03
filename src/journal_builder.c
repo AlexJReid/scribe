@@ -1,6 +1,7 @@
 #include "journal_builder.h"
 
 #include "event_writer.h"
+#include "phi_vault.h"
 #include "tokenise.h"
 #include "x12_mapper_835.h"
 #include "x12_mapper_837.h"
@@ -176,6 +177,7 @@ static int json_get_bool(const char *line, const char *key, int *out)
 }
 
 static int write_tokenized_or_phi_field(
+    event_writer_t *writer,
     FILE *fp,
     const char *name,
     token_type_t type,
@@ -190,6 +192,10 @@ static int write_tokenized_or_phi_field(
     int rc;
 
     if (include_phi) {
+        rc = event_writer_record_phi_mapping(writer, type, raw_value);
+        if (rc != X12_OK) {
+            return rc;
+        }
         return event_writer_write_string_field(fp, name, raw_value, prefix_comma);
     }
 
@@ -198,6 +204,10 @@ static int write_tokenized_or_phi_field(
     }
 
     rc = tokenise_value(type, raw_value, token, sizeof(token));
+    if (rc != X12_OK) {
+        return rc;
+    }
+    rc = event_writer_record_phi_mapping(writer, type, raw_value);
     if (rc != X12_OK) {
         return rc;
     }
@@ -289,6 +299,7 @@ static int write_charge_event(
     }
     if (patient_id[0] != '\0') {
         if (write_tokenized_or_phi_field(
+                writer,
                 fp,
                 "patient_id",
                 TOK_PATIENT_ID,
@@ -316,6 +327,7 @@ static int write_charge_event(
     }
     if (claim_id[0] != '\0') {
         if (write_tokenized_or_phi_field(
+                writer,
                 fp,
                 "claim_id",
                 TOK_CLAIM_ID,
@@ -367,7 +379,12 @@ static int write_charge_event(
     return event_writer_end_event(writer);
 }
 
-static int append_charges_file(FILE *fp, const char *path, int include_phi)
+static int append_charges_file(
+    FILE *fp,
+    const char *path,
+    int include_phi,
+    phi_vault_t *phi_vault
+)
 {
     char line[JOURNAL_LINE_MAX];
     char event_type[JOURNAL_VALUE_MAX];
@@ -381,6 +398,7 @@ static int append_charges_file(FILE *fp, const char *path, int include_phi)
         return rc;
     }
     event_writer_set_include_phi(&writer, include_phi);
+    event_writer_set_phi_vault(&writer, phi_vault, path);
 
     in = fopen(path, "rb");
     if (in == NULL) {
@@ -412,7 +430,13 @@ static int append_charges_file(FILE *fp, const char *path, int include_phi)
     return X12_OK;
 }
 
-static int append_x12_file(FILE *fp, const char *path, const char *type, int include_phi)
+static int append_x12_file(
+    FILE *fp,
+    const char *path,
+    const char *type,
+    int include_phi,
+    phi_vault_t *phi_vault
+)
 {
     x12_document_t doc;
     event_writer_t writer;
@@ -429,6 +453,7 @@ static int append_x12_file(FILE *fp, const char *path, const char *type, int inc
         return rc;
     }
     event_writer_set_include_phi(&writer, include_phi);
+    event_writer_set_phi_vault(&writer, phi_vault, path);
 
     if (strcmp(type, "837") == 0) {
         rc = x12_map_837_document(&doc, &writer);
@@ -448,6 +473,8 @@ int journal_builder_build(
 )
 {
     FILE *fp;
+    phi_vault_t phi_vault;
+    phi_vault_t *phi_vault_ptr = NULL;
     size_t i;
     int rc = X12_OK;
     int owns_file = 0;
@@ -466,16 +493,42 @@ int journal_builder_build(
         return X12_ERR_IO;
     }
 
-    for (i = 0u; i < input->charges_count && rc == X12_OK; i++) {
-        rc = append_charges_file(fp, input->charges_paths[i], input->include_phi);
-    }
-    for (i = 0u; i < input->x837_count && rc == X12_OK; i++) {
-        rc = append_x12_file(fp, input->x837_paths[i], "837", input->include_phi);
-    }
-    for (i = 0u; i < input->x835_count && rc == X12_OK; i++) {
-        rc = append_x12_file(fp, input->x835_paths[i], "835", input->include_phi);
+    phi_vault_init(&phi_vault);
+    if (input->phi_vault_path != NULL) {
+        rc = phi_vault_open(&phi_vault, input->phi_vault_path);
+        if (rc == X12_OK) {
+            rc = phi_vault_init_schema(&phi_vault);
+        }
+        if (rc != X12_OK) {
+            if (owns_file) {
+                (void)fclose(fp);
+            }
+            return rc;
+        }
+        phi_vault_ptr = &phi_vault;
     }
 
+    for (i = 0u; i < input->charges_count && rc == X12_OK; i++) {
+        rc = append_charges_file(
+            fp,
+            input->charges_paths[i],
+            input->include_phi,
+            phi_vault_ptr
+        );
+    }
+    for (i = 0u; i < input->x837_count && rc == X12_OK; i++) {
+        rc = append_x12_file(fp, input->x837_paths[i], "837", input->include_phi, phi_vault_ptr);
+    }
+    for (i = 0u; i < input->x835_count && rc == X12_OK; i++) {
+        rc = append_x12_file(fp, input->x835_paths[i], "835", input->include_phi, phi_vault_ptr);
+    }
+
+    if (phi_vault_ptr != NULL) {
+        int close_rc = phi_vault_close(phi_vault_ptr);
+        if (close_rc != X12_OK && rc == X12_OK) {
+            rc = close_rc;
+        }
+    }
     if (fflush(fp) != 0 && rc == X12_OK) {
         rc = X12_ERR_IO;
     }
@@ -517,6 +570,11 @@ int journal_builder_run_cli(int argc, char **argv)
             }
         } else if (strcmp(argv[i], "--include-phi") == 0) {
             input.include_phi = 1;
+        } else if (strcmp(argv[i], "--phi-vault") == 0) {
+            if (i + 1 >= argc) {
+                return -1;
+            }
+            input.phi_vault_path = argv[++i];
         } else {
             return -1;
         }

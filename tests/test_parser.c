@@ -2,6 +2,7 @@
 #include "balance_projector.h"
 #include "event_writer.h"
 #include "journal_builder.h"
+#include "phi_vault.h"
 #include "store.h"
 #include "tokenise.h"
 #include "x12_mapper_834.h"
@@ -537,11 +538,17 @@ static int test_stroke_balance_projection_from_journal(void)
     char nonphi_aggregate_path[512];
     char projection_path[512];
     char nonphi_projection_path[512];
+    char phi_vault_path[512];
+    char phi_vault_wal_path[560];
+    char phi_vault_shm_path[560];
     char aggregates[160000];
     char projection[96000];
+    char resolved[256];
+    x12_str_t conflicting_raw;
     journal_builder_input_t journal_input;
     aggregate_stitcher_input_t stitch_input;
     balance_projector_input_t projection_input;
+    phi_vault_t phi_vault;
 
     REQUIRE(make_path(charges_path, sizeof(charges_path), TEST_FIXTURE_DIR, "stroke_encounter/charge_transactions.ndjson") == 0);
     REQUIRE(make_path(facility_837_path, sizeof(facility_837_path), TEST_FIXTURE_DIR, "stroke_encounter/facility_837.edi") == 0);
@@ -558,6 +565,9 @@ static int test_stroke_balance_projection_from_journal(void)
     REQUIRE(make_path(nonphi_aggregate_path, sizeof(nonphi_aggregate_path), TEST_OUTPUT_DIR, "stroke_claim_aggregates_nonphi.ndjson") == 0);
     REQUIRE(make_path(projection_path, sizeof(projection_path), TEST_OUTPUT_DIR, "stroke_balance_projection.json") == 0);
     REQUIRE(make_path(nonphi_projection_path, sizeof(nonphi_projection_path), TEST_OUTPUT_DIR, "stroke_balance_projection_nonphi.json") == 0);
+    REQUIRE(make_path(phi_vault_path, sizeof(phi_vault_path), TEST_OUTPUT_DIR, "stroke_phi_vault.sqlite") == 0);
+    REQUIRE(snprintf(phi_vault_wal_path, sizeof(phi_vault_wal_path), "%s-wal", phi_vault_path) > 0);
+    REQUIRE(snprintf(phi_vault_shm_path, sizeof(phi_vault_shm_path), "%s-shm", phi_vault_path) > 0);
 
     journal_builder_input_init(&journal_input);
     journal_input.include_phi = 1;
@@ -644,8 +654,50 @@ static int test_stroke_balance_projection_from_journal(void)
     REQUIRE(strstr(projection, "\"patient_payments\":\"0.00\"") != NULL);
     REQUIRE(strstr(projection, "\"current_balance\":\"550.00\"") != NULL);
 
+    (void)remove(phi_vault_path);
+    (void)remove(phi_vault_wal_path);
+    (void)remove(phi_vault_shm_path);
+
     journal_input.include_phi = 0;
+    journal_input.phi_vault_path = phi_vault_path;
     REQUIRE(journal_builder_build(&journal_input, nonphi_journal_path) == X12_OK);
+
+    phi_vault_init(&phi_vault);
+    REQUIRE(phi_vault_open(&phi_vault, phi_vault_path) == X12_OK);
+    REQUIRE(phi_vault_init_schema(&phi_vault) == X12_OK);
+    REQUIRE(phi_vault_resolve(
+                &phi_vault,
+                "claim_id",
+                "8259c238232f9585e95fc8f45b0bb410",
+                "test",
+                "unit",
+                resolved,
+                sizeof(resolved)
+            ) == X12_OK);
+    REQUIRE(strcmp(resolved, "CLM-STROKE-RAD-FAC-001") == 0);
+    REQUIRE(phi_vault_resolve(
+                &phi_vault,
+                "payer_claim_control_number",
+                "edf29f09740ab104da309e2b036e14d1",
+                "test",
+                "unit",
+                resolved,
+                sizeof(resolved)
+            ) == X12_OK);
+    REQUIRE(strcmp(resolved, "PAYER-STROKE-FAC-001") == 0);
+    conflicting_raw.ptr = "DIFFERENT-RAW-CLAIM";
+    conflicting_raw.len = strlen(conflicting_raw.ptr);
+    REQUIRE(phi_vault_put_mapping(
+                &phi_vault,
+                "claim_id",
+                "8259c238232f9585e95fc8f45b0bb410",
+                conflicting_raw,
+                "test-conflict"
+            ) == X12_ERR_CONFLICT);
+    REQUIRE(phi_vault_close(&phi_vault) == X12_OK);
+    (void)remove(phi_vault_path);
+    (void)remove(phi_vault_wal_path);
+    (void)remove(phi_vault_shm_path);
 
     stitch_input.journal_path = nonphi_journal_path;
     stitch_input.out_path = nonphi_aggregate_path;

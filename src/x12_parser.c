@@ -324,6 +324,8 @@ const char *x12_error_message(int code)
         return "unsupported operation";
     case X12_ERR_NOT_FOUND:
         return "not found";
+    case X12_ERR_CONFLICT:
+        return "conflicting data";
     default:
         return "unknown error";
     }

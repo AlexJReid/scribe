@@ -98,6 +98,7 @@ For the stroke fixture:
 
 ```sh
 build/scribe journal --out stroke.journal.ndjson \
+  --phi-vault stroke_phi_vault.sqlite \
   --charges tests/fixtures/stroke_encounter/charge_transactions.ndjson \
   --837 tests/fixtures/stroke_encounter/facility_837.edi \
   --837 tests/fixtures/stroke_encounter/professional_837.edi \
@@ -114,7 +115,8 @@ with durable event ids, offsets, lengths, and checksums. You can always trace an
 event/assertion back to an `.edi` file.
 
 The current CLI emits NDJSON for inspection while the proof of concept is being
-shaped.
+shaped. `--phi-vault` writes deterministic namespace/token/raw-value mappings
+to a separate SQLite resolver database without putting raw PHI in the journal.
 
 Indexes and aggregates live outside the journal in SQLite for now, but any
 read store with fast lookup could fill that role. The important split is that
@@ -226,9 +228,9 @@ raw source document
   -> namespace + token + raw value -> PHI vault/resolver
 ```
 
-For the proof of concept, the PHI vault could be another SQLite database. In
-production it could be an audited resolver API. The interface should be the
-same either way:
+For the proof of concept, the PHI vault is a separate SQLite database populated
+with `scribe journal --phi-vault path.sqlite`. In production it could be an
+audited resolver API. The interface should be the same either way:
 
 ```text
 resolve(namespace, token) -> raw value
@@ -246,16 +248,31 @@ ordinary development or projection work. It can also be written on a separate
 thread from journal append as long as the source drop records enough provenance
 to repair or re-drive vault writes.
 
-Use `--include-phi` only for local debugging or controlled vault population:
+Use `--phi-vault` to populate raw mappings while keeping the journal non-PHI:
 
 ```sh
-build/scribe journal --out stroke_phi.journal.ndjson \
+build/scribe journal --out stroke.journal.ndjson \
+  --phi-vault stroke_phi_vault.sqlite \
   --charges tests/fixtures/stroke_encounter/charge_transactions.ndjson \
   --837 tests/fixtures/stroke_encounter/facility_837.edi \
-  --835 tests/fixtures/stroke_encounter/facility_835.edi \
-  --include-phi
+  --835 tests/fixtures/stroke_encounter/facility_835.edi
 ```
 
+Resolve only when an authorized workflow needs raw PHI:
+
+```sh
+build/scribe vault-resolve \
+  --phi-vault stroke_phi_vault.sqlite \
+  --namespace claim_id \
+  --token 8259c238232f9585e95fc8f45b0bb410 \
+  --actor analyst@example.test \
+  --purpose claim-review
+```
+
+Each resolve attempt writes an audit row in the vault database.
+
+Use `--include-phi` only for local debugging. It emits raw identifiers and names
+into the journal output and should not be part of the normal production path.
 With `--include-phi`, raw identifiers and names are emitted where available, and
 token companion fields such as `claim_id_token` and
 `payer_claim_control_number_token` are included so the PHI view can still be

@@ -53,6 +53,8 @@ int event_writer_open(
     writer->gs06 = empty_str();
     writer->st02 = empty_str();
     writer->include_phi = 0;
+    writer->phi_vault = NULL;
+    writer->phi_source_ref = source_file;
 
     if (out_path == NULL || strcmp(out_path, "-") == 0) {
         writer->fp = stdout;
@@ -89,6 +91,8 @@ int event_writer_open_stream(
     writer->gs06 = empty_str();
     writer->st02 = empty_str();
     writer->include_phi = 0;
+    writer->phi_vault = NULL;
+    writer->phi_source_ref = source_file;
 
     return X12_OK;
 }
@@ -109,6 +113,47 @@ int event_writer_include_phi(const event_writer_t *writer)
     }
 
     return writer->include_phi;
+}
+
+void event_writer_set_phi_vault(
+    event_writer_t *writer,
+    phi_vault_t *vault,
+    const char *source_ref
+)
+{
+    if (writer == NULL) {
+        return;
+    }
+
+    writer->phi_vault = vault;
+    writer->phi_source_ref = source_ref != NULL ? source_ref : writer->source_file;
+}
+
+int event_writer_record_phi_mapping(
+    event_writer_t *writer,
+    token_type_t type,
+    x12_str_t raw
+)
+{
+    char token[TOKENISE_MAX_TOKEN_LEN];
+    int rc;
+
+    if (writer == NULL || writer->phi_vault == NULL || raw.ptr == NULL || raw.len == 0u) {
+        return X12_OK;
+    }
+
+    rc = tokenise_value(type, raw, token, sizeof(token));
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    return phi_vault_put_mapping(
+        writer->phi_vault,
+        tokenise_namespace(type),
+        token,
+        raw,
+        writer->phi_source_ref
+    );
 }
 
 int event_writer_close(event_writer_t *writer)

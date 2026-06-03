@@ -24,6 +24,7 @@ add_library(scribe_core
     src/balance_projector.c
     src/event_writer.c
     src/journal_builder.c
+    src/phi_vault.c
     src/projection.c
     src/store.c
     src/tokenise_stub.c
