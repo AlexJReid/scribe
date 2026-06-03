@@ -151,6 +151,7 @@ int scribe_store_close(scribe_store_t *store)
         return X12_OK;
     }
 
+    (void)sqlite3_wal_checkpoint_v2(db, NULL, SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
     rc = sqlite3_close(db);
     store->db = NULL;
     return rc == SQLITE_OK ? X12_OK : sqlite_to_x12(rc);

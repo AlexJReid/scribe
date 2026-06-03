@@ -1,6 +1,7 @@
 #include "aggregate_stitcher.h"
 
 #include "event_writer.h"
+#include "store.h"
 #include "tokenise.h"
 
 #include <stdio.h>
@@ -61,7 +62,14 @@ typedef struct {
     char encounter_filter[STITCH_ID_MAX];
     int include_phi;
     FILE *out;
+    scribe_store_t *read_store;
 } stitch_state_t;
+
+typedef struct {
+    char *data;
+    size_t len;
+    size_t cap;
+} stitch_json_buffer_t;
 
 static void copy_cstr(char *out, size_t out_len, const char *value)
 {
@@ -80,6 +88,178 @@ static void copy_cstr(char *out, size_t out_len, const char *value)
     }
     memcpy(out, value, len);
     out[len] = '\0';
+}
+
+static int json_buffer_append(stitch_json_buffer_t *buffer, const char *value)
+{
+    size_t len;
+
+    if (buffer == NULL || buffer->data == NULL || value == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    len = strlen(value);
+    if (buffer->len + len >= buffer->cap) {
+        return X12_ERR_BUFFER_TOO_SMALL;
+    }
+
+    memcpy(buffer->data + buffer->len, value, len);
+    buffer->len += len;
+    buffer->data[buffer->len] = '\0';
+    return X12_OK;
+}
+
+static int json_buffer_append_char(stitch_json_buffer_t *buffer, char value)
+{
+    if (buffer == NULL || buffer->data == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+    if (buffer->len + 1u >= buffer->cap) {
+        return X12_ERR_BUFFER_TOO_SMALL;
+    }
+
+    buffer->data[buffer->len++] = value;
+    buffer->data[buffer->len] = '\0';
+    return X12_OK;
+}
+
+static int json_buffer_append_json_string(stitch_json_buffer_t *buffer, const char *value)
+{
+    const unsigned char *cursor;
+    char escaped[8];
+    int written;
+    int rc;
+
+    if (value == NULL) {
+        value = "";
+    }
+
+    rc = json_buffer_append_char(buffer, '"');
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    for (cursor = (const unsigned char *)value; *cursor != '\0'; cursor++) {
+        switch (*cursor) {
+            case '"':
+                rc = json_buffer_append(buffer, "\\\"");
+                break;
+            case '\\':
+                rc = json_buffer_append(buffer, "\\\\");
+                break;
+            case '\n':
+                rc = json_buffer_append(buffer, "\\n");
+                break;
+            case '\r':
+                rc = json_buffer_append(buffer, "\\r");
+                break;
+            case '\t':
+                rc = json_buffer_append(buffer, "\\t");
+                break;
+            default:
+                if (*cursor < 0x20u) {
+                    written = snprintf(escaped, sizeof(escaped), "\\u%04x", (unsigned int)*cursor);
+                    if (written < 0 || (size_t)written >= sizeof(escaped)) {
+                        return X12_ERR_BUFFER_TOO_SMALL;
+                    }
+                    rc = json_buffer_append(buffer, escaped);
+                } else {
+                    rc = json_buffer_append_char(buffer, (char)*cursor);
+                }
+                break;
+        }
+        if (rc != X12_OK) {
+            return rc;
+        }
+    }
+
+    return json_buffer_append_char(buffer, '"');
+}
+
+static int json_buffer_append_string_field(
+    stitch_json_buffer_t *buffer,
+    const char *key,
+    const char *value,
+    int with_comma
+)
+{
+    int rc;
+
+    if (with_comma) {
+        rc = json_buffer_append_char(buffer, ',');
+        if (rc != X12_OK) {
+            return rc;
+        }
+    }
+
+    rc = json_buffer_append_json_string(buffer, key);
+    if (rc != X12_OK) {
+        return rc;
+    }
+    rc = json_buffer_append_char(buffer, ':');
+    if (rc != X12_OK) {
+        return rc;
+    }
+    return json_buffer_append_json_string(buffer, value);
+}
+
+static int json_buffer_append_size_field(
+    stitch_json_buffer_t *buffer,
+    const char *key,
+    size_t value,
+    int with_comma
+)
+{
+    char number[32];
+    int written;
+    int rc;
+
+    written = snprintf(number, sizeof(number), "%zu", value);
+    if (written < 0 || (size_t)written >= sizeof(number)) {
+        return X12_ERR_BUFFER_TOO_SMALL;
+    }
+
+    if (with_comma) {
+        rc = json_buffer_append_char(buffer, ',');
+        if (rc != X12_OK) {
+            return rc;
+        }
+    }
+    rc = json_buffer_append_json_string(buffer, key);
+    if (rc != X12_OK) {
+        return rc;
+    }
+    rc = json_buffer_append_char(buffer, ':');
+    if (rc != X12_OK) {
+        return rc;
+    }
+    return json_buffer_append(buffer, number);
+}
+
+static int json_buffer_append_bool_field(
+    stitch_json_buffer_t *buffer,
+    const char *key,
+    int value,
+    int with_comma
+)
+{
+    int rc;
+
+    if (with_comma) {
+        rc = json_buffer_append_char(buffer, ',');
+        if (rc != X12_OK) {
+            return rc;
+        }
+    }
+    rc = json_buffer_append_json_string(buffer, key);
+    if (rc != X12_OK) {
+        return rc;
+    }
+    rc = json_buffer_append_char(buffer, ':');
+    if (rc != X12_OK) {
+        return rc;
+    }
+    return json_buffer_append(buffer, value ? "true" : "false");
 }
 
 static int json_get_string(
@@ -451,6 +631,258 @@ static int write_update_event_ids(FILE *fp, const stitch_update_batch_t *batch)
     return X12_OK;
 }
 
+static int build_snapshot_state_json(
+    const stitch_state_t *state,
+    const stitch_update_batch_t *batch,
+    const char *aggregate_id,
+    char *out,
+    size_t out_len
+)
+{
+    const claim_aggregate_t *aggregate;
+    stitch_json_buffer_t buffer;
+    int include_phi;
+    int rc;
+
+    if (state == NULL || batch == NULL || batch->aggregate == NULL ||
+        aggregate_id == NULL || out == NULL || out_len == 0u) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    aggregate = batch->aggregate;
+    include_phi = state->include_phi;
+    buffer.data = out;
+    buffer.len = 0u;
+    buffer.cap = out_len;
+    out[0] = '\0';
+
+    rc = json_buffer_append_char(&buffer, '{');
+    if (rc == X12_OK) {
+        rc = json_buffer_append_string_field(
+            &buffer,
+            "event_type",
+            "ClaimAggregateUpdated",
+            0
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_string_field(&buffer, "aggregate_type", "claim", 1);
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_string_field(&buffer, "aggregate_id", aggregate_id, 1);
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_size_field(&buffer, "version", aggregate->version, 1);
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_size_field(
+            &buffer,
+            "updated_by_event_id",
+            batch->updated_by_event_id,
+            1
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_string_field(
+            &buffer,
+            "updated_by_event_type",
+            batch->updated_by_event_type,
+            1
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_string_field(&buffer, "update_scope", "source_drop", 1);
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_string_field(&buffer, "source_drop_id", batch->source_drop_id, 1);
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_size_field(
+            &buffer,
+            "compacted_source_event_count",
+            batch->source_event_count,
+            1
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_bool_field(&buffer, "contains_phi", include_phi, 1);
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append(&buffer, ",\"keys\":{");
+    }
+    if (rc == X12_OK && include_phi) {
+        rc = json_buffer_append_string_field(&buffer, "claim_id", aggregate->claim_id, 0);
+        if (rc == X12_OK) {
+            rc = json_buffer_append_string_field(
+                &buffer,
+                "claim_id_token",
+                aggregate->claim_id_token,
+                1
+            );
+        }
+    } else if (rc == X12_OK) {
+        rc = json_buffer_append_string_field(&buffer, "claim_id", aggregate->key, 0);
+    }
+    if (rc == X12_OK && aggregate->payer_claim_control_number[0] != '\0') {
+        if (include_phi) {
+            rc = json_buffer_append_string_field(
+                &buffer,
+                "payer_claim_control_number",
+                aggregate->payer_claim_control_number,
+                1
+            );
+            if (rc == X12_OK) {
+                rc = json_buffer_append_string_field(
+                    &buffer,
+                    "payer_claim_control_number_token",
+                    aggregate->payer_claim_control_number_token,
+                    1
+                );
+            }
+        } else {
+            rc = json_buffer_append_string_field(
+                &buffer,
+                "payer_claim_control_number",
+                aggregate->payer_claim_control_number,
+                1
+            );
+        }
+    }
+    if (rc == X12_OK && aggregate->encounter_id[0] != '\0') {
+        rc = json_buffer_append_string_field(&buffer, "encounter_id", aggregate->encounter_id, 1);
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append(&buffer, "},\"state\":{");
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_bool_field(
+            &buffer,
+            "has_charge_context",
+            aggregate->has_charge_context,
+            0
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_bool_field(&buffer, "has_837", aggregate->has_837, 1);
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_bool_field(&buffer, "has_835", aggregate->has_835, 1);
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_string_field(&buffer, "claim_type", aggregate->claim_type, 1);
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_string_field(
+            &buffer,
+            "claim_status_code",
+            aggregate->claim_status_code,
+            1
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_size_field(
+            &buffer,
+            "source_event_count",
+            aggregate->source_event_count,
+            1
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_size_field(
+            &buffer,
+            "submitted_service_line_count",
+            aggregate->submitted_service_line_count,
+            1
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_size_field(
+            &buffer,
+            "remittance_service_line_count",
+            aggregate->remittance_service_line_count,
+            1
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_size_field(
+            &buffer,
+            "adjustment_count",
+            aggregate->adjustment_count,
+            1
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append(&buffer, "},\"lineage\":{");
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_size_field(
+            &buffer,
+            "applied_event_count",
+            aggregate->source_event_count,
+            0
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_size_field(
+            &buffer,
+            "update_event_count",
+            batch->source_event_count,
+            1
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append(&buffer, "}}");
+    }
+
+    return rc;
+}
+
+static int persist_snapshot_to_read_store(
+    stitch_state_t *state,
+    const stitch_update_batch_t *batch,
+    const char *aggregate_id
+)
+{
+    char state_json[4096];
+    char updated_by_event_id[32];
+    int written;
+    int rc;
+
+    if (state == NULL || state->read_store == NULL) {
+        return X12_OK;
+    }
+
+    rc = build_snapshot_state_json(
+        state,
+        batch,
+        aggregate_id,
+        state_json,
+        sizeof(state_json)
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    written = snprintf(
+        updated_by_event_id,
+        sizeof(updated_by_event_id),
+        "%zu",
+        batch->updated_by_event_id
+    );
+    if (written < 0 || (size_t)written >= sizeof(updated_by_event_id)) {
+        return X12_ERR_BUFFER_TOO_SMALL;
+    }
+
+    return scribe_store_put_claim_aggregate(
+        state->read_store,
+        aggregate_id,
+        batch->aggregate->version,
+        state_json,
+        updated_by_event_id,
+        batch->source_drop_id
+    );
+}
+
 static int write_snapshot(
     stitch_state_t *state,
     const stitch_update_batch_t *batch
@@ -570,7 +1002,7 @@ static int write_snapshot(
         return X12_ERR_IO;
     }
 
-    return X12_OK;
+    return persist_snapshot_to_read_store(state, batch, aggregate_id);
 }
 
 static int record_batch_update(
@@ -636,7 +1068,9 @@ static int set_current_source_drop(stitch_state_t *state, const char *drop_key)
 {
     const char *separator;
     size_t drop_type_len;
+    char source_type[32];
     int written;
+    int rc;
 
     if (state == NULL || drop_key == NULL) {
         return X12_ERR_INVALID_ARGUMENT;
@@ -668,7 +1102,153 @@ static int set_current_source_drop(stitch_state_t *state, const char *drop_key)
         return X12_ERR_BUFFER_TOO_SMALL;
     }
 
+    if (state->read_store != NULL) {
+        if (drop_type_len >= sizeof(source_type)) {
+            return X12_ERR_BUFFER_TOO_SMALL;
+        }
+        memcpy(source_type, drop_key, drop_type_len);
+        source_type[drop_type_len] = '\0';
+        rc = scribe_store_put_source_drop(
+            state->read_store,
+            state->current_source_drop_id,
+            source_type,
+            "",
+            ""
+        );
+        if (rc != X12_OK) {
+            return rc;
+        }
+    }
+
     return X12_OK;
+}
+
+static int put_event_key_if_present(
+    scribe_store_t *store,
+    const char *key_type,
+    const char *key_value,
+    const char *event_id
+)
+{
+    if (key_value == NULL || key_value[0] == '\0') {
+        return X12_OK;
+    }
+    return scribe_store_put_event_key(store, key_type, key_value, event_id);
+}
+
+static int index_journal_event(
+    stitch_state_t *state,
+    const char *journal_line,
+    size_t numeric_event_id,
+    long long event_offset
+)
+{
+    char event_id[32];
+    char event_type[96];
+    char segment_id[32];
+    char claim_id[STITCH_ID_MAX];
+    char claim_id_token[TOKENISE_MAX_TOKEN_LEN];
+    char payer_control[STITCH_ID_MAX];
+    char payer_control_token[TOKENISE_MAX_TOKEN_LEN];
+    char encounter_id[STITCH_ID_MAX];
+    const char *claim_index_key;
+    const char *payer_index_key;
+    int written;
+    int rc;
+
+    if (state == NULL || state->read_store == NULL) {
+        return X12_OK;
+    }
+    if (state->current_source_drop_id[0] == '\0') {
+        return X12_OK;
+    }
+    if (!json_get_string(journal_line, "event_type", event_type, sizeof(event_type))) {
+        return X12_OK;
+    }
+
+    written = snprintf(event_id, sizeof(event_id), "%zu", numeric_event_id);
+    if (written < 0 || (size_t)written >= sizeof(event_id)) {
+        return X12_ERR_BUFFER_TOO_SMALL;
+    }
+    if (!json_get_number_text(journal_line, "source_segment_index", segment_id, sizeof(segment_id))) {
+        written = snprintf(segment_id, sizeof(segment_id), "%zu", numeric_event_id);
+        if (written < 0 || (size_t)written >= sizeof(segment_id)) {
+            return X12_ERR_BUFFER_TOO_SMALL;
+        }
+    }
+
+    rc = scribe_store_put_event(
+        state->read_store,
+        event_id,
+        state->current_source_drop_id,
+        event_type,
+        segment_id,
+        event_offset,
+        (long long)strlen(journal_line),
+        ""
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    extract_claim_keys(
+        journal_line,
+        claim_id,
+        sizeof(claim_id),
+        claim_id_token,
+        sizeof(claim_id_token)
+    );
+    claim_index_key = claim_key(claim_id, claim_id_token);
+    rc = put_event_key_if_present(state->read_store, "claim_id", claim_index_key, event_id);
+    if (rc != X12_OK) {
+        return rc;
+    }
+    if (state->include_phi) {
+        rc = put_event_key_if_present(state->read_store, "claim_id_raw", claim_id, event_id);
+        if (rc != X12_OK) {
+            return rc;
+        }
+    }
+
+    payer_control[0] = '\0';
+    payer_control_token[0] = '\0';
+    (void)json_get_string(
+        journal_line,
+        "payer_claim_control_number",
+        payer_control,
+        sizeof(payer_control)
+    );
+    (void)json_get_string(
+        journal_line,
+        "payer_claim_control_number_token",
+        payer_control_token,
+        sizeof(payer_control_token)
+    );
+    payer_index_key = payer_control_token[0] != '\0' ? payer_control_token : payer_control;
+    rc = put_event_key_if_present(
+        state->read_store,
+        "payer_claim_control_number",
+        payer_index_key,
+        event_id
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+    if (state->include_phi) {
+        rc = put_event_key_if_present(
+            state->read_store,
+            "payer_claim_control_number_raw",
+            payer_control,
+            event_id
+        );
+        if (rc != X12_OK) {
+            return rc;
+        }
+    }
+
+    encounter_id[0] = '\0';
+    (void)json_get_string(journal_line, "encounter_id", encounter_id, sizeof(encounter_id));
+    return put_event_key_if_present(state->read_store, "encounter_id", encounter_id, event_id);
 }
 
 static int flush_update_batches(stitch_state_t *state)
@@ -900,12 +1480,14 @@ void aggregate_stitcher_input_init(aggregate_stitcher_input_t *input)
 int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
 {
     stitch_state_t *state;
+    scribe_store_t read_store;
     FILE *journal;
     FILE *out;
     char line[STITCH_LINE_MAX];
     char drop_key[STITCH_FINGERPRINT_MAX];
     size_t event_id = 0u;
     int owns_out = 0;
+    int owns_read_store = 0;
     int rc = X12_OK;
 
     if (input == NULL || input->journal_path == NULL || input->out_path == NULL) {
@@ -942,6 +1524,24 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
     if (input->encounter_id != NULL) {
         copy_cstr(state->encounter_filter, sizeof(state->encounter_filter), input->encounter_id);
     }
+    if (input->read_store_path != NULL) {
+        scribe_store_init(&read_store);
+        rc = scribe_store_open(&read_store, input->read_store_path);
+        if (rc == X12_OK) {
+            rc = scribe_store_init_schema(&read_store);
+        }
+        if (rc != X12_OK) {
+            (void)scribe_store_close(&read_store);
+            (void)fclose(journal);
+            if (owns_out) {
+                (void)fclose(out);
+            }
+            free(state);
+            return rc;
+        }
+        state->read_store = &read_store;
+        owns_read_store = 1;
+    }
 
     rc = read_journal_for_discovery(state, input->journal_path);
     if (rc != X12_OK) {
@@ -949,11 +1549,23 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
         if (owns_out) {
             (void)fclose(out);
         }
+        if (owns_read_store) {
+            (void)scribe_store_close(&read_store);
+        }
         free(state);
         return rc;
     }
 
-    while (fgets(line, sizeof(line), journal) != NULL) {
+    while (1) {
+        long event_offset = ftell(journal);
+
+        if (event_offset < 0) {
+            rc = X12_ERR_IO;
+            break;
+        }
+        if (fgets(line, sizeof(line), journal) == NULL) {
+            break;
+        }
         event_id++;
         rc = make_drop_key(line, drop_key, sizeof(drop_key));
         if (rc != X12_OK) {
@@ -968,6 +1580,11 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
             if (rc != X12_OK) {
                 break;
             }
+        }
+
+        rc = index_journal_event(state, line, event_id, (long long)event_offset);
+        if (rc != X12_OK) {
+            break;
         }
 
         rc = apply_claim_event(state, line, event_id, drop_key);
@@ -990,6 +1607,9 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
         rc = X12_ERR_IO;
     }
     if (owns_out && fclose(out) != 0 && rc == X12_OK) {
+        rc = X12_ERR_IO;
+    }
+    if (owns_read_store && scribe_store_close(&read_store) != X12_OK && rc == X12_OK) {
         rc = X12_ERR_IO;
     }
 
@@ -1016,6 +1636,11 @@ int aggregate_stitcher_run_cli(int argc, char **argv)
                 return -1;
             }
             input.out_path = argv[++i];
+        } else if (strcmp(argv[i], "--read-store") == 0) {
+            if (i + 1 >= argc) {
+                return -1;
+            }
+            input.read_store_path = argv[++i];
         } else if (strcmp(argv[i], "--encounter-id") == 0) {
             if (i + 1 >= argc) {
                 return -1;

@@ -49,7 +49,13 @@ is through 835 `CLP07`.
 
 The journal is the immutable evidence stream. It is not one file per encounter,
 and normal operation should not require replaying one giant journal. Source
-drops (.edi files that appear out of band) are parsed and appended into a journal, while indexes provide random access.
+drops (.edi files that appear out of band) are parsed and appended into a
+journal, while the SQLite read store provides random access.
+
+The current proof of concept writes an NDJSON event journal. The intended
+production shape is a binary segment journal with the same event ids and
+locators. The read-store schema is already shaped for that: event ids point to
+source drops, offsets, lengths, and checksums.
 
 ```mermaid
 flowchart LR
@@ -57,10 +63,30 @@ flowchart LR
     f837["facility_837.edi<br/>claim submission"]
     f835["facility_835.edi<br/>remittance"]
     ingest["ingest/parser<br/>tokenize + canonicalize"]
-    journal[("binary journal<br/>append-only evidence")]
-    index[("SQLite/read store<br/>indexes + aggregate snapshots")]
+    journal[("current POC journal<br/>NDJSON events")]
+    binary[("target journal<br/>binary segment log")]
     vault[("PHI vault/resolver<br/>SQLite POC or audited API")]
     resolve["authorized resolve<br/>namespace + token -> raw value"]
+
+    charges --> ingest
+    f837 --> ingest
+    f835 --> ingest
+
+    ingest --> journal
+    journal -. same locator contract .-> binary
+    ingest -. raw PHI mappings .-> vault
+    vault --> resolve
+```
+
+```mermaid
+flowchart LR
+    journal[("journal<br/>append-only evidence")]
+    readstore[("SQLite read store")]
+    drops["source_drops<br/>input batches/files"]
+    events["events<br/>locator only<br/>event id -> offset/length/checksum"]
+    keys["event_keys<br/>claim/payer/encounter lookup"]
+    versions["claim_aggregate_versions<br/>v1, v2, v3..."]
+    latest["claim_aggregate_latest<br/>cheap restore"]
     agg1["Claim aggregate v1<br/>charge context"]
     agg2["Claim aggregate v2<br/>837 submitted"]
     agg3["Claim aggregate v3<br/>835 remitted"]
@@ -71,21 +97,18 @@ flowchart LR
     workq["work queue<br/>follow-up / exceptions"]
     audit["audit / analytics<br/>external systems"]
 
-    charges --> ingest
-    f837 --> ingest
-    f835 --> ingest
-
-    ingest --> journal
-    ingest -. raw PHI mappings .-> vault
-    vault --> resolve
-
-    journal --> index
-    index --> agg1
+    journal --> readstore
+    readstore --> drops
+    readstore --> events
+    readstore --> keys
+    readstore --> versions
+    readstore --> latest
+    versions --> agg1
     agg1 --> agg2
     agg2 --> agg3
 
-    later837 --> ingest
-    index --> agg4
+    later837 --> journal
+    latest --> agg4
     agg3 --> agg4
 
     agg3 --> notify
@@ -123,25 +146,27 @@ Then derive aggregate snapshots for the encounter:
 build/scribe stitch \
   --journal stroke.journal.ndjson \
   --encounter-id ENC-SYN-STROKE-001 \
+  --read-store stroke_read_store.sqlite \
   --out stroke_aggregates.ndjson
 ```
 
-`stroke_aggregates.ndjson` contains versioned `ClaimAggregateUpdated` snapshots:
-charge context as `v1`, matched 837 facts as `v2`, and matched 835 facts as
-`v3`.
+That command creates two more artifacts:
 
-The journal is a binary segment log: append-only source evidence
-with durable event ids, offsets, lengths, and checksums. You can always trace an
-event/assertion back to an `.edi` file.
+- `stroke_read_store.sqlite`: indexes, aggregate versions, and latest aggregate
+  snapshots
+- `stroke_aggregates.ndjson`: inspection/export stream of
+  `ClaimAggregateUpdated` snapshots
 
-The current CLI emits NDJSON for inspection while the proof of concept is being
-shaped. `--phi-vault` writes deterministic namespace/token/raw-value mappings
-to a separate SQLite resolver database without putting raw PHI in the journal.
+Charge context lands as `v1`, matched 837 facts as `v2`, and matched 835 facts
+as `v3`.
 
-Indexes and aggregates live outside the journal in SQLite for now, but any
-read store with fast lookup could fill that role. The important split is that
-the journal is the immutable write/evidence path, while the read store is
-versioned derived state.
+`--phi-vault` writes deterministic namespace/token/raw-value mappings to a
+separate SQLite resolver database without putting raw PHI in the normal journal.
+
+SQLite may leave `*.sqlite-wal` and `*.sqlite-shm` sidecars when WAL mode is in
+use. They are part of SQLite's normal on-disk state, not separate application
+artifacts. The close path checkpoints on clean shutdown, but sidecars can still
+exist while a process has the database open or after an interrupted run.
 
 ## Stitch
 
@@ -151,8 +176,12 @@ versioned derived state.
 build/scribe stitch \
   --journal stroke.journal.ndjson \
   --encounter-id ENC-SYN-STROKE-001 \
+  --read-store stroke_read_store.sqlite \
   --out stroke_aggregates.ndjson
 ```
+
+`--read-store` persists the durable read side. `--out` is just the current
+inspection/export stream.
 
 Versions are compacted by source drop, not by every X12 segment:
 
@@ -205,14 +234,28 @@ Expected fixture totals:
 
 The storage split is:
 
-- Binary journal: immutable source evidence
+- Journal: immutable source evidence. The POC is NDJSON; the target is a
+  binary segment log.
 - SQLite/read store `source_drops`: one input file or batch
-- SQLite/read store `events`: event id -> journal segment, offset, length, checksum
+- SQLite/read store `events`: locator metadata only, with no payload and no
+  aggregate state
 - SQLite/read store `event_keys`: claim id, payer control, encounter id -> event ids
 - SQLite/read store `claim_aggregate_versions`: historical aggregate snapshots
 - SQLite/read store `claim_aggregate_latest`: current aggregate snapshot
 - PHI vault/resolver: namespace + token -> raw value, with separate access
   controls and audit
+
+The `events` table is deliberately small. It stores only:
+
+```text
+event_id, source_drop_id, event_type, segment_id, event_offset, event_length, checksum
+```
+
+In the current NDJSON POC, `event_offset` and `event_length` point into the
+NDJSON journal file. In the binary journal implementation, the same fields point
+into the binary segment log. The checksum column is part of the locator
+contract; the current POC schema has it, while the binary implementation should
+fill it.
 
 If an aggregate is deleted, it can be restored:
 
@@ -262,7 +305,7 @@ Instead, ingestion can split the raw source facts into two paths:
 
 ```text
 raw source document
-  -> tokenized canonical event -> binary journal -> indexes/aggregates
+  -> tokenized canonical event -> journal -> indexes/aggregates
   -> namespace + token + raw value -> PHI vault/resolver
 ```
 
@@ -322,6 +365,50 @@ With `--include-phi`, raw identifiers and names are emitted where available, and
 token companion fields such as `claim_id_token` and
 `payer_claim_control_number_token` are included so the PHI view can still be
 linked to non-PHI projections.
+
+Some applications inside a HITRUST-controlled zone can be allowed to build or
+read PHI-containing aggregates. That is a separate access tier, not the default
+developer path. In this proof of concept, a PHI read store can be created by
+running `stitch` against a PHI journal with both `--include-phi` and
+`--read-store`. The stored aggregate snapshot includes `contains_phi:true`.
+
+SQLite also makes an authorized rendering workflow possible without copying PHI
+into the normal read store: a HITRUST-zone process can open the tokenized read
+store, `ATTACH` the PHI vault database, resolve only the approved namespaces,
+and render a PHI view. The same idea could be an audited API in production.
+
+### Final Aggregate View With PHI
+
+This is the kind of authorized rendering a HITRUST-zone application could show
+after all stroke encounter source drops have landed. The raw values come from a
+PHI-capable aggregate store or from resolving tokens through the vault.
+
+```text
+Encounter ENC-SYN-STROKE-001
+Patient   ALEX REID
+Status    4 claims stitched across charge rows, 837 submissions, and 835 remits
+
+Total billed                 3720.00
+Payer paid                  -2340.00
+Contractual adjustments      -830.00
+Patient responsibility        550.00
+Current balance               550.00
+```
+
+| Claim | Type | 837/835 state | Billed | Paid | CO adj | PR balance |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| `CLM-STROKE-RAD-FAC-001` | Radiology facility | submitted + remitted | 2350.00 | 1450.00 | 550.00 | 350.00 |
+| `CLM-STROKE-RAD-PRO-001` | Radiology professional | submitted + remitted | 390.00 | 260.00 | 90.00 | 40.00 |
+| `CLM-STROKE-REHAB-001` | Outpatient rehab | submitted + remitted | 660.00 | 420.00 | 120.00 | 120.00 |
+| `CLM-STROKE-NEURO-001` | Neurology follow-up | submitted + remitted | 320.00 | 210.00 | 70.00 | 40.00 |
+
+Facility imaging service lines:
+
+| Service | Description | Billed | Paid | CO adj | PR |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `70450` | CT head without contrast facility charge | 450.00 | 250.00 | 150.00 | 50.00 |
+| `70460` | CT head with contrast facility charge | 700.00 | 400.00 | 250.00 | 50.00 |
+| `70551` | MRI brain facility charge | 1200.00 | 800.00 | 150.00 | 250.00 |
 
 ## Other commands
 

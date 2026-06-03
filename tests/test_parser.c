@@ -536,14 +536,19 @@ static int test_stroke_balance_projection_from_journal(void)
     char nonphi_journal_path[512];
     char aggregate_path[512];
     char nonphi_aggregate_path[512];
+    char nonphi_read_store_path[512];
+    char nonphi_read_store_wal_path[560];
+    char nonphi_read_store_shm_path[560];
     char projection_path[512];
     char nonphi_projection_path[512];
     char phi_vault_path[512];
     char phi_vault_wal_path[560];
     char phi_vault_shm_path[560];
     char aggregates[160000];
+    char latest_aggregate[4096];
     char projection[96000];
     char resolved[256];
+    char indexed_event_ids[16][SCRIBE_STORE_ID_MAX];
     char patient_name_token[TOKENISE_MAX_TOKEN_LEN];
     x12_str_t conflicting_raw;
     x12_str_t patient_name_raw;
@@ -551,6 +556,10 @@ static int test_stroke_balance_projection_from_journal(void)
     aggregate_stitcher_input_t stitch_input;
     balance_projector_input_t projection_input;
     phi_vault_t phi_vault;
+    scribe_store_t read_store;
+    scribe_event_locator_t indexed_locator;
+    size_t indexed_event_count = 0u;
+    size_t latest_version = 0u;
 
     REQUIRE(make_path(charges_path, sizeof(charges_path), TEST_FIXTURE_DIR, "stroke_encounter/charge_transactions.ndjson") == 0);
     REQUIRE(make_path(facility_837_path, sizeof(facility_837_path), TEST_FIXTURE_DIR, "stroke_encounter/facility_837.edi") == 0);
@@ -565,9 +574,12 @@ static int test_stroke_balance_projection_from_journal(void)
     REQUIRE(make_path(nonphi_journal_path, sizeof(nonphi_journal_path), TEST_OUTPUT_DIR, "stroke_encounter_nonphi.journal.ndjson") == 0);
     REQUIRE(make_path(aggregate_path, sizeof(aggregate_path), TEST_OUTPUT_DIR, "stroke_claim_aggregates.ndjson") == 0);
     REQUIRE(make_path(nonphi_aggregate_path, sizeof(nonphi_aggregate_path), TEST_OUTPUT_DIR, "stroke_claim_aggregates_nonphi.ndjson") == 0);
+    REQUIRE(make_path(nonphi_read_store_path, sizeof(nonphi_read_store_path), TEST_OUTPUT_DIR, "stroke_read_store_nonphi.sqlite") == 0);
     REQUIRE(make_path(projection_path, sizeof(projection_path), TEST_OUTPUT_DIR, "stroke_balance_projection.json") == 0);
     REQUIRE(make_path(nonphi_projection_path, sizeof(nonphi_projection_path), TEST_OUTPUT_DIR, "stroke_balance_projection_nonphi.json") == 0);
     REQUIRE(make_path(phi_vault_path, sizeof(phi_vault_path), TEST_OUTPUT_DIR, "stroke_phi_vault.sqlite") == 0);
+    REQUIRE(snprintf(nonphi_read_store_wal_path, sizeof(nonphi_read_store_wal_path), "%s-wal", nonphi_read_store_path) > 0);
+    REQUIRE(snprintf(nonphi_read_store_shm_path, sizeof(nonphi_read_store_shm_path), "%s-shm", nonphi_read_store_path) > 0);
     REQUIRE(snprintf(phi_vault_wal_path, sizeof(phi_vault_wal_path), "%s-wal", phi_vault_path) > 0);
     REQUIRE(snprintf(phi_vault_shm_path, sizeof(phi_vault_shm_path), "%s-shm", phi_vault_path) > 0);
 
@@ -728,9 +740,13 @@ static int test_stroke_balance_projection_from_journal(void)
     (void)remove(phi_vault_path);
     (void)remove(phi_vault_wal_path);
     (void)remove(phi_vault_shm_path);
+    (void)remove(nonphi_read_store_path);
+    (void)remove(nonphi_read_store_wal_path);
+    (void)remove(nonphi_read_store_shm_path);
 
     stitch_input.journal_path = nonphi_journal_path;
     stitch_input.out_path = nonphi_aggregate_path;
+    stitch_input.read_store_path = nonphi_read_store_path;
     stitch_input.include_phi = 0;
     REQUIRE(aggregate_stitcher_stitch(&stitch_input) == X12_OK);
     REQUIRE(read_file_text(nonphi_aggregate_path, aggregates, sizeof(aggregates)) == 0);
@@ -745,6 +761,66 @@ static int test_stroke_balance_projection_from_journal(void)
     REQUIRE(strstr(aggregates, "REID") == NULL);
     REQUIRE(strstr(aggregates, "ALEX") == NULL);
 
+    scribe_store_init(&read_store);
+    REQUIRE(scribe_store_open(&read_store, nonphi_read_store_path) == X12_OK);
+    REQUIRE(scribe_store_init_schema(&read_store) == X12_OK);
+    REQUIRE(scribe_store_get_latest_claim_aggregate(
+                &read_store,
+                "claim:8259c238232f9585e95fc8f45b0bb410",
+                &latest_version,
+                latest_aggregate,
+                sizeof(latest_aggregate)
+            ) == X12_OK);
+    REQUIRE(latest_version == 3u);
+    REQUIRE(strstr(latest_aggregate, "\"contains_phi\":false") != NULL);
+    REQUIRE(strstr(latest_aggregate, "\"has_835\":true") != NULL);
+    REQUIRE(strstr(latest_aggregate, "\"claim_id\":\"8259c238232f9585e95fc8f45b0bb410\"") != NULL);
+    REQUIRE(strstr(latest_aggregate, "CLM-STROKE") == NULL);
+    REQUIRE(strstr(latest_aggregate, "PAYER-STROKE") == NULL);
+    REQUIRE(strstr(latest_aggregate, "REID") == NULL);
+    REQUIRE(strstr(latest_aggregate, "ALEX") == NULL);
+    REQUIRE(scribe_store_find_event_ids_by_key(
+                &read_store,
+                "claim_id",
+                "8259c238232f9585e95fc8f45b0bb410",
+                indexed_event_ids,
+                16u,
+                &indexed_event_count
+            ) == X12_OK);
+    REQUIRE(indexed_event_count > 0u);
+    REQUIRE(scribe_store_get_event_locator(
+                &read_store,
+                indexed_event_ids[0],
+                &indexed_locator
+            ) == X12_OK);
+    REQUIRE(indexed_locator.source_drop_id[0] != '\0');
+    REQUIRE(indexed_locator.event_type[0] != '\0');
+    REQUIRE(scribe_store_find_event_ids_by_key(
+                &read_store,
+                "payer_claim_control_number",
+                "edf29f09740ab104da309e2b036e14d1",
+                indexed_event_ids,
+                16u,
+                &indexed_event_count
+            ) == X12_OK);
+    REQUIRE(indexed_event_count > 0u);
+    REQUIRE(scribe_store_get_event_locator(
+                &read_store,
+                indexed_event_ids[0],
+                &indexed_locator
+            ) == X12_OK);
+    REQUIRE(strcmp(indexed_locator.source_drop_id, "835:6") == 0);
+    REQUIRE(scribe_store_find_event_ids_by_key(
+                &read_store,
+                "encounter_id",
+                "ENC-SYN-STROKE-001",
+                indexed_event_ids,
+                16u,
+                &indexed_event_count
+            ) == X12_OK);
+    REQUIRE(indexed_event_count > 0u);
+    REQUIRE(scribe_store_close(&read_store) == X12_OK);
+
     projection_input.journal_path = nonphi_journal_path;
     projection_input.include_phi = 0;
     REQUIRE(balance_projector_project(&projection_input, nonphi_projection_path) == X12_OK);
@@ -758,6 +834,9 @@ static int test_stroke_balance_projection_from_journal(void)
     REQUIRE(strstr(projection, "SUB-STROKE") == NULL);
     REQUIRE(strstr(projection, "REID") == NULL);
     REQUIRE(strstr(projection, "ALEX") == NULL);
+    (void)remove(nonphi_read_store_path);
+    (void)remove(nonphi_read_store_wal_path);
+    (void)remove(nonphi_read_store_shm_path);
 
     return 0;
 }

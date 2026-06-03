@@ -21,7 +21,7 @@ static void usage(FILE *fp)
         "  scribe parse --type 834 input.edi [--out events.ndjson] [--include-phi]\n"
         "  scribe journal --out journal.ndjson [--charges charges.ndjson] [--837 claim.edi] [--835 remit.edi] [--phi-vault phi.sqlite] [--include-phi]\n"
         "  scribe vault-resolve --phi-vault phi.sqlite --namespace ns --token token [--actor user] [--purpose reason]\n"
-        "  scribe stitch --journal journal.ndjson [--encounter-id id] [--out aggregates.ndjson] [--include-phi]\n"
+        "  scribe stitch --journal journal.ndjson [--encounter-id id] [--read-store store.sqlite] [--out aggregates.ndjson] [--include-phi]\n"
         "  scribe project --projection balance --journal journal.ndjson [--encounter-id id] [--out balance.json] [--include-phi]\n"
         "  scribe project-balance --journal journal.ndjson [--encounter-id id] [--out balance.json] [--include-phi]\n"
         "  scribe dump input.edi\n"

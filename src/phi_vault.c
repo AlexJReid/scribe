@@ -204,6 +204,7 @@ int phi_vault_close(phi_vault_t *vault)
         return X12_OK;
     }
 
+    (void)sqlite3_wal_checkpoint_v2(db, NULL, SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
     rc = sqlite3_close(db);
     vault->db = NULL;
     return rc == SQLITE_OK ? X12_OK : sqlite_to_x12(rc);
