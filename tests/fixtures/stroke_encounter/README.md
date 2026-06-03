@@ -26,12 +26,12 @@ Files:
 - `expected_balance_projection.json`: compact reference projection shape. The
   generated `balance` projection also includes per-line ledger entries.
 
-Current parser behavior:
+Current parser behaviour:
 
-- 837 `CLM01` and 835 `CLP01` should tokenize into the same `claim_id` value for
+- 837 `CLM01` and 835 `CLP01` should tokenise into the same `claim_id` value for
   each claim.
-- 835 `CLP07` should tokenize under the `payer_claim_control_number` namespace.
-- Service lines can be matched by claim id, service line number, procedure code,
+- 835 `CLP07` should tokenise under the `payer_claim_control_number` namespace.
+- Service lines can be matched by claim ID, service line number, procedure code,
   charge amount, date, and line order.
 
 Expected encounter-level balance from the 835 files:

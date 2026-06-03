@@ -11,8 +11,8 @@ The main case study is a semi-synthetic stroke recovery encounter:
 - Fixtures:
   [tests/fixtures/stroke_encounter](https://github.com/AlexJReid/scribe/tree/main/tests/fixtures/stroke_encounter)
 
->The PHI-looking values are fake synthetic data. The treatment shape reflects
-stroke-related treatment I had in the UK; names, ids, payer details, dates,
+The PHI-looking values are fake synthetic data. The treatment shape reflects
+stroke-related treatment I had in the UK; names, IDs, payer details, dates,
 amounts, and EDI content are not real PHI.
 
 ## Build
@@ -32,12 +32,12 @@ Current POC consists of an NDJSON journal, SQLite read store, SQLite PHI vault. 
 Target: binary journal, pluggable read store. The read store owns indexes and
 aggregate snapshots, not raw journal payloads.
 
-**Figure 1: Ingest writes journal evidence and PHI vault mappings.**
+**Figure 1: ingest writes journal evidence and PHI vault mappings.**
 
 ```mermaid
 flowchart LR
     input["charges + 837 + 835"]
-    ingest["ingest/parser<br/>map + tokenize"]
+    ingest["ingest/parser<br/>map + tokenise"]
     journal[("journal<br/>NDJSON POC / binary target")]
     vault[("PHI vault<br/>namespace + token -> raw")]
 
@@ -46,7 +46,7 @@ flowchart LR
     ingest -. raw PHI mappings .-> vault
 ```
 
-**Figure 2: The read store indexes events and materializes aggregates.**
+**Figure 2: the read store indexes events and materialises aggregates.**
 
 ```mermaid
 flowchart LR
@@ -96,14 +96,14 @@ build/scribe stitch \
   --out stroke_aggregates.ndjson
 ```
 
-`stroke_read_store.sqlite` gets:
+`stroke_read_store.sqlite` contains:
 
 - `event_keys`
 - `events`
 - `claim_aggregate_versions`
 - `claim_aggregate_latest`
 
-`stroke_aggregates.ndjson` is only an inspection/export stream.
+`stroke_aggregates.ndjson` is an inspection/export stream only.
 
 Optional: derive a ledger-style balance from the same journal:
 
@@ -163,7 +163,7 @@ event_id, source_drop_id, event_type, segment_id, event_offset, event_length, ch
 Default path is non-PHI:
 
 - names omitted
-- claim/control ids tokenized
+- claim/control IDs tokenised
 - aggregates keyed by tokens
 - 837 `CLM01` and 835 `CLP01` share the `claim_id` namespace
 - 835 `CLP07` uses `payer_claim_control_number`
@@ -180,9 +180,9 @@ HMAC-SHA256 is used.
 namespace + token -> raw value
 ```
 
->HITRUST-zone apps may create/read PHI-containing aggregates deliberately with
+HITRUST-zone apps may deliberately create/read PHI-containing aggregates with
 `--include-phi --read-store`, or render PHI by resolving tokens through the
-vault. Normal developer stores should stay tokenized and not tainted with PHI.
+vault. Normal developer stores should stay tokenised.
 
 ## PHI aggregate rendering
 
