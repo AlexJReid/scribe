@@ -50,12 +50,16 @@ is through 835 `CLP07`.
 The journal is the immutable evidence stream. It is not one file per encounter,
 and normal operation should not require replaying one giant journal. Source
 drops (.edi files that appear out of band) are parsed and appended into a
-journal, while the SQLite read store provides random access.
+journal, while a pluggable read store provides random access. SQLite is the
+current proof-of-concept implementation; another document database, search
+index, or custom indexed store can replace it if it satisfies the same lookup
+and aggregate snapshot contract.
 
-The current proof of concept writes an NDJSON event journal. The intended
-production shape is a binary segment journal with the same event ids and
-locators. The read-store schema is already shaped for that: event ids point to
-source drops, offsets, lengths, and checksums.
+The current proof of concept writes an NDJSON event journal and uses SQLite for
+the read store. The intended production shape is a binary segment journal with
+the same event ids and locators. The read-store contract is already shaped for
+that: event ids point to source drops, offsets, lengths, and checksums, while
+aggregate snapshots are stored separately from the immutable evidence.
 
 ```mermaid
 flowchart LR
@@ -81,7 +85,7 @@ flowchart LR
 ```mermaid
 flowchart LR
     journal[("journal<br/>append-only evidence")]
-    readstore[("SQLite read store")]
+    readstore[("pluggable read store<br/>SQLite POC")]
     drops["source_drops<br/>input batches/files"]
     events["events<br/>locator only<br/>event id -> offset/length/checksum"]
     keys["event_keys<br/>claim/payer/encounter lookup"]
@@ -152,8 +156,8 @@ build/scribe stitch \
 
 That command creates two more artifacts:
 
-- `stroke_read_store.sqlite`: indexes, aggregate versions, and latest aggregate
-  snapshots
+- `stroke_read_store.sqlite`: SQLite POC read store containing indexes,
+  aggregate versions, and latest aggregate snapshots
 - `stroke_aggregates.ndjson`: inspection/export stream of
   `ClaimAggregateUpdated` snapshots
 
@@ -180,8 +184,10 @@ build/scribe stitch \
   --out stroke_aggregates.ndjson
 ```
 
-`--read-store` persists the durable read side. `--out` is just the current
-inspection/export stream.
+`--read-store` persists the durable read side. In this proof of concept that is
+SQLite; the architecture only requires a store that can maintain the same
+indexes and aggregate snapshots. `--out` is just the current inspection/export
+stream.
 
 Versions are compacted by source drop, not by every X12 segment:
 
@@ -236,12 +242,12 @@ The storage split is:
 
 - Journal: immutable source evidence. The POC is NDJSON; the target is a
   binary segment log.
-- SQLite/read store `source_drops`: one input file or batch
-- SQLite/read store `events`: locator metadata only, with no payload and no
+- Read store `source_drops`: one input file or batch
+- Read store `events`: locator metadata only, with no payload and no
   aggregate state
-- SQLite/read store `event_keys`: claim id, payer control, encounter id -> event ids
-- SQLite/read store `claim_aggregate_versions`: historical aggregate snapshots
-- SQLite/read store `claim_aggregate_latest`: current aggregate snapshot
+- Read store `event_keys`: claim id, payer control, encounter id -> event ids
+- Read store `claim_aggregate_versions`: historical aggregate snapshots
+- Read store `claim_aggregate_latest`: current aggregate snapshot
 - PHI vault/resolver: namespace + token -> raw value, with separate access
   controls and audit
 
@@ -257,11 +263,15 @@ into the binary segment log. The checksum column is part of the locator
 contract; the current POC schema has it, while the binary implementation should
 fill it.
 
+SQLite table names are POC names for the read-store contract. A document
+database could store the same locator, key-index, aggregate-version, and
+latest-aggregate records as documents instead of rows.
+
 If an aggregate is deleted, it can be restored:
 
 ```text
 claim id or encounter id
-  -> SQLite event_keys
+  -> read-store event_keys
   -> event locators
   -> journal records
   -> rebuilt claim aggregate
