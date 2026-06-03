@@ -26,20 +26,21 @@ ctest --test-dir build --output-on-failure
 
 ## Fixture
 
-The files live in [tests/fixtures/stroke_encounter](/Users/alex/Experiments/scribe/tests/fixtures/stroke_encounter).
+The fixture files live in the
+[stroke_encounter fixture directory](https://github.com/AlexJReid/scribe/tree/main/tests/fixtures/stroke_encounter).
 
-[charge_transactions.ndjson](/Users/alex/Experiments/scribe/tests/fixtures/stroke_encounter/charge_transactions.ndjson) is the upstream charge/encounter
-seed. In a real pipeline, these rows would usually come from an EHR, charge
-capture system, patient accounting system, or other provider-side revenue-cycle
-feed. This file creates the encounter context and links each claim id back to
+`charge_transactions.ndjson` is the upstream charge/encounter seed. In a real
+pipeline, these rows would usually come from an EHR, charge capture system,
+patient accounting system, or other provider-side revenue-cycle feed. This file
+creates the encounter context and links each claim id back to
 `ENC-SYN-STROKE-001`.
 
 The X12 pairs are:
 
-- [facility_837.edi](/Users/alex/Experiments/scribe/tests/fixtures/stroke_encounter/facility_837.edi) / [facility_835.edi](/Users/alex/Experiments/scribe/tests/fixtures/stroke_encounter/facility_835.edi): facility imaging claim
-- [professional_837.edi](/Users/alex/Experiments/scribe/tests/fixtures/stroke_encounter/professional_837.edi) / [professional_835.edi](/Users/alex/Experiments/scribe/tests/fixtures/stroke_encounter/professional_835.edi): radiologist interpretation claim
-- [rehab_837.edi](/Users/alex/Experiments/scribe/tests/fixtures/stroke_encounter/rehab_837.edi) / [rehab_835.edi](/Users/alex/Experiments/scribe/tests/fixtures/stroke_encounter/rehab_835.edi): outpatient rehab claim
-- [neurology_837.edi](/Users/alex/Experiments/scribe/tests/fixtures/stroke_encounter/neurology_837.edi) / [neurology_835.edi](/Users/alex/Experiments/scribe/tests/fixtures/stroke_encounter/neurology_835.edi): neurology follow-up claim
+- `facility_837.edi` / `facility_835.edi`: facility imaging claim
+- `professional_837.edi` / `professional_835.edi`: radiologist interpretation claim
+- `rehab_837.edi` / `rehab_835.edi`: outpatient rehab claim
+- `neurology_837.edi` / `neurology_835.edi`: neurology follow-up claim
 
 Claim id linkage is through 837 `CLM01` and 835 `CLP01`. Payer control linkage
 is through 835 `CLP07`.
@@ -109,6 +110,25 @@ build/scribe journal --out stroke.journal.ndjson \
   --835 tests/fixtures/stroke_encounter/rehab_835.edi \
   --835 tests/fixtures/stroke_encounter/neurology_835.edi
 ```
+
+That command creates two artifacts:
+
+- `stroke.journal.ndjson`: non-PHI journal events for the source drops
+- `stroke_phi_vault.sqlite`: PHI resolver mappings, such as `claim_id + token`
+  back to the raw claim id
+
+Then derive aggregate snapshots for the encounter:
+
+```sh
+build/scribe stitch \
+  --journal stroke.journal.ndjson \
+  --encounter-id ENC-SYN-STROKE-001 \
+  --out stroke_aggregates.ndjson
+```
+
+`stroke_aggregates.ndjson` contains versioned `ClaimAggregateUpdated` snapshots:
+charge context as `v1`, matched 837 facts as `v2`, and matched 835 facts as
+`v3`.
 
 The journal is a binary segment log: append-only source evidence
 with durable event ids, offsets, lengths, and checksums. You can always trace an
