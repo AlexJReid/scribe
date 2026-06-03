@@ -26,20 +26,20 @@ ctest --test-dir build --output-on-failure
 
 ## Fixture
 
-The files live in `tests/fixtures/stroke_encounter/`.
+The files live in [tests/fixtures/stroke_encounter](/Users/alex/Experiments/scribe/tests/fixtures/stroke_encounter).
 
-`charge_transactions.ndjson` is the upstream charge/encounter seed. In a real
-pipeline, these rows would usually come from an EHR, charge capture system,
-patient accounting system, or other provider-side revenue-cycle feed. This file
-creates the encounter context and links each claim id back to
+[charge_transactions.ndjson](/Users/alex/Experiments/scribe/tests/fixtures/stroke_encounter/charge_transactions.ndjson) is the upstream charge/encounter
+seed. In a real pipeline, these rows would usually come from an EHR, charge
+capture system, patient accounting system, or other provider-side revenue-cycle
+feed. This file creates the encounter context and links each claim id back to
 `ENC-SYN-STROKE-001`.
 
 The X12 pairs are:
 
-- `facility_837.edi` / `facility_835.edi`: facility imaging claim
-- `professional_837.edi` / `professional_835.edi`: radiologist interpretation claim
-- `rehab_837.edi` / `rehab_835.edi`: outpatient rehab claim
-- `neurology_837.edi` / `neurology_835.edi`: neurology follow-up claim
+- [facility_837.edi](/Users/alex/Experiments/scribe/tests/fixtures/stroke_encounter/facility_837.edi) / [facility_835.edi](/Users/alex/Experiments/scribe/tests/fixtures/stroke_encounter/facility_835.edi): facility imaging claim
+- [professional_837.edi](/Users/alex/Experiments/scribe/tests/fixtures/stroke_encounter/professional_837.edi) / [professional_835.edi](/Users/alex/Experiments/scribe/tests/fixtures/stroke_encounter/professional_835.edi): radiologist interpretation claim
+- [rehab_837.edi](/Users/alex/Experiments/scribe/tests/fixtures/stroke_encounter/rehab_837.edi) / [rehab_835.edi](/Users/alex/Experiments/scribe/tests/fixtures/stroke_encounter/rehab_835.edi): outpatient rehab claim
+- [neurology_837.edi](/Users/alex/Experiments/scribe/tests/fixtures/stroke_encounter/neurology_837.edi) / [neurology_835.edi](/Users/alex/Experiments/scribe/tests/fixtures/stroke_encounter/neurology_835.edi): neurology follow-up claim
 
 Claim id linkage is through 837 `CLM01` and 835 `CLP01`. Payer control linkage
 is through 835 `CLP07`.
@@ -62,6 +62,10 @@ flowchart LR
     agg3["Claim aggregate v3<br/>835 remitted"]
     later837["later corrected/additional 837<br/>new source drop"]
     agg4["Claim aggregate v4<br/>new submission facts applied"]
+    notify["AggregateVersionRecorded<br/>notification"]
+    balance["balance projection<br/>ledger view"]
+    workq["work queue<br/>follow-up / exceptions"]
+    audit["audit / analytics<br/>external systems"]
 
     charges --> journal
     f837 --> journal
@@ -75,6 +79,12 @@ flowchart LR
     later837 --> journal
     index --> agg4
     agg3 --> agg4
+
+    agg3 --> notify
+    agg4 --> notify
+    notify --> balance
+    notify --> workq
+    notify --> audit
 ```
 
 For the stroke fixture:
