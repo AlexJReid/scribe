@@ -172,15 +172,17 @@ Default path is non-PHI:
 secret + namespace + raw value -> token
 ```
 
+HMAC-SHA256 is used.
+
 `SCRIBE_TOKEN_KEY` supplies the secret. Raw lookup goes through the vault:
 
 ```text
 namespace + token -> raw value
 ```
 
-HITRUST-zone apps may create/read PHI-containing aggregates deliberately with
+>HITRUST-zone apps may create/read PHI-containing aggregates deliberately with
 `--include-phi --read-store`, or render PHI by resolving tokens through the
-vault. Normal developer stores should stay tokenized.
+vault. Normal developer stores should stay tokenized and not tainted with PHI.
 
 ## PHI aggregate rendering
 
