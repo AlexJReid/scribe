@@ -1,0 +1,288 @@
+#include "aggregate_stitcher.h"
+#include "balance_projector.h"
+#include "event_writer.h"
+#include "journal_builder.h"
+#include "projection.h"
+#include "x12_mapper_834.h"
+#include "x12_mapper_835.h"
+#include "x12_mapper_837.h"
+#include "x12_reader.h"
+
+#include <stdio.h>
+#include <string.h>
+
+static void usage(FILE *fp)
+{
+    fputs(
+        "usage:\n"
+        "  scribe parse --type 837 input.edi [--out events.ndjson] [--include-phi]\n"
+        "  scribe parse --type 835 input.edi [--out events.ndjson] [--include-phi]\n"
+        "  scribe parse --type 834 input.edi [--out events.ndjson] [--include-phi]\n"
+        "  scribe journal --out journal.ndjson [--charges charges.ndjson] [--837 claim.edi] [--835 remit.edi] [--include-phi]\n"
+        "  scribe stitch --journal journal.ndjson [--encounter-id id] [--out aggregates.ndjson] [--include-phi]\n"
+        "  scribe project --projection balance --journal journal.ndjson [--encounter-id id] [--out balance.json] [--include-phi]\n"
+        "  scribe project-balance --journal journal.ndjson [--encounter-id id] [--out balance.json] [--include-phi]\n"
+        "  scribe dump input.edi\n"
+        "\n"
+        "For parse/stitch/project, --out may be '-' or omitted for stdout. journal requires --out.\n",
+        fp
+    );
+    projection_write_usage(fp);
+}
+
+static int dump_segment(const x12_segment_t *seg, void *user)
+{
+    (void)user;
+
+    printf(
+        "%06zu %.*s elements=%zu\n",
+        seg->segment_index,
+        (int)seg->tag.len,
+        seg->tag.ptr,
+        seg->element_count
+    );
+
+    return X12_OK;
+}
+
+static int run_dump(const char *input_path)
+{
+    x12_document_t doc;
+    int rc;
+
+    rc = x12_document_load(input_path, &doc);
+    if (rc != X12_OK) {
+        fprintf(stderr, "load %s: %s\n", input_path, x12_error_message(rc));
+        return 1;
+    }
+
+    rc = x12_document_each_segment(&doc, dump_segment, NULL);
+    if (rc != X12_OK) {
+        fprintf(stderr, "dump %s: %s\n", input_path, x12_error_message(rc));
+        x12_document_free(&doc);
+        return 1;
+    }
+
+    x12_document_free(&doc);
+    return 0;
+}
+
+static int run_parse(
+    const char *type,
+    const char *input_path,
+    const char *out_path,
+    int include_phi
+)
+{
+    x12_document_t doc;
+    event_writer_t writer;
+    int rc;
+    int close_rc;
+
+    rc = x12_document_load(input_path, &doc);
+    if (rc != X12_OK) {
+        fprintf(stderr, "load %s: %s\n", input_path, x12_error_message(rc));
+        return 1;
+    }
+
+    rc = event_writer_open(&writer, out_path, input_path, type);
+    if (rc != X12_OK) {
+        fprintf(stderr, "open output: %s\n", x12_error_message(rc));
+        x12_document_free(&doc);
+        return 1;
+    }
+    event_writer_set_include_phi(&writer, include_phi);
+
+    if (strcmp(type, "837") == 0) {
+        rc = x12_map_837_document(&doc, &writer);
+    } else if (strcmp(type, "835") == 0) {
+        rc = x12_map_835_document(&doc, &writer);
+    } else if (strcmp(type, "834") == 0) {
+        rc = x12_map_834_document(&doc, &writer);
+    } else {
+        rc = X12_ERR_UNSUPPORTED;
+    }
+
+    close_rc = event_writer_close(&writer);
+    x12_document_free(&doc);
+
+    if (rc != X12_OK) {
+        fprintf(stderr, "parse %s: %s\n", input_path, x12_error_message(rc));
+        return 1;
+    }
+    if (close_rc != X12_OK) {
+        fprintf(stderr, "close output: %s\n", x12_error_message(close_rc));
+        return 1;
+    }
+
+    return 0;
+}
+
+static int parse_command(int argc, char **argv)
+{
+    const char *type = NULL;
+    const char *input_path = NULL;
+    const char *out_path = "-";
+    int include_phi = 0;
+    int i;
+
+    for (i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--type") == 0) {
+            if (i + 1 >= argc) {
+                return -1;
+            }
+            type = argv[++i];
+        } else if (strcmp(argv[i], "--out") == 0) {
+            if (i + 1 >= argc) {
+                return -1;
+            }
+            out_path = argv[++i];
+        } else if (strcmp(argv[i], "--include-phi") == 0) {
+            include_phi = 1;
+        } else if (input_path == NULL) {
+            input_path = argv[i];
+        } else {
+            return -1;
+        }
+    }
+
+    if (type == NULL || input_path == NULL) {
+        return -1;
+    }
+
+    return run_parse(type, input_path, out_path, include_phi);
+}
+
+static int journal_command(int argc, char **argv)
+{
+    int rc = journal_builder_run_cli(argc, argv);
+
+    if (rc < 0) {
+        if (rc != -1) {
+            fprintf(stderr, "journal: %s\n", x12_error_message(rc));
+        }
+        return rc;
+    }
+
+    return rc;
+}
+
+static int project_command(int argc, char **argv)
+{
+    const projection_plugin_t *plugin;
+    const char *projection_name = NULL;
+    int i;
+    int rc;
+
+    for (i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--projection") == 0) {
+            if (i + 1 >= argc) {
+                return -1;
+            }
+            projection_name = argv[++i];
+        }
+    }
+
+    if (projection_name == NULL) {
+        return -1;
+    }
+
+    plugin = projection_find(projection_name);
+    if (plugin == NULL) {
+        fprintf(stderr, "unknown projection: %s\n", projection_name);
+        projection_write_usage(stderr);
+        return -1;
+    }
+
+    rc = plugin->run_cli(argc, argv);
+    if (rc < 0 && rc != -1) {
+        fprintf(stderr, "project %s: %s\n", projection_name, x12_error_message(rc));
+    }
+    return rc;
+}
+
+static int project_balance_command(int argc, char **argv)
+{
+    int rc;
+
+    rc = balance_projector_run_cli(argc, argv);
+    if (rc < 0 && rc != -1) {
+        fprintf(stderr, "project balance: %s\n", x12_error_message(rc));
+    }
+    return rc;
+}
+
+static int stitch_command(int argc, char **argv)
+{
+    int rc;
+
+    rc = aggregate_stitcher_run_cli(argc, argv);
+    if (rc < 0 && rc != -1) {
+        fprintf(stderr, "stitch: %s\n", x12_error_message(rc));
+    }
+    return rc;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc < 2) {
+        usage(stderr);
+        return 1;
+    }
+
+    if (strcmp(argv[1], "dump") == 0) {
+        if (argc != 3) {
+            usage(stderr);
+            return 1;
+        }
+        return run_dump(argv[2]);
+    }
+
+    if (strcmp(argv[1], "parse") == 0) {
+        int rc = parse_command(argc, argv);
+        if (rc < 0) {
+            usage(stderr);
+            return 1;
+        }
+        return rc;
+    }
+
+    if (strcmp(argv[1], "journal") == 0) {
+        int rc = journal_command(argc, argv);
+        if (rc < 0) {
+            usage(stderr);
+            return 1;
+        }
+        return 0;
+    }
+
+    if (strcmp(argv[1], "stitch") == 0) {
+        int rc = stitch_command(argc, argv);
+        if (rc < 0) {
+            usage(stderr);
+            return 1;
+        }
+        return 0;
+    }
+
+    if (strcmp(argv[1], "project") == 0) {
+        int rc = project_command(argc, argv);
+        if (rc < 0) {
+            usage(stderr);
+            return 1;
+        }
+        return 0;
+    }
+
+    if (strcmp(argv[1], "project-balance") == 0) {
+        int rc = project_balance_command(argc, argv);
+        if (rc < 0) {
+            usage(stderr);
+            return 1;
+        }
+        return 0;
+    }
+
+    usage(stderr);
+    return 1;
+}

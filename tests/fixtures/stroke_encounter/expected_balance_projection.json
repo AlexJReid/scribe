@@ -1,0 +1,168 @@
+{
+  "encounter_id": "ENC-SYN-STROKE-001",
+  "synthetic": true,
+  "claims": [
+    {
+      "claim_id": "CLM-STROKE-RAD-FAC-001",
+      "claim_type": "radiology_facility",
+      "total_billed": "2350.00",
+      "payer_paid": "1450.00",
+      "contractual_adjustments": "550.00",
+      "patient_responsibility": "350.00",
+      "current_balance": "350.00",
+      "service_lines": [
+        {
+          "service_line_number": "1",
+          "procedure_code": "70450",
+          "description": "CT head without contrast facility charge",
+          "billed": "450.00",
+          "payer_paid": "250.00",
+          "contractual_adjustments": "150.00",
+          "patient_responsibility": "50.00",
+          "current_balance": "50.00"
+        },
+        {
+          "service_line_number": "2",
+          "procedure_code": "70460",
+          "description": "CT head with contrast facility charge",
+          "billed": "700.00",
+          "payer_paid": "400.00",
+          "contractual_adjustments": "250.00",
+          "patient_responsibility": "50.00",
+          "current_balance": "50.00"
+        },
+        {
+          "service_line_number": "3",
+          "procedure_code": "70551",
+          "description": "MRI brain facility charge",
+          "billed": "1200.00",
+          "payer_paid": "800.00",
+          "contractual_adjustments": "150.00",
+          "patient_responsibility": "250.00",
+          "current_balance": "250.00"
+        }
+      ]
+    },
+    {
+      "claim_id": "CLM-STROKE-RAD-PRO-001",
+      "claim_type": "radiology_professional",
+      "total_billed": "390.00",
+      "payer_paid": "260.00",
+      "contractual_adjustments": "90.00",
+      "patient_responsibility": "40.00",
+      "current_balance": "40.00",
+      "service_lines": [
+        {
+          "service_line_number": "1",
+          "procedure_code": "70450",
+          "description": "CT head without contrast professional interpretation",
+          "billed": "90.00",
+          "payer_paid": "60.00",
+          "contractual_adjustments": "20.00",
+          "patient_responsibility": "10.00",
+          "current_balance": "10.00"
+        },
+        {
+          "service_line_number": "2",
+          "procedure_code": "70460",
+          "description": "CT head with contrast professional interpretation",
+          "billed": "120.00",
+          "payer_paid": "80.00",
+          "contractual_adjustments": "30.00",
+          "patient_responsibility": "10.00",
+          "current_balance": "10.00"
+        },
+        {
+          "service_line_number": "3",
+          "procedure_code": "70551",
+          "description": "MRI brain professional interpretation",
+          "billed": "180.00",
+          "payer_paid": "120.00",
+          "contractual_adjustments": "40.00",
+          "patient_responsibility": "20.00",
+          "current_balance": "20.00"
+        }
+      ]
+    },
+    {
+      "claim_id": "CLM-STROKE-REHAB-001",
+      "claim_type": "outpatient_rehab",
+      "total_billed": "660.00",
+      "payer_paid": "420.00",
+      "contractual_adjustments": "120.00",
+      "patient_responsibility": "120.00",
+      "current_balance": "120.00",
+      "service_lines": [
+        {
+          "service_line_number": "1",
+          "procedure_code": "97161",
+          "description": "Physical therapy evaluation after stroke",
+          "billed": "180.00",
+          "payer_paid": "120.00",
+          "contractual_adjustments": "40.00",
+          "patient_responsibility": "20.00",
+          "current_balance": "20.00"
+        },
+        {
+          "service_line_number": "2",
+          "procedure_code": "97110",
+          "description": "Therapeutic exercise for stroke recovery",
+          "billed": "300.00",
+          "payer_paid": "180.00",
+          "contractual_adjustments": "60.00",
+          "patient_responsibility": "60.00",
+          "current_balance": "60.00"
+        },
+        {
+          "service_line_number": "3",
+          "procedure_code": "97535",
+          "description": "Self-care training for post-stroke recovery",
+          "billed": "180.00",
+          "payer_paid": "120.00",
+          "contractual_adjustments": "20.00",
+          "patient_responsibility": "40.00",
+          "current_balance": "40.00"
+        }
+      ]
+    },
+    {
+      "claim_id": "CLM-STROKE-NEURO-001",
+      "claim_type": "neurology_followup",
+      "total_billed": "320.00",
+      "payer_paid": "210.00",
+      "contractual_adjustments": "70.00",
+      "patient_responsibility": "40.00",
+      "current_balance": "40.00",
+      "service_lines": [
+        {
+          "service_line_number": "1",
+          "procedure_code": "99214",
+          "description": "Neurology follow-up for stroke recovery",
+          "billed": "220.00",
+          "payer_paid": "150.00",
+          "contractual_adjustments": "50.00",
+          "patient_responsibility": "20.00",
+          "current_balance": "20.00"
+        },
+        {
+          "service_line_number": "2",
+          "procedure_code": "96116",
+          "description": "Neurobehavioral status exam after stroke",
+          "billed": "100.00",
+          "payer_paid": "60.00",
+          "contractual_adjustments": "20.00",
+          "patient_responsibility": "20.00",
+          "current_balance": "20.00"
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "total_billed": "3720.00",
+    "payer_paid": "2340.00",
+    "contractual_adjustments": "830.00",
+    "patient_responsibility": "550.00",
+    "patient_payments": "0.00",
+    "current_balance": "550.00"
+  }
+}

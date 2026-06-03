@@ -1,0 +1,75 @@
+#ifndef SCRIBE_EVENT_WRITER_H
+#define SCRIBE_EVENT_WRITER_H
+
+#include "x12_parser.h"
+
+#include <stdio.h>
+
+typedef struct {
+    FILE *fp;
+    int owns_file;
+    const char *source_file;
+    const char *source_transaction;
+    x12_str_t isa13;
+    x12_str_t gs06;
+    x12_str_t st02;
+    int include_phi;
+} event_writer_t;
+
+int event_writer_open(
+    event_writer_t *writer,
+    const char *out_path,
+    const char *source_file,
+    const char *source_transaction
+);
+
+int event_writer_open_stream(
+    event_writer_t *writer,
+    FILE *fp,
+    const char *source_file,
+    const char *source_transaction
+);
+
+int event_writer_close(event_writer_t *writer);
+
+void event_writer_set_include_phi(event_writer_t *writer, int include_phi);
+int event_writer_include_phi(const event_writer_t *writer);
+
+void event_writer_observe_control(
+    event_writer_t *writer,
+    const x12_segment_t *seg
+);
+
+FILE *event_writer_stream(event_writer_t *writer);
+
+int event_writer_begin_event(
+    event_writer_t *writer,
+    const char *event_type,
+    const x12_segment_t *seg
+);
+
+int event_writer_end_event(event_writer_t *writer);
+
+int event_writer_write_json_string(FILE *fp, const char *data, size_t len);
+int event_writer_write_cstring(FILE *fp, const char *value);
+int event_writer_write_string_field(
+    FILE *fp,
+    const char *name,
+    x12_str_t value,
+    int prefix_comma
+);
+int event_writer_write_cstring_field(
+    FILE *fp,
+    const char *name,
+    const char *value,
+    int prefix_comma
+);
+int event_writer_write_str_array_field(
+    FILE *fp,
+    const char *name,
+    const x12_str_t *values,
+    size_t count,
+    int prefix_comma
+);
+
+#endif
