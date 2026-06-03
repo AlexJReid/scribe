@@ -153,6 +153,22 @@ static int write_payload_end(FILE *fp)
     return fputc('}', fp) == EOF ? X12_ERR_IO : X12_OK;
 }
 
+static token_type_t name_token_type_for_id(token_type_t id_token_type)
+{
+    switch (id_token_type) {
+    case TOK_PATIENT_ID:
+        return TOK_PATIENT_NAME;
+    case TOK_MEMBER_ID:
+        return TOK_MEMBER_NAME;
+    case TOK_PROVIDER_ID:
+        return TOK_PROVIDER_NAME;
+    case TOK_PAYER_ID:
+        return TOK_PAYER_NAME;
+    default:
+        return TOK_ENTITY_NAME;
+    }
+}
+
 static int write_common_claim_fields(FILE *fp, x12_mapper_835_t *mapper)
 {
     if (write_tokenized_or_phi_field(
@@ -330,6 +346,16 @@ static int write_remittance_party_referenced(
         ) != X12_OK) {
         return X12_ERR_IO;
     }
+    if (event_writer_record_phi_name(
+            mapper->writer,
+            name_token_type_for_id(token_type),
+            element_or_empty(seg, 1),
+            empty_str(),
+            token_type,
+            element_or_empty(seg, 3)
+        ) != X12_OK) {
+        return X12_ERR_IO;
+    }
     if (event_writer_write_string_field(fp, "id_qualifier", element_or_empty(seg, 2), 1) != X12_OK) {
         return X12_ERR_IO;
     }
@@ -470,6 +496,16 @@ static int write_nm1_reference(
             element_or_empty(seg, 3),
             1,
             event_writer_include_phi(mapper->writer)
+        ) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_record_phi_name(
+            mapper->writer,
+            name_token_type_for_id(id_token_type),
+            element_or_empty(seg, 2),
+            element_or_empty(seg, 3),
+            id_token_type,
+            element_or_empty(seg, 8)
         ) != X12_OK) {
         return X12_ERR_IO;
     }

@@ -48,6 +48,14 @@ int event_writer_record_phi_mapping(
     token_type_t type,
     x12_str_t raw
 );
+int event_writer_record_phi_name(
+    event_writer_t *writer,
+    token_type_t name_type,
+    x12_str_t last_name_or_org,
+    x12_str_t first_name,
+    token_type_t id_type,
+    x12_str_t id_raw
+);
 
 void event_writer_observe_control(
     event_writer_t *writer,

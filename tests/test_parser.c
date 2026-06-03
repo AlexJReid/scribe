@@ -544,7 +544,9 @@ static int test_stroke_balance_projection_from_journal(void)
     char aggregates[160000];
     char projection[96000];
     char resolved[256];
+    char patient_name_token[TOKENISE_MAX_TOKEN_LEN];
     x12_str_t conflicting_raw;
+    x12_str_t patient_name_raw;
     journal_builder_input_t journal_input;
     aggregate_stitcher_input_t stitch_input;
     balance_projector_input_t projection_input;
@@ -685,6 +687,34 @@ static int test_stroke_balance_projection_from_journal(void)
                 sizeof(resolved)
             ) == X12_OK);
     REQUIRE(strcmp(resolved, "PAYER-STROKE-FAC-001") == 0);
+    REQUIRE(phi_vault_resolve(
+                &phi_vault,
+                "patient_id_name",
+                "483f7b234ed109f0e2323052f22e4e59",
+                "test",
+                "unit",
+                resolved,
+                sizeof(resolved)
+            ) == X12_OK);
+    REQUIRE(strcmp(resolved, "REID|ALEX") == 0);
+    patient_name_raw.ptr = "REID|ALEX";
+    patient_name_raw.len = strlen(patient_name_raw.ptr);
+    REQUIRE(tokenise_value(
+                TOK_PATIENT_NAME,
+                patient_name_raw,
+                patient_name_token,
+                sizeof(patient_name_token)
+            ) == X12_OK);
+    REQUIRE(phi_vault_resolve(
+                &phi_vault,
+                "patient_name",
+                patient_name_token,
+                "test",
+                "unit",
+                resolved,
+                sizeof(resolved)
+            ) == X12_OK);
+    REQUIRE(strcmp(resolved, "REID|ALEX") == 0);
     conflicting_raw.ptr = "DIFFERENT-RAW-CLAIM";
     conflicting_raw.len = strlen(conflicting_raw.ptr);
     REQUIRE(phi_vault_put_mapping(

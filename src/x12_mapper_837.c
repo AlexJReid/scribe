@@ -234,6 +234,22 @@ static int write_payload_end(FILE *fp)
     return fputc('}', fp) == EOF ? X12_ERR_IO : X12_OK;
 }
 
+static token_type_t name_token_type_for_id(token_type_t id_token_type)
+{
+    switch (id_token_type) {
+    case TOK_PATIENT_ID:
+        return TOK_PATIENT_NAME;
+    case TOK_MEMBER_ID:
+        return TOK_MEMBER_NAME;
+    case TOK_PROVIDER_ID:
+        return TOK_PROVIDER_NAME;
+    case TOK_PAYER_ID:
+        return TOK_PAYER_NAME;
+    default:
+        return TOK_ENTITY_NAME;
+    }
+}
+
 static int write_claim_observed(
     x12_mapper_837_t *mapper,
     const x12_segment_t *seg
@@ -349,6 +365,16 @@ static int write_nm1_reference(
             element_or_empty(seg, 3),
             1,
             event_writer_include_phi(mapper->writer)
+        ) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_record_phi_name(
+            mapper->writer,
+            name_token_type_for_id(id_token_type),
+            element_or_empty(seg, 2),
+            element_or_empty(seg, 3),
+            id_token_type,
+            element_or_empty(seg, 8)
         ) != X12_OK) {
         return X12_ERR_IO;
     }

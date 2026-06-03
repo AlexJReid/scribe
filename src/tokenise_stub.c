@@ -49,6 +49,16 @@ const char *tokenise_namespace(token_type_t type)
         return "payer_claim_control_number";
     case TOK_PAYER_ID:
         return "payer_id";
+    case TOK_PATIENT_NAME:
+        return "patient_name";
+    case TOK_MEMBER_NAME:
+        return "member_name";
+    case TOK_PROVIDER_NAME:
+        return "provider_name";
+    case TOK_PAYER_NAME:
+        return "payer_name";
+    case TOK_ENTITY_NAME:
+        return "entity_name";
     case TOK_UNKNOWN:
     default:
         return "unknown";

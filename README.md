@@ -219,6 +219,24 @@ projections are non-PHI:
 - 837 `CLM01` and 835 `CLP01` use the same `claim_id` token namespace
 - 835 `CLP07` uses the `payer_claim_control_number` token namespace
 
+Tokenization is deterministic and namespaced. The tokenizer hashes:
+
+```text
+secret + namespace + raw value -> token
+```
+
+The secret comes from `SCRIBE_TOKEN_KEY`; the code has a development fallback
+only for local tests. Production should provide this value from a secret manager
+or equivalent. Namespacing is part of the join contract: `claim_id + X` and
+`patient_id + X` intentionally produce different tokens, while 837 `CLM01` and
+835 `CLP01` can match because both use the `claim_id` namespace.
+
+The hash is not reversed. Raw-value resolution comes from the PHI vault mapping:
+
+```text
+namespace + token -> raw value
+```
+
 Raw PHI should not be stored in the primary journal or normal aggregate store.
 Instead, ingestion can split the raw source facts into two paths:
 
@@ -241,7 +259,14 @@ Examples:
 ```text
 claim_id + 8259c238232f9585e95fc8f45b0bb410 -> CLM-STROKE-RAD-FAC-001
 payer_claim_control_number + edf29f09740ab104da309e2b036e14d1 -> PAYER-STROKE-FAC-001
+patient_id_name + 483f7b234ed109f0e2323052f22e4e59 -> REID|ALEX
 ```
+
+Names are vaulted too. The vault stores deterministic name-token mappings such
+as `patient_name`, `member_name`, `provider_name`, and `payer_name`. When an
+NM1/N1 identifier is present, it also stores a convenience mapping from the
+identifier token to the name, such as `patient_id_name + <patient_id_token>`.
+Person names use X12 order, `LAST|FIRST`, to avoid ambiguity.
 
 That resolver path should be access-controlled, audited, and unnecessary for
 ordinary development or projection work. It can also be written on a separate

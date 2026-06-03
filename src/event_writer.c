@@ -156,6 +156,96 @@ int event_writer_record_phi_mapping(
     );
 }
 
+int event_writer_record_phi_name(
+    event_writer_t *writer,
+    token_type_t name_type,
+    x12_str_t last_name_or_org,
+    x12_str_t first_name,
+    token_type_t id_type,
+    x12_str_t id_raw
+)
+{
+    char name_raw_buf[512];
+    char name_token[TOKENISE_MAX_TOKEN_LEN];
+    char id_token[TOKENISE_MAX_TOKEN_LEN];
+    char id_name_namespace[128];
+    x12_str_t name_raw;
+    int written;
+    int rc;
+
+    if (writer == NULL || writer->phi_vault == NULL ||
+        last_name_or_org.ptr == NULL || last_name_or_org.len == 0u) {
+        return X12_OK;
+    }
+
+    if (first_name.ptr != NULL && first_name.len > 0u) {
+        written = snprintf(
+            name_raw_buf,
+            sizeof(name_raw_buf),
+            "%.*s|%.*s",
+            (int)last_name_or_org.len,
+            last_name_or_org.ptr,
+            (int)first_name.len,
+            first_name.ptr
+        );
+    } else {
+        written = snprintf(
+            name_raw_buf,
+            sizeof(name_raw_buf),
+            "%.*s",
+            (int)last_name_or_org.len,
+            last_name_or_org.ptr
+        );
+    }
+    if (written < 0 || (size_t)written >= sizeof(name_raw_buf)) {
+        return X12_ERR_BUFFER_TOO_SMALL;
+    }
+
+    name_raw.ptr = name_raw_buf;
+    name_raw.len = (size_t)written;
+
+    rc = tokenise_value(name_type, name_raw, name_token, sizeof(name_token));
+    if (rc != X12_OK) {
+        return rc;
+    }
+    rc = phi_vault_put_mapping(
+        writer->phi_vault,
+        tokenise_namespace(name_type),
+        name_token,
+        name_raw,
+        writer->phi_source_ref
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    if (id_raw.ptr == NULL || id_raw.len == 0u || id_type == TOK_UNKNOWN) {
+        return X12_OK;
+    }
+
+    rc = tokenise_value(id_type, id_raw, id_token, sizeof(id_token));
+    if (rc != X12_OK) {
+        return rc;
+    }
+    written = snprintf(
+        id_name_namespace,
+        sizeof(id_name_namespace),
+        "%s_name",
+        tokenise_namespace(id_type)
+    );
+    if (written < 0 || (size_t)written >= sizeof(id_name_namespace)) {
+        return X12_ERR_BUFFER_TOO_SMALL;
+    }
+
+    return phi_vault_put_mapping(
+        writer->phi_vault,
+        id_name_namespace,
+        id_token,
+        name_raw,
+        writer->phi_source_ref
+    );
+}
+
 int event_writer_close(event_writer_t *writer)
 {
     int rc = X12_OK;
