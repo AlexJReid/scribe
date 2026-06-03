@@ -55,8 +55,11 @@ flowchart LR
     charges["charge_transactions.ndjson<br/>Encounter + charge rows"]
     f837["facility_837.edi<br/>claim submission"]
     f835["facility_835.edi<br/>remittance"]
+    ingest["ingest/parser<br/>tokenize + canonicalize"]
     journal[("binary journal<br/>append-only evidence")]
     index[("SQLite/read store<br/>indexes + aggregate snapshots")]
+    vault[("PHI vault/resolver<br/>SQLite POC or audited API")]
+    resolve["authorized resolve<br/>namespace + token -> raw value"]
     agg1["Claim aggregate v1<br/>charge context"]
     agg2["Claim aggregate v2<br/>837 submitted"]
     agg3["Claim aggregate v3<br/>835 remitted"]
@@ -67,16 +70,20 @@ flowchart LR
     workq["work queue<br/>follow-up / exceptions"]
     audit["audit / analytics<br/>external systems"]
 
-    charges --> journal
-    f837 --> journal
-    f835 --> journal
+    charges --> ingest
+    f837 --> ingest
+    f835 --> ingest
+
+    ingest --> journal
+    ingest -. raw PHI mappings .-> vault
+    vault --> resolve
 
     journal --> index
     index --> agg1
     agg1 --> agg2
     agg2 --> agg3
 
-    later837 --> journal
+    later837 --> ingest
     index --> agg4
     agg3 --> agg4
 
@@ -103,13 +110,16 @@ build/scribe journal --out stroke.journal.ndjson \
 ```
 
 The journal is a binary segment log: append-only source evidence
-with durable event ids, offsets, lengths, and checksums. **You can always trace an event/assertion back to an .edi file. 
+with durable event ids, offsets, lengths, and checksums. You can always trace an
+event/assertion back to an `.edi` file.
 
-The current CLI emits NDJSON for inspection while the proof of concept is being shaped.
+The current CLI emits NDJSON for inspection while the proof of concept is being
+shaped.
 
 Indexes and aggregates live outside the journal in SQLite for now, but any
-read store with fast lookup i.e. a document store. The important split is that the journal is the
-immutable write/evidence path, while the read store is versioned derived state.
+read store with fast lookup could fill that role. The important split is that
+the journal is the immutable write/evidence path, while the read store is
+versioned derived state.
 
 ## Stitch
 
@@ -143,7 +153,8 @@ binary journal they should become durable event ids or locators.
 
 ## Projecting a balance
 
-As a demonstration of what can be reduced from a journal a balance projection reduces journal events into:
+As a demonstration of what can be reduced from a journal, the balance projection
+reduces journal events into:
 
 - encounter -> claim -> service line grouping
 - billed charge ledger entries
@@ -178,6 +189,8 @@ The storage split is:
 - SQLite/read store `event_keys`: claim id, payer control, encounter id -> event ids
 - SQLite/read store `claim_aggregate_versions`: historical aggregate snapshots
 - SQLite/read store `claim_aggregate_latest`: current aggregate snapshot
+- PHI vault/resolver: namespace + token -> raw value, with separate access
+  controls and audit
 
 If an aggregate is deleted, it can be restored:
 
@@ -194,14 +207,46 @@ indexes and aggregates were deleted.
 
 ## PHI
 
-Default output is non-PHI oriented:
+The default stance is that the operational journal, indexes, aggregates, and
+projections are non-PHI:
 
 - direct names are omitted
 - claim ids and control numbers are deterministically tokenized
+- aggregate keys are tokenized, so developers can work against production-shaped
+  data without seeing raw identifiers
 - 837 `CLM01` and 835 `CLP01` use the same `claim_id` token namespace
 - 835 `CLP07` uses the `payer_claim_control_number` token namespace
 
-Use `--include-phi` only for local debugging or a controlled PHI vault:
+Raw PHI should not be stored in the primary journal or normal aggregate store.
+Instead, ingestion can split the raw source facts into two paths:
+
+```text
+raw source document
+  -> tokenized canonical event -> binary journal -> indexes/aggregates
+  -> namespace + token + raw value -> PHI vault/resolver
+```
+
+For the proof of concept, the PHI vault could be another SQLite database. In
+production it could be an audited resolver API. The interface should be the
+same either way:
+
+```text
+resolve(namespace, token) -> raw value
+```
+
+Examples:
+
+```text
+claim_id + 8259c238232f9585e95fc8f45b0bb410 -> CLM-STROKE-RAD-FAC-001
+payer_claim_control_number + edf29f09740ab104da309e2b036e14d1 -> PAYER-STROKE-FAC-001
+```
+
+That resolver path should be access-controlled, audited, and unnecessary for
+ordinary development or projection work. It can also be written on a separate
+thread from journal append as long as the source drop records enough provenance
+to repair or re-drive vault writes.
+
+Use `--include-phi` only for local debugging or controlled vault population:
 
 ```sh
 build/scribe journal --out stroke_phi.journal.ndjson \
@@ -216,7 +261,7 @@ token companion fields such as `claim_id_token` and
 `payer_claim_control_number_token` are included so the PHI view can still be
 linked to non-PHI projections.
 
-## Other nonsense
+## Other commands
 
 The parser can still emit raw mapped events for individual files:
 
