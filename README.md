@@ -16,13 +16,15 @@ The fixture is intentionally multi-claim. One encounter fans out into several
 
 ## Build
 
+Only tested on macOS but Linux should work.
+
 ```sh
 cmake -S . -B build
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-## Stroke Fixture
+## Fixture
 
 The files live in `tests/fixtures/stroke_encounter/`.
 
@@ -42,11 +44,11 @@ The X12 pairs are:
 Claim id linkage is through 837 `CLM01` and 835 `CLP01`. Payer control linkage
 is through 835 `CLP07`.
 
-## Build A Journal
+## Build the journal
 
 The journal is the immutable evidence stream. It is not one file per encounter,
 and normal operation should not require replaying one giant journal. Source
-drops are appended into a journal, while indexes provide random access.
+drops (.edi files that appear out of band) are parsed and appended into a journal, while indexes provide random access.
 
 ```mermaid
 flowchart LR
@@ -90,15 +92,16 @@ build/scribe journal --out stroke.journal.ndjson \
   --835 tests/fixtures/stroke_encounter/neurology_835.edi
 ```
 
-The architectural journal is a binary segment log: append-only source evidence
-with durable event ids, offsets, lengths, and checksums. The current CLI still
-emits NDJSON for inspection while the proof of concept is being shaped.
+The journal is a binary segment log: append-only source evidence
+with durable event ids, offsets, lengths, and checksums. **You can always trace an event/assertion back to an .edi file. 
 
-Indexes and aggregates live outside the journal in SQLite, or in any equivalent
-read store with fast lookup. The important split is that the journal is the
-immutable write/evidence path, while the read store is disposable derived state.
+The current CLI emits NDJSON for inspection while the proof of concept is being shaped.
 
-## Stitch Claim Aggregates
+Indexes and aggregates live outside the journal in SQLite for now, but any
+read store with fast lookup i.e. a document store. The important split is that the journal is the
+immutable write/evidence path, while the read store is versioned derived state.
+
+## Stitch
 
 `stitch` derives versioned claim aggregates from the journal:
 
@@ -128,9 +131,9 @@ For example, the facility imaging claim reaches version 3 after the facility
 the NDJSON proof of concept these are 1-based journal line numbers; in the
 binary journal they should become durable event ids or locators.
 
-## Project A Balance
+## Projecting a balance
 
-The balance projection reduces journal events into:
+As a demonstration of what can be reduced from a journal a balance projection reduces journal events into:
 
 - encounter -> claim -> service line grouping
 - billed charge ledger entries
@@ -155,7 +158,7 @@ Expected fixture totals:
 - Contractual adjustments: `830.00`
 - Patient responsibility/current balance: `550.00`
 
-## Restore And Random Access
+## Random access
 
 The storage split is:
 
@@ -166,7 +169,7 @@ The storage split is:
 - SQLite/read store `claim_aggregate_versions`: historical aggregate snapshots
 - SQLite/read store `claim_aggregate_latest`: current aggregate snapshot
 
-If an aggregate is deleted, it can be restored cheaply:
+If an aggregate is deleted, it can be restored:
 
 ```text
 claim id or encounter id
@@ -179,7 +182,7 @@ claim id or encounter id
 A full journal replay is reserved for disaster recovery, for example if both
 indexes and aggregates were deleted.
 
-## PHI Handling
+## PHI
 
 Default output is non-PHI oriented:
 
@@ -203,7 +206,7 @@ token companion fields such as `claim_id_token` and
 `payer_claim_control_number_token` are included so the PHI view can still be
 linked to non-PHI projections.
 
-## Other Commands
+## Other nonsense
 
 The parser can still emit raw mapped events for individual files:
 
