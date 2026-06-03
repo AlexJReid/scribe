@@ -11,6 +11,11 @@ The main fixture is a synthetic stroke recovery encounter:
 - Clinical story: CT head without contrast, CT head with contrast, MRI brain,
   outpatient rehab, and neurology follow-up
 
+The PHI-looking values in the fixture are fake synthetic data. The clinical
+shape reflects stroke-related treatment I had in the UK, but the patient
+name, identifiers, payer details, dates, amounts, and EDI content are not real
+PHI.
+
 The fixture is intentionally multi-claim. One encounter fans out into several
 837/835 pairs, then the journal and stitcher bring them back together.
 
@@ -61,6 +66,8 @@ the same event ids and locators. The read-store contract is already shaped for
 that: event ids point to source drops, offsets, lengths, and checksums, while
 aggregate snapshots are stored separately from the immutable evidence.
 
+**Figure 1: Ingest writes journal evidence and PHI vault mappings.**
+
 ```mermaid
 flowchart LR
     charges["charge_transactions.ndjson<br/>Encounter + charge rows"]
@@ -81,6 +88,8 @@ flowchart LR
     ingest -. raw PHI mappings .-> vault
     vault --> resolve
 ```
+
+**Figure 2: The read store indexes events and materializes aggregate versions.**
 
 ```mermaid
 flowchart LR
@@ -144,25 +153,10 @@ That command creates two artifacts:
 - `stroke_phi_vault.sqlite`: PHI resolver mappings, such as `claim_id + token`
   back to the raw claim id
 
-Then derive aggregate snapshots for the encounter:
-
-```sh
-build/scribe stitch \
-  --journal stroke.journal.ndjson \
-  --encounter-id ENC-SYN-STROKE-001 \
-  --read-store stroke_read_store.sqlite \
-  --out stroke_aggregates.ndjson
-```
-
-That command creates two more artifacts:
-
-- `stroke_read_store.sqlite`: SQLite POC read store containing indexes,
-  aggregate versions, and latest aggregate snapshots
-- `stroke_aggregates.ndjson`: inspection/export stream of
-  `ClaimAggregateUpdated` snapshots
-
-Charge context lands as `v1`, matched 837 facts as `v2`, and matched 835 facts
-as `v3`.
+The next step is `stitch`, which reduces the journal into the read store. The
+aggregate versions and latest aggregate snapshots go to `stroke_read_store.sqlite`;
+the optional `stroke_aggregates.ndjson` output is only an inspection/export
+stream of `ClaimAggregateUpdated` snapshots.
 
 `--phi-vault` writes deterministic namespace/token/raw-value mappings to a
 separate SQLite resolver database without putting raw PHI in the normal journal.
@@ -188,6 +182,87 @@ build/scribe stitch \
 SQLite; the architecture only requires a store that can maintain the same
 indexes and aggregate snapshots. `--out` is just the current inspection/export
 stream.
+
+Query the latest aggregate snapshots:
+
+```sh
+sqlite3 -header -column stroke_read_store.sqlite "
+select
+  aggregate_id,
+  version,
+  json_extract(state_json, '$.state.has_835') as has_835,
+  json_extract(state_json, '$.state.submitted_service_line_count') as submitted_lines,
+  json_extract(state_json, '$.state.remittance_service_line_count') as remitted_lines
+from claim_aggregate_latest
+order by aggregate_id;
+"
+```
+
+Expected shape:
+
+```text
+aggregate_id                              version  has_835  submitted_lines  remitted_lines
+----------------------------------------  -------  -------  ---------------  --------------
+claim:3fd726ba9cc117b277d8afa1f4f98b31  3        1        3                3
+claim:7c58a196e94bc395ebf41df889377bd7  3        1        2                2
+claim:8259c238232f9585e95fc8f45b0bb410  3        1        3                3
+claim:92414452ac04b43a34d117c21cfe469e  3        1        3                3
+```
+
+Inspect the version history for the facility imaging claim:
+
+```sh
+sqlite3 -header -column stroke_read_store.sqlite "
+select
+  version,
+  json_extract(state_json, '$.source_drop_id') as source_drop,
+  json_extract(state_json, '$.updated_by_event_type') as updated_by,
+  json_extract(state_json, '$.state.has_837') as has_837,
+  json_extract(state_json, '$.state.has_835') as has_835
+from claim_aggregate_versions
+where aggregate_id = 'claim:8259c238232f9585e95fc8f45b0bb410'
+order by version;
+"
+```
+
+```text
+version  source_drop  updated_by                    has_837  has_835
+-------  -----------  ----------------------------  -------  -------
+1        charge:1     ChargeTransactionObserved      0        0
+2        837:2        ClaimLineDateRecorded          1        0
+3        835:6        RemittanceAdjustmentObserved   1        1
+```
+
+Pull the full latest aggregate JSON when an application needs the snapshot:
+
+```sh
+sqlite3 stroke_read_store.sqlite "
+select state_json
+from claim_aggregate_latest
+where aggregate_id = 'claim:8259c238232f9585e95fc8f45b0bb410';
+"
+```
+
+And use the key index to find the journal locator for the matching 835 payer
+control number. This does not read aggregate state; it finds source evidence:
+
+```sh
+sqlite3 -header -column stroke_read_store.sqlite "
+select
+  ek.event_id,
+  e.source_drop_id,
+  e.event_type,
+  e.segment_id,
+  e.event_offset,
+  e.event_length
+from event_keys ek
+join events e on e.event_id = ek.event_id
+where ek.key_type = 'payer_claim_control_number'
+  and ek.key_value = 'edf29f09740ab104da309e2b036e14d1'
+order by e.event_offset
+limit 5;
+"
+```
 
 Versions are compacted by source drop, not by every X12 segment:
 
@@ -387,11 +462,13 @@ into the normal read store: a HITRUST-zone process can open the tokenized read
 store, `ATTACH` the PHI vault database, resolve only the approved namespaces,
 and render a PHI view. The same idea could be an audited API in production.
 
-### Final Aggregate View With PHI
+### Final aggregate view with PHI
 
 This is the kind of authorized rendering a HITRUST-zone application could show
 after all stroke encounter source drops have landed. The raw values come from a
 PHI-capable aggregate store or from resolving tokens through the vault.
+The PHI-looking values below are fake synthetic data, although the treatment
+pattern reflects stroke-related care I had in the UK.
 
 ```text
 Encounter ENC-SYN-STROKE-001

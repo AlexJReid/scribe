@@ -1,4 +1,4 @@
-# Synthetic Stroke Encounter Fixture
+# Synthetic stroke encounter fixture
 
 This directory models a synthetic encounter with multiple claims. It is not real
 patient data.
