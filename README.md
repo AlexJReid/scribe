@@ -35,7 +35,7 @@ aggregate snapshots, not raw journal payloads.
 ```mermaid
 flowchart LR
     input["charges + 837 + 835"]
-    ingest["ingest/parser<br/>tokenize + canonicalize"]
+    ingest["ingest/parser<br/>map + tokenize"]
     journal[("journal<br/>NDJSON POC / binary target")]
     vault[("PHI vault<br/>namespace + token -> raw")]
 
@@ -103,7 +103,7 @@ build/scribe stitch \
 
 `stroke_aggregates.ndjson` is only an inspection/export stream.
 
-Project balance:
+Optional: derive a ledger-style balance from the same journal:
 
 ```sh
 build/scribe project --projection balance \
@@ -112,12 +112,7 @@ build/scribe project --projection balance \
   --out stroke_balance.json
 ```
 
-Totals:
-
-- Billed: `3720.00`
-- Payer paid: `2340.00`
-- Contractual adjustments: `830.00`
-- Patient responsibility/current balance: `550.00`
+Expected current balance: `550.00`.
 
 ## Read store
 
@@ -185,5 +180,20 @@ HITRUST-zone apps may create/read PHI-containing aggregates deliberately with
 `--include-phi --read-store`, or render PHI by resolving tokens through the
 vault. Normal developer stores should stay tokenized.
 
-SQLite may leave `*.sqlite-wal` and `*.sqlite-shm` files in WAL mode. They are
-normal SQLite sidecars, not separate application artifacts.
+## PHI aggregate rendering
+
+Fake synthetic PHI view; treatment pattern reflects stroke-related care I had
+in the UK.
+
+```text
+Encounter: ENC-SYN-STROKE-001
+Patient:   ALEX REID
+
+Claim                         Type                    Billed   Paid    PR
+CLM-STROKE-RAD-FAC-001        radiology_facility      2350.00  1450.00 350.00
+CLM-STROKE-RAD-PRO-001        radiology_professional   390.00   260.00  40.00
+CLM-STROKE-REHAB-001          outpatient_rehab         660.00   420.00 120.00
+CLM-STROKE-NEURO-001          neurology_followup       320.00   210.00  40.00
+
+Totals: billed 3720.00, paid 2340.00, PR/current balance 550.00
+```
