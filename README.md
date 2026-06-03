@@ -3,7 +3,7 @@
 Proof of concept for stitching provider charge context, 837 claims, and 835
 remittances into versioned claim aggregates and ledger-style balance projections.
 
-The main fixture is a synthetic stroke recovery encounter:
+The main case study is a semi-synthetic stroke recovery encounter:
 
 - Encounter: `ENC-SYN-STROKE-001`
 - Patient: synthetic `ALEX REID`
@@ -11,11 +11,13 @@ The main fixture is a synthetic stroke recovery encounter:
 - Fixtures:
   [tests/fixtures/stroke_encounter](https://github.com/AlexJReid/scribe/tree/main/tests/fixtures/stroke_encounter)
 
-The PHI-looking values are fake synthetic data. The treatment shape reflects
+>The PHI-looking values are fake synthetic data. The treatment shape reflects
 stroke-related treatment I had in the UK; names, ids, payer details, dates,
 amounts, and EDI content are not real PHI.
 
 ## Build
+
+Tested on macOS. Boring C so likely OK on Linux, as-is.. will compile with MSVC.
 
 ```sh
 cmake -S . -B build
@@ -25,7 +27,7 @@ ctest --test-dir build --output-on-failure
 
 ## Model
 
-Current POC: NDJSON journal, SQLite read store, SQLite PHI vault.
+Current POC consists of an NDJSON journal, SQLite read store, SQLite PHI vault. Note that SQLite is used as a dumb index/document DB, in reality a managed DB will be used.
 
 Target: binary journal, pluggable read store. The read store owns indexes and
 aggregate snapshots, not raw journal payloads.
@@ -182,7 +184,7 @@ vault. Normal developer stores should stay tokenized.
 
 ## PHI aggregate rendering
 
-Fake synthetic PHI view; treatment pattern reflects stroke-related care I had
+Synthetic PHI view; treatment pattern reflects stroke-related care I had
 in the UK.
 
 ```text
