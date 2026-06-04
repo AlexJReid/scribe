@@ -19,27 +19,29 @@ amounts, and EDI content are not real PHI.
 
 Current proof of concept:
 
-- Journal: immutable evidence stream, NDJSON for now, binary log target.
-- PHI vault: separate resolver for `namespace + token -> raw`.
-- Indexes: claim, payer control, encounter, and event locator lookup.
-- Aggregate snapshot store: versioned claim state plus latest claim state.
+- Journal: immutable evidence stream, NDJSON for now, binary log target
+- PHI vault: separate resolver for `namespace + token -> raw`
+- Indexes: claim, payer control, encounter, and event locator lookup
+- Aggregate snapshot store: versioned claim state plus latest claim state
 
 SQLite backs the vault, indexes, and snapshots in this proof of concept. It is
 standing in for a managed database or document store.
 
 ### Good things about this approach
 
-- Parsed 837/835 inputs are kept in an immutable journal.
-- Journal events have refs back to source file locations.
-- PHI is split early: tokenised events, raw values in the vault.
-- Journal reductions can answer state as of T.
-- Stitched claim snapshots are one read for consuming apps.
-- Snapshots can be tokenised or PHI-containing.
-- PHI can also be a stream or a separate read store.
-- HITRUST apps can replicate vault keys and join PHI at ingest.
-- An audited API can centralise the PHI vault instead.
-- `scribe` renders 835/837 JSON, journals, and aggregates for exploration.
-- SQLite is a flexible stand-in for read stores and vaults.
+- Immutable journal for parsed 837/835 inputs
+  - Events carry source file location references
+- Early PHI split
+  - Tokenised events can move through normal dev and analytics paths
+  - Raw values stay in the vault
+- Journal reductions can answer state as of T
+- Pre-calculated claim snapshots are one read for consuming apps
+  - Snapshots can be tokenised or PHI-containing
+- PHI can be modelled as a stream or separate read store
+  - Useful when HITRUST apps need local PHI joins at ingest
+  - Or keep an audited API as the central vault
+- `scribe` renders 835/837 JSON, journals, and aggregates for exploration
+- SQLite is a flexible stand-in for read stores and vaults
 
 **Figure 1: ingest writes journal evidence and PHI vault mappings.**
 
