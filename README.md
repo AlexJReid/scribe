@@ -35,8 +35,10 @@ standing in for a managed database or document store.
   - Tokenised events can move through normal dev and analytics paths
   - Raw values stay in the vault
 - Stable identifiers can be derived from composite input values
+  - Stable key generation is deterministic HMAC-SHA256 with a secret
+  - Key rules combine mapped fields, namespace, and origin-specific fallbacks
   - Pluggable mapping rules tailor matching by file origin
-  - 837, 835, charges, and vendor variants can choose different key recipes
+  - 837, 835, charges, and vendor variants can choose different key rules
 - Journal reductions can answer state as of T
   - Chronologies and historic claim timelines become simple projections
 - Pre-calculated claim snapshots are one read for consuming apps
@@ -45,7 +47,10 @@ standing in for a managed database or document store.
   - Subscribers avoid fruitless polls and fetch only when there is work
   - Delivery can be a topic, webhook, or consumer cursor for nightly catch-up
 - PHI can be modelled as a stream or separate read store
-  - Keeps raw values off the main journal while authorised HITRUST apps can join PHI locally at ingest
+  - The main journal stays tokenised
+  - Authorised apps may receive an encrypted, time-limited vault replica for local in-db joins
+  - Replicating the vault proliferates sensitive data and needs careful control
+  - Prefer generating a purpose-built PHI dataset as the app read store where possible
   - Or keep an audited API as the central vault for access control and lookup history
 - `scribe` renders 835/837 JSON, journals, and aggregates for exploration
 - The C proof of concept is terse, compact, and extremely fast
@@ -186,6 +191,7 @@ Default path is non-PHI:
 - names omitted
 - claim/control IDs tokenised
 - aggregates keyed by tokens
+- long text fields that may contain PHI can be tokenised the same way
 - 837 `CLM01` and 835 `CLP01` share the `claim_id` namespace
 - 835 `CLP07` uses `payer_claim_control_number`
 
@@ -193,13 +199,44 @@ Default path is non-PHI:
 secret + namespace + raw value -> token
 ```
 
-HMAC-SHA256 is used.
+Token mechanics:
 
-`SCRIBE_TOKEN_KEY` supplies the secret. Raw lookup goes through the vault:
+- HMAC-SHA256 gives deterministic keyed tokens for matching without raw PHI
+- The HMAC input is `namespace + ":" + raw value`
+- The key comes from `SCRIBE_TOKEN_KEY`
+- The output token is the first 16 bytes of the digest as 32 lowercase hex chars
+- Shortened tokens keep JSON, SQLite keys, and aggregate IDs compact
+- A leaked token is not enough to recompute values without the secret
+- Hashing is not encryption; the raw value can only be resolved through the vault
+- Notes and other long strings can use the same token path when they may contain PHI
+- Namespaces stop unrelated values sharing a token
+  - `patient_id:123` and `claim_id:123` produce different tokens
+  - 837 `CLM01` and 835 `CLP01` deliberately share `claim_id`
+  - 835 `CLP07` deliberately uses `payer_claim_control_number`
+
+Raw lookup goes through the vault:
 
 ```text
 namespace + token -> raw value
 ```
+
+Encryption and extracts:
+
+- PHI vaults must be encrypted at rest and access audited
+- Volumes containing PHI read stores or source EDI files should be encrypted
+- Retain source EDI for audit where feasible, under lock and key
+- Access retained source files only in exceptional circumstances
+- A PHI-containing read store is PHI, even when derived from tokenised inputs
+- Treat each PHI extract as a controlled dataset with owner, purpose, expiry, and retention
+- If `scribe` prepares an extract for another system, encrypt it before hand-off
+- Use recipient-owned keys or a managed KMS flow, not keys bundled with the data
+- Suggested shape is envelope encryption, for example AES-GCM data plus KMS or recipient-key wrapping
+- Encryption strategy is its own design concern
+  - More than enabling storage encryption and mandating TLS
+  - Match key ownership, expiry, audit, and restore paths to the receiving domain
+  - Avoid unnecessary ceremony where a simpler control is enough
+- Prefer minimal purpose-built read stores over copying the whole vault
+- Keep tokenised read stores as the default outside the authorised PHI domain
 
 HITRUST-zone apps may deliberately create/read PHI-containing aggregates with
 `--include-phi --read-store`, or render PHI by resolving tokens through the
