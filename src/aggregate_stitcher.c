@@ -17,6 +17,47 @@
 #define STITCH_MAX_SOURCE_EVENTS 512u
 #define STITCH_MAX_UPDATE_BATCHES 128u
 #define STITCH_MAX_ENCOUNTERS 64u
+#define STITCH_MAX_LINES_PER_CLAIM 64u
+#define STITCH_MAX_ADJUSTMENTS_PER_LINE 8u
+#define STITCH_MAX_ADJUSTMENT_VALUES 8u
+#define STITCH_STATE_JSON_MAX 131072u
+
+typedef struct {
+    char adjustment_group_code[32];
+    char reason_codes[STITCH_MAX_ADJUSTMENT_VALUES][32];
+    char amounts[STITCH_MAX_ADJUSTMENT_VALUES][32];
+    char quantities[STITCH_MAX_ADJUSTMENT_VALUES][32];
+    size_t value_count;
+} stitched_line_adjustment_t;
+
+typedef struct {
+    char service_line_number[32];
+    char remit_service_line_number[32];
+    char procedure_code[32];
+    char description[STITCH_VALUE_MAX];
+    char service_date[32];
+    char match_method[48];
+    int has_charge_context;
+    char charge_amount[32];
+    char charge_service_date[32];
+    int has_submitted;
+    char submitted_line_type[16];
+    char submitted_procedure_code_qualifier[16];
+    char submitted_procedure_code_set[32];
+    char submitted_charge_amount[32];
+    char submitted_unit_measure_code[16];
+    char submitted_unit_count[32];
+    char submitted_service_date[32];
+    int has_remittance;
+    char remittance_procedure_code_qualifier[16];
+    char remittance_procedure_code_set[32];
+    char remittance_line_charge_amount[32];
+    char remittance_line_paid_amount[32];
+    char remittance_paid_unit_count[32];
+    char remittance_service_date[32];
+    stitched_line_adjustment_t adjustments[STITCH_MAX_ADJUSTMENTS_PER_LINE];
+    size_t adjustment_count;
+} stitched_service_line_t;
 
 typedef struct {
     size_t event_id;
@@ -43,6 +84,8 @@ typedef struct {
     size_t submitted_service_line_count;
     size_t remittance_service_line_count;
     size_t adjustment_count;
+    stitched_service_line_t service_lines[STITCH_MAX_LINES_PER_CLAIM];
+    size_t service_line_count;
     stitched_source_event_t source_events[STITCH_MAX_SOURCE_EVENTS];
     size_t source_event_count;
 } claim_aggregate_t;
@@ -389,6 +432,76 @@ static int json_get_number_text(
     memcpy(out, start, len);
     out[len] = '\0';
     return 1;
+}
+
+static int json_get_array_string_at(
+    const char *line,
+    const char *key,
+    size_t index,
+    char *out,
+    size_t out_len
+)
+{
+    char pattern[96];
+    const char *cursor;
+    const char *start;
+    size_t current_index = 0u;
+    size_t len;
+    int written;
+
+    if (line == NULL || key == NULL || out == NULL || out_len == 0u) {
+        return 0;
+    }
+
+    out[0] = '\0';
+    written = snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    if (written < 0 || (size_t)written >= sizeof(pattern)) {
+        return 0;
+    }
+
+    cursor = strstr(line, pattern);
+    if (cursor == NULL) {
+        return 0;
+    }
+    cursor = strchr(cursor, '[');
+    if (cursor == NULL) {
+        return 0;
+    }
+    cursor++;
+
+    while (*cursor != '\0' && *cursor != ']') {
+        while (*cursor == ' ' || *cursor == '\t' || *cursor == ',') {
+            cursor++;
+        }
+        if (*cursor == ']') {
+            break;
+        }
+        if (*cursor != '"') {
+            return 0;
+        }
+        cursor++;
+        start = cursor;
+        len = 0u;
+        while (*cursor != '\0' && *cursor != '"' && len + 1u < out_len) {
+            if (*cursor == '\\' && cursor[1] != '\0') {
+                cursor++;
+            }
+            cursor++;
+            len = (size_t)(cursor - start);
+        }
+        if (*cursor != '"' || len >= out_len) {
+            return 0;
+        }
+        if (current_index == index) {
+            memcpy(out, start, len);
+            out[len] = '\0';
+            return 1;
+        }
+        current_index++;
+        cursor++;
+    }
+
+    return 0;
 }
 
 static const char *claim_key(const char *claim_id, const char *claim_id_token)
@@ -1020,6 +1133,365 @@ static int append_source_event(
     return X12_OK;
 }
 
+static stitched_service_line_t *add_service_line(claim_aggregate_t *aggregate)
+{
+    stitched_service_line_t *line;
+
+    if (aggregate == NULL || aggregate->service_line_count >= STITCH_MAX_LINES_PER_CLAIM) {
+        return NULL;
+    }
+
+    line = &aggregate->service_lines[aggregate->service_line_count++];
+    memset(line, 0, sizeof(*line));
+    copy_cstr(line->match_method, sizeof(line->match_method), "unmatched");
+    return line;
+}
+
+static stitched_service_line_t *find_service_line_by_number(
+    claim_aggregate_t *aggregate,
+    const char *service_line_number
+)
+{
+    size_t i;
+
+    if (aggregate == NULL || service_line_number == NULL || service_line_number[0] == '\0') {
+        return NULL;
+    }
+
+    for (i = 0u; i < aggregate->service_line_count; i++) {
+        if (strcmp(aggregate->service_lines[i].service_line_number, service_line_number) == 0 ||
+            strcmp(aggregate->service_lines[i].remit_service_line_number, service_line_number) == 0) {
+            return &aggregate->service_lines[i];
+        }
+    }
+
+    return NULL;
+}
+
+static stitched_service_line_t *find_or_add_service_line_by_number(
+    claim_aggregate_t *aggregate,
+    const char *service_line_number
+)
+{
+    stitched_service_line_t *line = find_service_line_by_number(aggregate, service_line_number);
+
+    if (line != NULL) {
+        return line;
+    }
+
+    line = add_service_line(aggregate);
+    if (line != NULL) {
+        copy_cstr(line->service_line_number, sizeof(line->service_line_number), service_line_number);
+    }
+    return line;
+}
+
+static const char *service_line_effective_charge(const stitched_service_line_t *line)
+{
+    if (line == NULL) {
+        return "";
+    }
+    if (line->charge_amount[0] != '\0') {
+        return line->charge_amount;
+    }
+    return line->submitted_charge_amount;
+}
+
+static stitched_service_line_t *find_service_line_by_procedure_charge(
+    claim_aggregate_t *aggregate,
+    const char *procedure_code,
+    const char *charge_amount
+)
+{
+    const char *line_charge;
+    size_t i;
+
+    if (aggregate == NULL || procedure_code == NULL || procedure_code[0] == '\0') {
+        return NULL;
+    }
+
+    for (i = 0u; i < aggregate->service_line_count; i++) {
+        if (strcmp(aggregate->service_lines[i].procedure_code, procedure_code) != 0) {
+            continue;
+        }
+        line_charge = service_line_effective_charge(&aggregate->service_lines[i]);
+        if (charge_amount == NULL || charge_amount[0] == '\0' ||
+            line_charge[0] == '\0' || strcmp(line_charge, charge_amount) == 0) {
+            return &aggregate->service_lines[i];
+        }
+    }
+
+    return NULL;
+}
+
+static void update_procedure_code_if_present(stitched_service_line_t *line, const char *procedure_code)
+{
+    if (line != NULL && procedure_code != NULL && procedure_code[0] != '\0' &&
+        line->procedure_code[0] == '\0') {
+        copy_cstr(line->procedure_code, sizeof(line->procedure_code), procedure_code);
+    }
+}
+
+static void update_service_line_date(stitched_service_line_t *line)
+{
+    const char *submitted_date = "";
+
+    if (line == NULL) {
+        return;
+    }
+    if (line->charge_service_date[0] != '\0') {
+        submitted_date = line->charge_service_date;
+    } else if (line->submitted_service_date[0] != '\0') {
+        submitted_date = line->submitted_service_date;
+    }
+
+    if (line->service_date[0] == '\0') {
+        if (submitted_date[0] != '\0') {
+            copy_cstr(line->service_date, sizeof(line->service_date), submitted_date);
+        } else if (line->remittance_service_date[0] != '\0') {
+            copy_cstr(line->service_date, sizeof(line->service_date), line->remittance_service_date);
+        }
+    }
+    if (submitted_date[0] != '\0' &&
+        line->remittance_service_date[0] != '\0' &&
+        strcmp(submitted_date, line->remittance_service_date) == 0 &&
+        strcmp(line->match_method, "procedure_charge") == 0) {
+        copy_cstr(line->match_method, sizeof(line->match_method), "procedure_charge_date");
+    }
+}
+
+static int apply_charge_service_line(claim_aggregate_t *aggregate, const char *journal_line)
+{
+    char line_no[32];
+    char value[STITCH_VALUE_MAX];
+    stitched_service_line_t *line;
+
+    (void)json_get_string(journal_line, "service_line_number", line_no, sizeof(line_no));
+    line = find_or_add_service_line_by_number(aggregate, line_no);
+    if (line == NULL) {
+        return X12_ERR_NO_MEMORY;
+    }
+
+    line->has_charge_context = 1;
+    if (json_get_string(journal_line, "procedure_code", value, sizeof(value))) {
+        copy_cstr(line->procedure_code, sizeof(line->procedure_code), value);
+    }
+    if (json_get_string(journal_line, "description", value, sizeof(value))) {
+        copy_cstr(line->description, sizeof(line->description), value);
+    }
+    if (json_get_string(journal_line, "service_date", value, sizeof(value))) {
+        copy_cstr(line->charge_service_date, sizeof(line->charge_service_date), value);
+        update_service_line_date(line);
+    }
+    if (json_get_string(journal_line, "amount", value, sizeof(value))) {
+        copy_cstr(line->charge_amount, sizeof(line->charge_amount), value);
+    }
+
+    return X12_OK;
+}
+
+static int apply_submitted_service_line(claim_aggregate_t *aggregate, const char *journal_line)
+{
+    char line_no[32];
+    char value[STITCH_VALUE_MAX];
+    stitched_service_line_t *line;
+
+    (void)json_get_string(journal_line, "service_line_number", line_no, sizeof(line_no));
+    line = find_or_add_service_line_by_number(aggregate, line_no);
+    if (line == NULL) {
+        return X12_ERR_NO_MEMORY;
+    }
+
+    line->has_submitted = 1;
+    if (json_get_string(journal_line, "line_type", value, sizeof(value))) {
+        copy_cstr(line->submitted_line_type, sizeof(line->submitted_line_type), value);
+    }
+    if (json_get_string(journal_line, "procedure_code_qualifier", value, sizeof(value))) {
+        copy_cstr(
+            line->submitted_procedure_code_qualifier,
+            sizeof(line->submitted_procedure_code_qualifier),
+            value
+        );
+    }
+    if (json_get_string(journal_line, "procedure_code_set", value, sizeof(value))) {
+        copy_cstr(line->submitted_procedure_code_set, sizeof(line->submitted_procedure_code_set), value);
+    }
+    if (json_get_string(journal_line, "procedure_code", value, sizeof(value))) {
+        copy_cstr(line->procedure_code, sizeof(line->procedure_code), value);
+    }
+    if (json_get_array_string_at(journal_line, "raw_elements", 1u, value, sizeof(value))) {
+        copy_cstr(line->submitted_charge_amount, sizeof(line->submitted_charge_amount), value);
+    }
+    if (json_get_array_string_at(journal_line, "raw_elements", 2u, value, sizeof(value))) {
+        copy_cstr(line->submitted_unit_measure_code, sizeof(line->submitted_unit_measure_code), value);
+    }
+    if (json_get_array_string_at(journal_line, "raw_elements", 3u, value, sizeof(value))) {
+        copy_cstr(line->submitted_unit_count, sizeof(line->submitted_unit_count), value);
+    }
+
+    return X12_OK;
+}
+
+static int apply_submitted_line_date(claim_aggregate_t *aggregate, const char *journal_line)
+{
+    char line_no[32];
+    char value[STITCH_VALUE_MAX];
+    stitched_service_line_t *line;
+
+    if (!json_get_string(journal_line, "service_line_number", line_no, sizeof(line_no)) ||
+        line_no[0] == '\0' ||
+        !json_get_string(journal_line, "date_value", value, sizeof(value))) {
+        return X12_OK;
+    }
+
+    line = find_service_line_by_number(aggregate, line_no);
+    if (line == NULL) {
+        return X12_OK;
+    }
+
+    copy_cstr(line->submitted_service_date, sizeof(line->submitted_service_date), value);
+    update_service_line_date(line);
+    return X12_OK;
+}
+
+static int apply_remittance_service_line(claim_aggregate_t *aggregate, const char *journal_line)
+{
+    char remit_line_no[32];
+    char procedure_code[32];
+    char charge_amount[32];
+    char value[STITCH_VALUE_MAX];
+    stitched_service_line_t *line;
+
+    (void)json_get_string(journal_line, "service_line_number", remit_line_no, sizeof(remit_line_no));
+    (void)json_get_string(journal_line, "procedure_code", procedure_code, sizeof(procedure_code));
+    (void)json_get_string(journal_line, "line_charge_amount", charge_amount, sizeof(charge_amount));
+
+    line = find_service_line_by_procedure_charge(aggregate, procedure_code, charge_amount);
+    if (line != NULL) {
+        copy_cstr(line->match_method, sizeof(line->match_method), "procedure_charge");
+    } else {
+        line = find_service_line_by_number(aggregate, remit_line_no);
+        if (line != NULL) {
+            copy_cstr(line->match_method, sizeof(line->match_method), "line_order");
+        }
+    }
+    if (line == NULL) {
+        line = find_or_add_service_line_by_number(aggregate, remit_line_no);
+        if (line == NULL) {
+            return X12_ERR_NO_MEMORY;
+        }
+        copy_cstr(line->match_method, sizeof(line->match_method), "created_from_remittance");
+    }
+
+    line->has_remittance = 1;
+    copy_cstr(line->remit_service_line_number, sizeof(line->remit_service_line_number), remit_line_no);
+    update_procedure_code_if_present(line, procedure_code);
+    if (json_get_string(journal_line, "procedure_code_qualifier", value, sizeof(value))) {
+        copy_cstr(
+            line->remittance_procedure_code_qualifier,
+            sizeof(line->remittance_procedure_code_qualifier),
+            value
+        );
+    }
+    if (json_get_string(journal_line, "procedure_code_set", value, sizeof(value))) {
+        copy_cstr(line->remittance_procedure_code_set, sizeof(line->remittance_procedure_code_set), value);
+    }
+    copy_cstr(line->remittance_line_charge_amount, sizeof(line->remittance_line_charge_amount), charge_amount);
+    if (json_get_string(journal_line, "line_paid_amount", value, sizeof(value))) {
+        copy_cstr(line->remittance_line_paid_amount, sizeof(line->remittance_line_paid_amount), value);
+    }
+    if (json_get_string(journal_line, "paid_service_unit_count", value, sizeof(value))) {
+        copy_cstr(line->remittance_paid_unit_count, sizeof(line->remittance_paid_unit_count), value);
+    }
+    update_service_line_date(line);
+
+    return X12_OK;
+}
+
+static int apply_remittance_line_date(claim_aggregate_t *aggregate, const char *journal_line)
+{
+    char remit_line_no[32];
+    char value[STITCH_VALUE_MAX];
+    stitched_service_line_t *line;
+
+    if (!json_get_string(journal_line, "service_line_number", remit_line_no, sizeof(remit_line_no)) ||
+        remit_line_no[0] == '\0' ||
+        !json_get_string(journal_line, "date_value", value, sizeof(value))) {
+        return X12_OK;
+    }
+
+    line = find_service_line_by_number(aggregate, remit_line_no);
+    if (line == NULL) {
+        return X12_OK;
+    }
+
+    copy_cstr(line->remittance_service_date, sizeof(line->remittance_service_date), value);
+    update_service_line_date(line);
+    return X12_OK;
+}
+
+static int apply_service_line_adjustment(claim_aggregate_t *aggregate, const char *journal_line)
+{
+    char line_no[32];
+    char value[STITCH_VALUE_MAX];
+    stitched_service_line_t *line;
+    stitched_line_adjustment_t *adjustment;
+    size_t i;
+
+    if (!json_get_string(journal_line, "service_line_number", line_no, sizeof(line_no)) ||
+        line_no[0] == '\0') {
+        return X12_OK;
+    }
+
+    line = find_service_line_by_number(aggregate, line_no);
+    if (line == NULL) {
+        line = find_or_add_service_line_by_number(aggregate, line_no);
+        if (line == NULL) {
+            return X12_ERR_NO_MEMORY;
+        }
+    }
+    if (line->adjustment_count >= STITCH_MAX_ADJUSTMENTS_PER_LINE) {
+        return X12_OK;
+    }
+
+    adjustment = &line->adjustments[line->adjustment_count++];
+    memset(adjustment, 0, sizeof(*adjustment));
+    if (json_get_string(journal_line, "adjustment_group_code", value, sizeof(value))) {
+        copy_cstr(adjustment->adjustment_group_code, sizeof(adjustment->adjustment_group_code), value);
+    }
+    for (i = 0u; i < STITCH_MAX_ADJUSTMENT_VALUES; i++) {
+        if (!json_get_array_string_at(journal_line, "reason_codes", i, adjustment->reason_codes[i], sizeof(adjustment->reason_codes[i])) &&
+            !json_get_array_string_at(journal_line, "amounts", i, adjustment->amounts[i], sizeof(adjustment->amounts[i])) &&
+            !json_get_array_string_at(journal_line, "quantities", i, adjustment->quantities[i], sizeof(adjustment->quantities[i]))) {
+            break;
+        }
+        (void)json_get_array_string_at(
+            journal_line,
+            "reason_codes",
+            i,
+            adjustment->reason_codes[i],
+            sizeof(adjustment->reason_codes[i])
+        );
+        (void)json_get_array_string_at(
+            journal_line,
+            "amounts",
+            i,
+            adjustment->amounts[i],
+            sizeof(adjustment->amounts[i])
+        );
+        (void)json_get_array_string_at(
+            journal_line,
+            "quantities",
+            i,
+            adjustment->quantities[i],
+            sizeof(adjustment->quantities[i])
+        );
+        adjustment->value_count++;
+    }
+
+    return X12_OK;
+}
+
 static int make_drop_key(
     const char *journal_line,
     char *out,
@@ -1164,6 +1636,360 @@ static int write_update_event_ids(FILE *fp, const stitch_update_batch_t *batch)
     }
 
     return X12_OK;
+}
+
+static int json_buffer_append_string_array_field(
+    stitch_json_buffer_t *buffer,
+    const char *key,
+    const char values[][32],
+    size_t value_count,
+    int with_comma
+)
+{
+    size_t i;
+    int rc;
+
+    if (with_comma) {
+        rc = json_buffer_append_char(buffer, ',');
+        if (rc != X12_OK) {
+            return rc;
+        }
+    }
+    rc = json_buffer_append_json_string(buffer, key);
+    if (rc != X12_OK) {
+        return rc;
+    }
+    rc = json_buffer_append(buffer, ":[");
+    if (rc != X12_OK) {
+        return rc;
+    }
+    for (i = 0u; i < value_count; i++) {
+        if (i > 0u) {
+            rc = json_buffer_append_char(buffer, ',');
+            if (rc != X12_OK) {
+                return rc;
+            }
+        }
+        rc = json_buffer_append_json_string(buffer, values[i]);
+        if (rc != X12_OK) {
+            return rc;
+        }
+    }
+    return json_buffer_append_char(buffer, ']');
+}
+
+static int json_buffer_append_adjustments(
+    stitch_json_buffer_t *buffer,
+    const stitched_service_line_t *line,
+    int with_comma
+)
+{
+    const stitched_line_adjustment_t *adjustment;
+    size_t i;
+    int rc;
+
+    if (with_comma) {
+        rc = json_buffer_append_char(buffer, ',');
+        if (rc != X12_OK) {
+            return rc;
+        }
+    }
+    rc = json_buffer_append(buffer, "\"adjustments\":[");
+    if (rc != X12_OK) {
+        return rc;
+    }
+    for (i = 0u; i < line->adjustment_count; i++) {
+        adjustment = &line->adjustments[i];
+        if (i > 0u) {
+            rc = json_buffer_append_char(buffer, ',');
+            if (rc != X12_OK) {
+                return rc;
+            }
+        }
+        rc = json_buffer_append_char(buffer, '{');
+        if (rc == X12_OK) {
+            rc = json_buffer_append_string_field(
+                buffer,
+                "adjustment_group_code",
+                adjustment->adjustment_group_code,
+                0
+            );
+        }
+        if (rc == X12_OK) {
+            rc = json_buffer_append_string_array_field(
+                buffer,
+                "reason_codes",
+                adjustment->reason_codes,
+                adjustment->value_count,
+                1
+            );
+        }
+        if (rc == X12_OK) {
+            rc = json_buffer_append_string_array_field(
+                buffer,
+                "amounts",
+                adjustment->amounts,
+                adjustment->value_count,
+                1
+            );
+        }
+        if (rc == X12_OK) {
+            rc = json_buffer_append_string_array_field(
+                buffer,
+                "quantities",
+                adjustment->quantities,
+                adjustment->value_count,
+                1
+            );
+        }
+        if (rc == X12_OK) {
+            rc = json_buffer_append_char(buffer, '}');
+        }
+        if (rc != X12_OK) {
+            return rc;
+        }
+    }
+    return json_buffer_append_char(buffer, ']');
+}
+
+static int json_buffer_append_charge_context(
+    stitch_json_buffer_t *buffer,
+    const stitched_service_line_t *line
+)
+{
+    int rc;
+
+    if (!line->has_charge_context) {
+        return X12_OK;
+    }
+    rc = json_buffer_append(buffer, ",\"charge_context\":{");
+    if (rc == X12_OK) {
+        rc = json_buffer_append_string_field(buffer, "amount", line->charge_amount, 0);
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_string_field(buffer, "description", line->description, 1);
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_string_field(buffer, "service_date", line->charge_service_date, 1);
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_char(buffer, '}');
+    }
+    return rc;
+}
+
+static int json_buffer_append_submitted_line(
+    stitch_json_buffer_t *buffer,
+    const stitched_service_line_t *line
+)
+{
+    int rc;
+
+    if (!line->has_submitted) {
+        return X12_OK;
+    }
+    rc = json_buffer_append(buffer, ",\"submitted\":{");
+    if (rc == X12_OK) {
+        rc = json_buffer_append_string_field(buffer, "line_type", line->submitted_line_type, 0);
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_string_field(
+            buffer,
+            "procedure_code_qualifier",
+            line->submitted_procedure_code_qualifier,
+            1
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_string_field(
+            buffer,
+            "procedure_code_set",
+            line->submitted_procedure_code_set,
+            1
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_string_field(buffer, "charge_amount", line->submitted_charge_amount, 1);
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_string_field(
+            buffer,
+            "unit_measure_code",
+            line->submitted_unit_measure_code,
+            1
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_string_field(buffer, "unit_count", line->submitted_unit_count, 1);
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_string_field(buffer, "service_date", line->submitted_service_date, 1);
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_char(buffer, '}');
+    }
+    return rc;
+}
+
+static int json_buffer_append_remittance_line(
+    stitch_json_buffer_t *buffer,
+    const stitched_service_line_t *line
+)
+{
+    int rc;
+
+    if (!line->has_remittance) {
+        return X12_OK;
+    }
+    rc = json_buffer_append(buffer, ",\"remittance\":{");
+    if (rc == X12_OK) {
+        rc = json_buffer_append_string_field(
+            buffer,
+            "procedure_code_qualifier",
+            line->remittance_procedure_code_qualifier,
+            0
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_string_field(
+            buffer,
+            "procedure_code_set",
+            line->remittance_procedure_code_set,
+            1
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_string_field(
+            buffer,
+            "line_charge_amount",
+            line->remittance_line_charge_amount,
+            1
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_string_field(
+            buffer,
+            "line_paid_amount",
+            line->remittance_line_paid_amount,
+            1
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_string_field(
+            buffer,
+            "paid_service_unit_count",
+            line->remittance_paid_unit_count,
+            1
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_string_field(buffer, "service_date", line->remittance_service_date, 1);
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_char(buffer, '}');
+    }
+    return rc;
+}
+
+static int json_buffer_append_service_lines(
+    stitch_json_buffer_t *buffer,
+    const claim_aggregate_t *aggregate,
+    int with_comma
+)
+{
+    const stitched_service_line_t *line;
+    size_t i;
+    int rc;
+
+    if (with_comma) {
+        rc = json_buffer_append_char(buffer, ',');
+        if (rc != X12_OK) {
+            return rc;
+        }
+    }
+    rc = json_buffer_append(buffer, "\"service_lines\":[");
+    if (rc != X12_OK) {
+        return rc;
+    }
+    for (i = 0u; i < aggregate->service_line_count; i++) {
+        line = &aggregate->service_lines[i];
+        if (i > 0u) {
+            rc = json_buffer_append_char(buffer, ',');
+            if (rc != X12_OK) {
+                return rc;
+            }
+        }
+        rc = json_buffer_append_char(buffer, '{');
+        if (rc == X12_OK) {
+            rc = json_buffer_append_string_field(buffer, "service_line_number", line->service_line_number, 0);
+        }
+        if (rc == X12_OK) {
+            rc = json_buffer_append_string_field(
+                buffer,
+                "remittance_service_line_number",
+                line->remit_service_line_number,
+                1
+            );
+        }
+        if (rc == X12_OK) {
+            rc = json_buffer_append_string_field(buffer, "procedure_code", line->procedure_code, 1);
+        }
+        if (rc == X12_OK) {
+            rc = json_buffer_append_string_field(buffer, "description", line->description, 1);
+        }
+        if (rc == X12_OK) {
+            rc = json_buffer_append_string_field(buffer, "service_date", line->service_date, 1);
+        }
+        if (rc == X12_OK) {
+            rc = json_buffer_append_string_field(buffer, "match_method", line->match_method, 1);
+        }
+        if (rc == X12_OK) {
+            rc = json_buffer_append_charge_context(buffer, line);
+        }
+        if (rc == X12_OK) {
+            rc = json_buffer_append_submitted_line(buffer, line);
+        }
+        if (rc == X12_OK) {
+            rc = json_buffer_append_remittance_line(buffer, line);
+        }
+        if (rc == X12_OK) {
+            rc = json_buffer_append_adjustments(buffer, line, 1);
+        }
+        if (rc == X12_OK) {
+            rc = json_buffer_append_char(buffer, '}');
+        }
+        if (rc != X12_OK) {
+            return rc;
+        }
+    }
+    return json_buffer_append_char(buffer, ']');
+}
+
+static int write_service_lines(FILE *fp, const claim_aggregate_t *aggregate)
+{
+    stitch_json_buffer_t buffer;
+    char *json;
+    int rc;
+
+    if (fp == NULL || aggregate == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    json = (char *)malloc(STITCH_STATE_JSON_MAX);
+    if (json == NULL) {
+        return X12_ERR_NO_MEMORY;
+    }
+    buffer.data = json;
+    buffer.len = 0u;
+    buffer.cap = STITCH_STATE_JSON_MAX;
+    json[0] = '\0';
+
+    rc = json_buffer_append_service_lines(&buffer, aggregate, 1);
+    if (rc == X12_OK && fputs(json, fp) == EOF) {
+        rc = X12_ERR_IO;
+    }
+    free(json);
+    return rc;
 }
 
 static int build_snapshot_state_json(
@@ -1416,7 +2242,13 @@ static int build_snapshot_state_json(
         );
     }
     if (rc == X12_OK) {
-        rc = json_buffer_append(&buffer, "},\"lineage\":{");
+        rc = json_buffer_append_char(&buffer, '}');
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append_service_lines(&buffer, aggregate, 1);
+    }
+    if (rc == X12_OK) {
+        rc = json_buffer_append(&buffer, ",\"lineage\":{");
     }
     if (rc == X12_OK) {
         rc = json_buffer_append_size_field(
@@ -1447,7 +2279,7 @@ static int persist_snapshot_to_read_store(
     const char *aggregate_id
 )
 {
-    char state_json[8192];
+    char *state_json;
     char updated_by_event_id[32];
     int written;
     int rc;
@@ -1456,14 +2288,20 @@ static int persist_snapshot_to_read_store(
         return X12_OK;
     }
 
+    state_json = (char *)malloc(STITCH_STATE_JSON_MAX);
+    if (state_json == NULL) {
+        return X12_ERR_NO_MEMORY;
+    }
+
     rc = build_snapshot_state_json(
         state,
         batch,
         aggregate_id,
         state_json,
-        sizeof(state_json)
+        STITCH_STATE_JSON_MAX
     );
     if (rc != X12_OK) {
+        free(state_json);
         return rc;
     }
 
@@ -1474,10 +2312,11 @@ static int persist_snapshot_to_read_store(
         batch->updated_by_event_id
     );
     if (written < 0 || (size_t)written >= sizeof(updated_by_event_id)) {
+        free(state_json);
         return X12_ERR_BUFFER_TOO_SMALL;
     }
 
-    return scribe_store_put_claim_aggregate(
+    rc = scribe_store_put_claim_aggregate(
         state->read_store,
         aggregate_id,
         batch->aggregate->version,
@@ -1485,6 +2324,8 @@ static int persist_snapshot_to_read_store(
         updated_by_event_id,
         batch->source_drop_id
     );
+    free(state_json);
+    return rc;
 }
 
 static int write_snapshot(
@@ -1675,6 +2516,10 @@ static int write_snapshot(
     }
     if (fputc('}', fp) == EOF) {
         return X12_ERR_IO;
+    }
+    rc = write_service_lines(fp, aggregate);
+    if (rc != X12_OK) {
+        return rc;
     }
     if (write_applied_event_ids(fp, aggregate) != X12_OK) {
         return X12_ERR_IO;
@@ -2057,6 +2902,10 @@ static int apply_claim_event(
         if (json_get_string(journal_line, "claim_type", value, sizeof(value))) {
             copy_cstr(aggregate->claim_type, sizeof(aggregate->claim_type), value);
         }
+        rc = apply_charge_service_line(aggregate, journal_line);
+        if (rc != X12_OK) {
+            return rc;
+        }
     } else if (strcmp(event_type, "ClaimObserved") == 0 ||
                strcmp(event_type, "ClaimReferencedBillingProvider") == 0 ||
                strcmp(event_type, "ClaimReferencedSubscriber") == 0 ||
@@ -2073,6 +2922,15 @@ static int apply_claim_event(
         }
         if (strcmp(event_type, "ClaimServiceLineRecorded") == 0) {
             aggregate->submitted_service_line_count++;
+            rc = apply_submitted_service_line(aggregate, journal_line);
+            if (rc != X12_OK) {
+                return rc;
+            }
+        } else if (strcmp(event_type, "ClaimLineDateRecorded") == 0) {
+            rc = apply_submitted_line_date(aggregate, journal_line);
+            if (rc != X12_OK) {
+                return rc;
+            }
         }
     } else if (strcmp(event_type, "RemittanceClaimPaymentObserved") == 0 ||
                strcmp(event_type, "RemittanceClaimReferencedPatient") == 0 ||
@@ -2104,8 +2962,21 @@ static int apply_claim_event(
         }
         if (strcmp(event_type, "RemittanceServiceLinePaymentObserved") == 0) {
             aggregate->remittance_service_line_count++;
+            rc = apply_remittance_service_line(aggregate, journal_line);
+            if (rc != X12_OK) {
+                return rc;
+            }
         } else if (strcmp(event_type, "RemittanceAdjustmentObserved") == 0) {
             aggregate->adjustment_count++;
+            rc = apply_service_line_adjustment(aggregate, journal_line);
+            if (rc != X12_OK) {
+                return rc;
+            }
+        } else if (strcmp(event_type, "RemittanceDateRecorded") == 0) {
+            rc = apply_remittance_line_date(aggregate, journal_line);
+            if (rc != X12_OK) {
+                return rc;
+            }
         }
     } else if (strcmp(event_type, "PatientPaymentObserved") == 0 ||
                strcmp(event_type, "WriteoffObserved") == 0 ||

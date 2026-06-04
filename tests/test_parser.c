@@ -548,8 +548,8 @@ static int test_stroke_balance_projection_from_journal(void)
     char phi_vault_path[512];
     char phi_vault_wal_path[560];
     char phi_vault_shm_path[560];
-    char aggregates[160000];
-    char latest_aggregate[4096];
+    char aggregates[320000];
+    char latest_aggregate[65536];
     char projection[96000];
     char resolved[256];
     char indexed_event_ids[16][SCRIBE_STORE_ID_MAX];
@@ -644,6 +644,12 @@ static int test_stroke_balance_projection_from_journal(void)
     REQUIRE(strstr(aggregates, "\"submitted_service_line_count\":3") != NULL);
     REQUIRE(strstr(aggregates, "\"remittance_service_line_count\":3") != NULL);
     REQUIRE(strstr(aggregates, "\"adjustment_count\":6") != NULL);
+    REQUIRE(strstr(aggregates, "\"service_lines\":[") != NULL);
+    REQUIRE(strstr(aggregates, "\"charge_context\":{\"amount\":\"180.00\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"submitted\":{\"line_type\":\"SV1\",\"procedure_code_qualifier\":\"HC\",\"procedure_code_set\":\"CPT/HCPCS\",\"charge_amount\":\"300.00\",\"unit_measure_code\":\"UN\",\"unit_count\":\"3\",\"service_date\":\"20260617\"}") != NULL);
+    REQUIRE(strstr(aggregates, "\"remittance\":{\"procedure_code_qualifier\":\"HC\",\"procedure_code_set\":\"CPT/HCPCS\",\"line_charge_amount\":\"300.00\",\"line_paid_amount\":\"180.00\",\"paid_service_unit_count\":\"3\",\"service_date\":\"20260617\"}") != NULL);
+    REQUIRE(strstr(aggregates, "\"match_method\":\"procedure_charge_date\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"adjustments\":[{\"adjustment_group_code\":\"CO\",\"reason_codes\":[\"45\"],\"amounts\":[\"60.00\"],\"quantities\":[\"\"]},{\"adjustment_group_code\":\"PR\",\"reason_codes\":[\"3\"],\"amounts\":[\"60.00\"],\"quantities\":[\"\"]}]") != NULL);
     REQUIRE(strstr(aggregates, "\"payer_claim_control_number\":\"PAYER-STROKE-FAC-001\"") != NULL);
 
     balance_projector_input_init(&projection_input);
@@ -777,6 +783,9 @@ static int test_stroke_balance_projection_from_journal(void)
     REQUIRE(strstr(latest_aggregate, "\"patient_id\":\"PAT-STROKE-001\"") != NULL);
     REQUIRE(strstr(latest_aggregate, "\"patient_id_token\":\"483f7b234ed109f0e2323052f22e4e59\"") != NULL);
     REQUIRE(strstr(latest_aggregate, "\"patient_name\":\"REID|ALEX\"") != NULL);
+    REQUIRE(strstr(latest_aggregate, "\"service_lines\":[") != NULL);
+    REQUIRE(strstr(latest_aggregate, "\"match_method\":\"procedure_charge_date\"") != NULL);
+    REQUIRE(strstr(latest_aggregate, "\"line_paid_amount\":\"250.00\"") != NULL);
     REQUIRE(scribe_store_close(&read_store) == X12_OK);
     (void)remove(nonphi_read_store_path);
     (void)remove(nonphi_read_store_wal_path);
@@ -796,6 +805,9 @@ static int test_stroke_balance_projection_from_journal(void)
     REQUIRE(count_substring(aggregates, "\"event_type\":\"ClaimAggregateUpdated\"") == 12u);
     REQUIRE(strstr(aggregates, "\"claim_id\":\"8259c238232f9585e95fc8f45b0bb410\"") != NULL);
     REQUIRE(strstr(aggregates, "\"payer_claim_control_number\":\"edf29f09740ab104da309e2b036e14d1\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"service_lines\":[") != NULL);
+    REQUIRE(strstr(aggregates, "\"procedure_code\":\"97110\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"match_method\":\"procedure_charge_date\"") != NULL);
     REQUIRE(strstr(aggregates, "CLM-STROKE") == NULL);
     REQUIRE(strstr(aggregates, "PAYER-STROKE") == NULL);
     REQUIRE(strstr(aggregates, "PAT-STROKE") == NULL);
