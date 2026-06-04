@@ -27,7 +27,7 @@ Current proof of concept:
 SQLite backs the vault, indexes, and snapshots in this proof of concept. It is
 standing in for a managed database or document store.
 
-### Good things about this approach
+### Benefits of this architecture
 
 - Immutable journal for parsed 837/835 inputs
   - Events carry source file location references
@@ -38,12 +38,16 @@ standing in for a managed database or document store.
   - Chronologies and historic claim timelines become simple projections
 - Pre-calculated claim snapshots are one read for consuming apps
   - Snapshots can be tokenised or PHI-containing
-  - New versions can kick subscribers rather than forcing one-off downloads
+  - New versions can emit a small "new version exists" signal
+  - Subscribers avoid fruitless polls and fetch only when there is work
   - Delivery can be a topic, webhook, or consumer cursor for nightly catch-up
 - PHI can be modelled as a stream or separate read store
   - Keeps raw values off the main journal while authorised HITRUST apps can join PHI locally at ingest
   - Or keep an audited API as the central vault for access control and lookup history
 - `scribe` renders 835/837 JSON, journals, and aggregates for exploration
+- The C proof of concept is terse, compact, and extremely fast
+  - It is a tiny executable, not a server
+  - It can process large batches in milliseconds
 - SQLite is a flexible stand-in for read stores and vaults
 
 **Figure 1: ingest writes journal evidence and PHI vault mappings.**
