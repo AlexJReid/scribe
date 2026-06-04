@@ -38,8 +38,8 @@ standing in for a managed database or document store.
 - Pre-calculated claim snapshots are one read for consuming apps
   - Snapshots can be tokenised or PHI-containing
 - PHI can be modelled as a stream or separate read store
-  - Useful when HITRUST apps need local PHI joins at ingest
-  - Or keep an audited API as the central vault
+  - Keeps raw values off the main journal while authorised HITRUST apps can join PHI locally at ingest
+  - Or keep an audited API as the central vault for access control and lookup history
 - `scribe` renders 835/837 JSON, journals, and aggregates for exploration
 - SQLite is a flexible stand-in for read stores and vaults
 

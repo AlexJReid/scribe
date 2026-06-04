@@ -7,18 +7,22 @@ Encounter:
 
 - `encounter_id`: `ENC-SYN-STROKE-001`
 - Clinical story: stroke evaluation with CT without contrast, CT with contrast,
-  MRI brain imaging, outpatient rehab, and neurology follow-up during recovery.
+  MRI brain imaging, outpatient rehab, and neurology follow-up during recovery
 
 Files:
 
-- `facility_837.edi`: facility claim submission for the three imaging services
-- `facility_835.edi`: payer remittance for the facility claim
-- `professional_837.edi`: professional/radiologist interpretation claim
-- `professional_835.edi`: payer remittance for the professional claim
-- `rehab_837.edi`: outpatient rehab claim for recovery treatment
-- `rehab_835.edi`: payer remittance for the rehab claim
-- `neurology_837.edi`: neurology follow-up claim during recovery
-- `neurology_835.edi`: payer remittance for the neurology claim
+- Facility imaging claim
+  - `facility_837.edi`: submission for the three imaging services
+  - `facility_835.edi`: payer remittance
+- Professional imaging claim
+  - `professional_837.edi`: radiologist interpretation submission
+  - `professional_835.edi`: payer remittance
+- Rehab claim
+  - `rehab_837.edi`: outpatient rehab submission
+  - `rehab_835.edi`: payer remittance
+- Neurology claim
+  - `neurology_837.edi`: follow-up submission during recovery
+  - `neurology_835.edi`: payer remittance
 - `charge_transactions.ndjson`: example upstream charge/encounter rows that a
   future charge transaction importer could map into ledger entries. This file
   seeds `ENC-SYN-STROKE-001` and links each synthetic claim back to that
