@@ -37,6 +37,8 @@ standing in for a managed database or document store.
 - Journal reductions can answer state as of T
 - Pre-calculated claim snapshots are one read for consuming apps
   - Snapshots can be tokenised or PHI-containing
+  - New versions can kick subscribers rather than forcing one-off downloads
+  - Delivery can be a topic, webhook, or consumer cursor for nightly catch-up
 - PHI can be modelled as a stream or separate read store
   - Keeps raw values off the main journal while authorised HITRUST apps can join PHI locally at ingest
   - Or keep an audited API as the central vault for access control and lookup history
@@ -67,8 +69,8 @@ flowchart LR
     events["events<br/>locator only"]
     versions["claim_aggregate_versions"]
     latest["claim_aggregate_latest"]
-    notify["AggregateVersionRecorded"]
-    projections["balance / work queues / analytics"]
+    notify["AggregateVersionRecorded<br/>topic / webhook / cursor"]
+    subscribers["subscribed systems<br/>balance / work queues / analytics"]
 
     journal --> store
     store --> keys
@@ -76,7 +78,7 @@ flowchart LR
     store --> versions
     versions --> latest
     latest --> notify
-    notify --> projections
+    notify --> subscribers
 ```
 
 ## Stroke demo
