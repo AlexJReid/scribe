@@ -35,6 +35,7 @@ standing in for a managed database or document store.
   - Tokenised events can move through normal dev and analytics paths
   - Raw values stay in the vault
 - Journal reductions can answer state as of T
+  - Chronologies and historic claim timelines become simple projections
 - Pre-calculated claim snapshots are one read for consuming apps
   - Snapshots can be tokenised or PHI-containing
   - New versions can kick subscribers rather than forcing one-off downloads
@@ -70,7 +71,7 @@ flowchart LR
     versions["claim_aggregate_versions"]
     latest["claim_aggregate_latest"]
     notify["AggregateVersionRecorded<br/>topic / webhook / cursor"]
-    subscribers["subscribed systems<br/>balance / work queues / analytics"]
+    subscribers["subscribed systems<br/>balance / timelines / work queues / analytics"]
 
     journal --> store
     store --> keys
