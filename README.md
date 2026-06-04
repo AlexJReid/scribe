@@ -266,10 +266,11 @@ HITRUST-zone apps may deliberately create/read PHI-containing aggregates with
 `--include-phi --phi-vault --read-store`, or render PHI by resolving tokens
 through the vault. Normal developer stores should stay tokenised.
 
-## PHI aggregate rendering
+## PHI balance rendering
 
 Synthetic PHI view; treatment pattern reflects stroke-related care I had
-in the UK.
+in the UK. This is a balance projection over the journal, not a single
+`claim_aggregate_latest` row.
 
 ```text
 Encounter: ENC-SYN-STROKE-001
