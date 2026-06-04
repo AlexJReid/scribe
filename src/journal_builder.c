@@ -1,6 +1,8 @@
 #include "journal_builder.h"
 
 #include "event_writer.h"
+#include "journal.h"
+#include "json_scan.h"
 #include "phi_vault.h"
 #include "tokenise.h"
 #include "x12_mapper_835.h"
@@ -11,7 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define JOURNAL_LINE_MAX 4096u
+#define CHARGE_INPUT_LINE_MAX 4096u
 #define JOURNAL_VALUE_MAX 256u
 
 static x12_str_t str_from_cstr(const char *value)
@@ -65,115 +67,6 @@ int journal_builder_input_add_835(journal_builder_input_t *input, const char *pa
 
     input->x835_paths[input->x835_count++] = path;
     return X12_OK;
-}
-
-static int json_get_string(
-    const char *line,
-    const char *key,
-    char *out,
-    size_t out_len
-)
-{
-    char pattern[96];
-    const char *cursor;
-    const char *start;
-    size_t key_len;
-    size_t len = 0u;
-    int written;
-
-    if (line == NULL || key == NULL || out == NULL || out_len == 0u) {
-        return 0;
-    }
-
-    key_len = strlen(key);
-    written = snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    if (written < 0 || (size_t)written >= sizeof(pattern) || key_len == 0u) {
-        return 0;
-    }
-
-    cursor = strstr(line, pattern);
-    if (cursor == NULL) {
-        return 0;
-    }
-    cursor += strlen(pattern);
-    while (*cursor == ' ' || *cursor == '\t') {
-        cursor++;
-    }
-    if (*cursor != ':') {
-        return 0;
-    }
-    cursor++;
-    while (*cursor == ' ' || *cursor == '\t') {
-        cursor++;
-    }
-    if (*cursor != '"') {
-        return 0;
-    }
-    cursor++;
-    start = cursor;
-
-    while (*cursor != '\0' && *cursor != '"' && len + 1u < out_len) {
-        if (*cursor == '\\' && cursor[1] != '\0') {
-            cursor++;
-        }
-        cursor++;
-        len = (size_t)(cursor - start);
-    }
-
-    if (*cursor != '"') {
-        return 0;
-    }
-
-    if (len >= out_len) {
-        return 0;
-    }
-
-    memcpy(out, start, len);
-    out[len] = '\0';
-    return 1;
-}
-
-static int json_get_bool(const char *line, const char *key, int *out)
-{
-    char pattern[96];
-    const char *cursor;
-    int written;
-
-    if (line == NULL || key == NULL || out == NULL) {
-        return 0;
-    }
-
-    written = snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    if (written < 0 || (size_t)written >= sizeof(pattern)) {
-        return 0;
-    }
-
-    cursor = strstr(line, pattern);
-    if (cursor == NULL) {
-        return 0;
-    }
-    cursor += strlen(pattern);
-    while (*cursor == ' ' || *cursor == '\t') {
-        cursor++;
-    }
-    if (*cursor != ':') {
-        return 0;
-    }
-    cursor++;
-    while (*cursor == ' ' || *cursor == '\t') {
-        cursor++;
-    }
-
-    if (strncmp(cursor, "true", 4u) == 0) {
-        *out = 1;
-        return 1;
-    }
-    if (strncmp(cursor, "false", 5u) == 0) {
-        *out = 0;
-        return 1;
-    }
-
-    return 0;
 }
 
 static int write_tokenized_or_phi_field(
@@ -321,7 +214,7 @@ static int write_charge_event(
         }
     }
     if (has_synthetic) {
-        if (fprintf(fp, ",\"synthetic\":%s", synthetic ? "true" : "false") < 0) {
+        if (event_writer_write_bool_field(fp, "synthetic", synthetic, 1) != X12_OK) {
             return X12_ERR_IO;
         }
     }
@@ -386,7 +279,7 @@ static int append_charges_file(
     phi_vault_t *phi_vault
 )
 {
-    char line[JOURNAL_LINE_MAX];
+    char line[CHARGE_INPUT_LINE_MAX];
     char event_type[JOURNAL_VALUE_MAX];
     event_writer_t writer;
     FILE *in;
@@ -398,10 +291,16 @@ static int append_charges_file(
         return rc;
     }
     event_writer_set_include_phi(&writer, include_phi);
+    rc = event_writer_set_binary_journal(&writer, 1);
+    if (rc != X12_OK) {
+        (void)event_writer_close(&writer);
+        return rc;
+    }
     event_writer_set_phi_vault(&writer, phi_vault, path);
 
     in = fopen(path, "rb");
     if (in == NULL) {
+        (void)event_writer_close(&writer);
         return X12_ERR_IO;
     }
 
@@ -415,19 +314,22 @@ static int append_charges_file(
         rc = write_charge_event(&writer, event_type, line, line_number);
         if (rc != X12_OK) {
             (void)fclose(in);
+            (void)event_writer_close(&writer);
             return rc;
         }
     }
 
     if (ferror(in)) {
         (void)fclose(in);
+        (void)event_writer_close(&writer);
         return X12_ERR_IO;
     }
     if (fclose(in) != 0) {
+        (void)event_writer_close(&writer);
         return X12_ERR_IO;
     }
 
-    return X12_OK;
+    return event_writer_close(&writer);
 }
 
 static int append_x12_file(
@@ -453,6 +355,12 @@ static int append_x12_file(
         return rc;
     }
     event_writer_set_include_phi(&writer, include_phi);
+    rc = event_writer_set_binary_journal(&writer, 1);
+    if (rc != X12_OK) {
+        (void)event_writer_close(&writer);
+        x12_document_free(&doc);
+        return rc;
+    }
     event_writer_set_phi_vault(&writer, phi_vault, path);
 
     if (strcmp(type, "837") == 0) {
@@ -463,6 +371,12 @@ static int append_x12_file(
         rc = X12_ERR_UNSUPPORTED;
     }
 
+    {
+        int close_rc = event_writer_close(&writer);
+        if (close_rc != X12_OK && rc == X12_OK) {
+            rc = close_rc;
+        }
+    }
     x12_document_free(&doc);
     return rc;
 }
@@ -479,18 +393,19 @@ int journal_builder_build(
     int rc = X12_OK;
     int owns_file = 0;
 
-    if (input == NULL || out_path == NULL) {
+    if (input == NULL || out_path == NULL || strcmp(out_path, "-") == 0) {
         return X12_ERR_INVALID_ARGUMENT;
     }
 
-    if (strcmp(out_path, "-") == 0) {
-        fp = stdout;
-    } else {
-        fp = fopen(out_path, "wb");
-        owns_file = 1;
-    }
+    fp = fopen(out_path, "wb");
+    owns_file = 1;
     if (fp == NULL) {
         return X12_ERR_IO;
+    }
+    rc = journal_write_header(fp);
+    if (rc != X12_OK) {
+        (void)fclose(fp);
+        return rc;
     }
 
     phi_vault_init(&phi_vault);

@@ -1,10 +1,15 @@
 #include "balance_projector.h"
 
 #include "event_writer.h"
+#include "journal.h"
 #include "tokenise.h"
 
 #include <stdio.h>
 #include <string.h>
+
+#define json_get_string journal_event_get_string
+#define json_get_bool journal_event_get_bool
+#define json_get_array_string_at journal_event_get_array_string_at
 
 #define BALANCE_LINE_MAX 8192u
 #define BALANCE_ID_MAX 128u
@@ -69,213 +74,6 @@ static void copy_cstr(char *out, size_t out_len, const char *value)
     }
     memcpy(out, value, len);
     out[len] = '\0';
-}
-
-static int json_get_string(
-    const char *line,
-    const char *key,
-    char *out,
-    size_t out_len
-)
-{
-    char pattern[96];
-    const char *cursor;
-    const char *start;
-    size_t len = 0u;
-    int written;
-
-    if (line == NULL || key == NULL || out == NULL || out_len == 0u) {
-        return 0;
-    }
-
-    written = snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    if (written < 0 || (size_t)written >= sizeof(pattern)) {
-        return 0;
-    }
-
-    cursor = strstr(line, pattern);
-    if (cursor == NULL) {
-        return 0;
-    }
-    cursor += strlen(pattern);
-    while (*cursor == ' ' || *cursor == '\t') {
-        cursor++;
-    }
-    if (*cursor != ':') {
-        return 0;
-    }
-    cursor++;
-    while (*cursor == ' ' || *cursor == '\t') {
-        cursor++;
-    }
-    if (*cursor != '"') {
-        return 0;
-    }
-    cursor++;
-    start = cursor;
-
-    while (*cursor != '\0' && *cursor != '"' && len + 1u < out_len) {
-        if (*cursor == '\\' && cursor[1] != '\0') {
-            cursor++;
-        }
-        cursor++;
-        len = (size_t)(cursor - start);
-    }
-    if (*cursor != '"' || len >= out_len) {
-        return 0;
-    }
-
-    memcpy(out, start, len);
-    out[len] = '\0';
-    return 1;
-}
-
-static int json_get_bool(const char *line, const char *key, int *out)
-{
-    char pattern[96];
-    const char *cursor;
-    int written;
-
-    if (line == NULL || key == NULL || out == NULL) {
-        return 0;
-    }
-
-    written = snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    if (written < 0 || (size_t)written >= sizeof(pattern)) {
-        return 0;
-    }
-
-    cursor = strstr(line, pattern);
-    if (cursor == NULL) {
-        return 0;
-    }
-    cursor += strlen(pattern);
-    while (*cursor == ' ' || *cursor == '\t') {
-        cursor++;
-    }
-    if (*cursor != ':') {
-        return 0;
-    }
-    cursor++;
-    while (*cursor == ' ' || *cursor == '\t') {
-        cursor++;
-    }
-
-    if (strncmp(cursor, "true", 4u) == 0) {
-        *out = 1;
-        return 1;
-    }
-    if (strncmp(cursor, "false", 5u) == 0) {
-        *out = 0;
-        return 1;
-    }
-
-    return 0;
-}
-
-static int json_get_first_array_string(
-    const char *line,
-    const char *key,
-    char *out,
-    size_t out_len
-)
-{
-    char pattern[96];
-    const char *cursor;
-    const char *start;
-    size_t len = 0u;
-    int written;
-
-    if (line == NULL || key == NULL || out == NULL || out_len == 0u) {
-        return 0;
-    }
-
-    written = snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    if (written < 0 || (size_t)written >= sizeof(pattern)) {
-        return 0;
-    }
-
-    cursor = strstr(line, pattern);
-    if (cursor == NULL) {
-        return 0;
-    }
-    cursor = strchr(cursor, '[');
-    if (cursor == NULL) {
-        return 0;
-    }
-    cursor++;
-    while (*cursor == ' ' || *cursor == '\t') {
-        cursor++;
-    }
-    if (*cursor != '"') {
-        return 0;
-    }
-    cursor++;
-    start = cursor;
-    while (*cursor != '\0' && *cursor != '"' && len + 1u < out_len) {
-        cursor++;
-        len = (size_t)(cursor - start);
-    }
-    if (*cursor != '"' || len >= out_len) {
-        return 0;
-    }
-
-    memcpy(out, start, len);
-    out[len] = '\0';
-    return 1;
-}
-
-static int json_get_second_raw_element(
-    const char *line,
-    char *out,
-    size_t out_len
-)
-{
-    char first[64];
-    const char *cursor;
-    const char *start;
-    size_t len = 0u;
-
-    if (!json_get_first_array_string(line, "raw_elements", first, sizeof(first))) {
-        return 0;
-    }
-
-    cursor = strstr(line, "\"raw_elements\"");
-    if (cursor == NULL) {
-        return 0;
-    }
-    cursor = strchr(cursor, '[');
-    if (cursor == NULL) {
-        return 0;
-    }
-    cursor = strchr(cursor + 1, '"');
-    if (cursor == NULL) {
-        return 0;
-    }
-    cursor = strchr(cursor + 1, '"');
-    if (cursor == NULL) {
-        return 0;
-    }
-    cursor++;
-    while (*cursor != '\0' && *cursor != '"') {
-        cursor++;
-    }
-    if (*cursor != '"') {
-        return 0;
-    }
-    cursor++;
-    start = cursor;
-    while (*cursor != '\0' && *cursor != '"' && len + 1u < out_len) {
-        cursor++;
-        len = (size_t)(cursor - start);
-    }
-    if (*cursor != '"' || len >= out_len) {
-        return 0;
-    }
-
-    memcpy(out, start, len);
-    out[len] = '\0';
-    return 1;
 }
 
 static int parse_money(const char *value, long long *out)
@@ -461,7 +259,7 @@ static balance_service_line_t *find_or_add_line_by_number(
     return line;
 }
 
-static void event_claim_key(const char *journal_line, char *claim_id, size_t claim_id_len, char *claim_token, size_t token_len)
+static void event_claim_key(const journal_event_t *journal_line, char *claim_id, size_t claim_id_len, char *claim_token, size_t token_len)
 {
     claim_id[0] = '\0';
     claim_token[0] = '\0';
@@ -469,7 +267,7 @@ static void event_claim_key(const char *journal_line, char *claim_id, size_t cla
     (void)json_get_string(journal_line, "claim_id_token", claim_token, token_len);
 }
 
-static int event_matches_filter(const balance_state_t *state, const char *journal_line)
+static int event_matches_filter(const balance_state_t *state, const journal_event_t *journal_line)
 {
     char encounter_id[BALANCE_ID_MAX];
 
@@ -485,7 +283,7 @@ static int event_matches_filter(const balance_state_t *state, const char *journa
     return strcmp(encounter_id, state->encounter_filter) == 0;
 }
 
-static int discover_charge_claim(balance_state_t *state, const char *journal_line)
+static int discover_charge_claim(balance_state_t *state, const journal_event_t *journal_line)
 {
     char encounter_id[BALANCE_ID_MAX];
     char claim_id[BALANCE_ID_MAX];
@@ -519,7 +317,7 @@ static int discover_charge_claim(balance_state_t *state, const char *journal_lin
     return X12_OK;
 }
 
-static int apply_encounter(balance_state_t *state, const char *journal_line)
+static int apply_encounter(balance_state_t *state, const journal_event_t *journal_line)
 {
     char encounter_id[BALANCE_ID_MAX];
     int synthetic;
@@ -538,7 +336,7 @@ static int apply_encounter(balance_state_t *state, const char *journal_line)
     return X12_OK;
 }
 
-static int apply_charge(balance_state_t *state, const char *journal_line)
+static int apply_charge(balance_state_t *state, const journal_event_t *journal_line)
 {
     char claim_id[BALANCE_ID_MAX];
     char claim_token[TOKENISE_MAX_TOKEN_LEN];
@@ -593,7 +391,7 @@ static int apply_charge(balance_state_t *state, const char *journal_line)
     return X12_OK;
 }
 
-static int apply_claim_observed(balance_state_t *state, const char *journal_line)
+static int apply_claim_observed(balance_state_t *state, const journal_event_t *journal_line)
 {
     char claim_id[BALANCE_ID_MAX];
     char claim_token[TOKENISE_MAX_TOKEN_LEN];
@@ -623,7 +421,7 @@ static int apply_claim_observed(balance_state_t *state, const char *journal_line
     return X12_OK;
 }
 
-static int apply_claim_service_line(balance_state_t *state, const char *journal_line)
+static int apply_claim_service_line(balance_state_t *state, const journal_event_t *journal_line)
 {
     char claim_id[BALANCE_ID_MAX];
     char claim_token[TOKENISE_MAX_TOKEN_LEN];
@@ -656,7 +454,7 @@ static int apply_claim_service_line(balance_state_t *state, const char *journal_
         copy_cstr(line->procedure_code, sizeof(line->procedure_code), procedure_code);
     }
     if (line->billed == 0 &&
-        json_get_second_raw_element(journal_line, amount_text, sizeof(amount_text))) {
+        json_get_array_string_at(journal_line, "raw_elements", 1u, amount_text, sizeof(amount_text))) {
         if (parse_money(amount_text, &amount) != X12_OK) {
             return X12_ERR_INVALID_ARGUMENT;
         }
@@ -666,7 +464,7 @@ static int apply_claim_service_line(balance_state_t *state, const char *journal_
     return X12_OK;
 }
 
-static int apply_claim_line_date(balance_state_t *state, const char *journal_line)
+static int apply_claim_line_date(balance_state_t *state, const journal_event_t *journal_line)
 {
     char claim_id[BALANCE_ID_MAX];
     char claim_token[TOKENISE_MAX_TOKEN_LEN];
@@ -694,7 +492,7 @@ static int apply_claim_line_date(balance_state_t *state, const char *journal_lin
     return X12_OK;
 }
 
-static int apply_remittance_claim(balance_state_t *state, const char *journal_line)
+static int apply_remittance_claim(balance_state_t *state, const journal_event_t *journal_line)
 {
     char claim_id[BALANCE_ID_MAX];
     char claim_token[TOKENISE_MAX_TOKEN_LEN];
@@ -744,7 +542,7 @@ static int apply_remittance_claim(balance_state_t *state, const char *journal_li
     return X12_OK;
 }
 
-static int apply_remittance_service_line(balance_state_t *state, const char *journal_line)
+static int apply_remittance_service_line(balance_state_t *state, const journal_event_t *journal_line)
 {
     char claim_id[BALANCE_ID_MAX];
     char claim_token[TOKENISE_MAX_TOKEN_LEN];
@@ -807,7 +605,7 @@ static int apply_remittance_service_line(balance_state_t *state, const char *jou
     return X12_OK;
 }
 
-static int apply_remittance_line_date(balance_state_t *state, const char *journal_line)
+static int apply_remittance_line_date(balance_state_t *state, const journal_event_t *journal_line)
 {
     char claim_id[BALANCE_ID_MAX];
     char claim_token[TOKENISE_MAX_TOKEN_LEN];
@@ -840,7 +638,7 @@ static int apply_remittance_line_date(balance_state_t *state, const char *journa
     return X12_OK;
 }
 
-static int apply_adjustment(balance_state_t *state, const char *journal_line)
+static int apply_adjustment(balance_state_t *state, const journal_event_t *journal_line)
 {
     char claim_id[BALANCE_ID_MAX];
     char claim_token[TOKENISE_MAX_TOKEN_LEN];
@@ -867,7 +665,7 @@ static int apply_adjustment(balance_state_t *state, const char *journal_line)
     }
 
     (void)json_get_string(journal_line, "adjustment_group_code", group_code, sizeof(group_code));
-    if (!json_get_first_array_string(journal_line, "amounts", amount_text, sizeof(amount_text))) {
+    if (!json_get_array_string_at(journal_line, "amounts", 0u, amount_text, sizeof(amount_text))) {
         return X12_OK;
     }
     if (parse_money(amount_text, &amount) != X12_OK) {
@@ -883,7 +681,7 @@ static int apply_adjustment(balance_state_t *state, const char *journal_line)
     return X12_OK;
 }
 
-static int apply_patient_cash_event(balance_state_t *state, const char *journal_line, const char *event_type)
+static int apply_patient_cash_event(balance_state_t *state, const journal_event_t *journal_line, const char *event_type)
 {
     char claim_id[BALANCE_ID_MAX];
     char claim_token[TOKENISE_MAX_TOKEN_LEN];
@@ -923,7 +721,7 @@ static int apply_patient_cash_event(balance_state_t *state, const char *journal_
     return X12_OK;
 }
 
-static int apply_event(balance_state_t *state, const char *journal_line, int discovery_only)
+static int apply_event(balance_state_t *state, const journal_event_t *journal_line, int discovery_only)
 {
     char event_type[96];
 
@@ -979,32 +777,29 @@ static int apply_event(balance_state_t *state, const char *journal_line, int dis
 
 static int read_journal_pass(balance_state_t *state, const char *path, int discovery_only)
 {
-    char line[BALANCE_LINE_MAX];
-    FILE *fp;
+    journal_reader_t reader;
+    journal_event_t record;
     int rc = X12_OK;
 
-    fp = fopen(path, "rb");
-    if (fp == NULL) {
-        return X12_ERR_IO;
+    journal_reader_init(&reader);
+    rc = journal_reader_open(&reader, path);
+    if (rc != X12_OK) {
+        return rc;
     }
 
-    while (fgets(line, sizeof(line), fp) != NULL) {
-        rc = apply_event(state, line, discovery_only);
-        if (rc != X12_OK) {
-            (void)fclose(fp);
-            return rc;
+    while (rc == X12_OK) {
+        rc = journal_reader_next(&reader, &record);
+        if (rc != X12_OK || record.record_len == 0u) {
+            break;
         }
+        rc = apply_event(state, &record, discovery_only);
     }
 
-    if (ferror(fp)) {
-        (void)fclose(fp);
-        return X12_ERR_IO;
-    }
-    if (fclose(fp) != 0) {
-        return X12_ERR_IO;
+    if (journal_reader_close(&reader) != X12_OK && rc == X12_OK) {
+        rc = X12_ERR_IO;
     }
 
-    return X12_OK;
+    return rc;
 }
 
 static long long line_current_balance(const balance_service_line_t *line)

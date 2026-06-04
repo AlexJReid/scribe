@@ -574,8 +574,8 @@ static int test_stroke_balance_projection_from_journal(void)
     REQUIRE(make_path(rehab_835_path, sizeof(rehab_835_path), TEST_FIXTURE_DIR, "stroke_encounter/rehab_835.edi") == 0);
     REQUIRE(make_path(neurology_837_path, sizeof(neurology_837_path), TEST_FIXTURE_DIR, "stroke_encounter/neurology_837.edi") == 0);
     REQUIRE(make_path(neurology_835_path, sizeof(neurology_835_path), TEST_FIXTURE_DIR, "stroke_encounter/neurology_835.edi") == 0);
-    REQUIRE(make_path(journal_path, sizeof(journal_path), TEST_OUTPUT_DIR, "stroke_encounter.journal.ndjson") == 0);
-    REQUIRE(make_path(nonphi_journal_path, sizeof(nonphi_journal_path), TEST_OUTPUT_DIR, "stroke_encounter_nonphi.journal.ndjson") == 0);
+    REQUIRE(make_path(journal_path, sizeof(journal_path), TEST_OUTPUT_DIR, "stroke_encounter.journal") == 0);
+    REQUIRE(make_path(nonphi_journal_path, sizeof(nonphi_journal_path), TEST_OUTPUT_DIR, "stroke_encounter_nonphi.journal") == 0);
     REQUIRE(make_path(aggregate_path, sizeof(aggregate_path), TEST_OUTPUT_DIR, "stroke_claim_aggregates.ndjson") == 0);
     REQUIRE(make_path(nonphi_aggregate_path, sizeof(nonphi_aggregate_path), TEST_OUTPUT_DIR, "stroke_claim_aggregates_nonphi.ndjson") == 0);
     REQUIRE(make_path(resolved_phi_aggregate_path, sizeof(resolved_phi_aggregate_path), TEST_OUTPUT_DIR, "stroke_claim_aggregates_resolved_phi.ndjson") == 0);

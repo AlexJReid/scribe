@@ -1,6 +1,7 @@
 #ifndef SCRIBE_EVENT_WRITER_H
 #define SCRIBE_EVENT_WRITER_H
 
+#include "journal.h"
 #include "phi_vault.h"
 #include "tokenise.h"
 #include "x12_parser.h"
@@ -18,6 +19,9 @@ typedef struct {
     int include_phi;
     phi_vault_t *phi_vault;
     const char *phi_source_ref;
+    int binary_journal;
+    FILE *payload_sink;
+    journal_record_builder_t journal_record;
 } event_writer_t;
 
 int event_writer_open(
@@ -38,6 +42,7 @@ int event_writer_close(event_writer_t *writer);
 
 void event_writer_set_include_phi(event_writer_t *writer, int include_phi);
 int event_writer_include_phi(const event_writer_t *writer);
+int event_writer_set_binary_journal(event_writer_t *writer, int binary_journal);
 void event_writer_set_phi_vault(
     event_writer_t *writer,
     phi_vault_t *vault,
@@ -84,6 +89,12 @@ int event_writer_write_cstring_field(
     FILE *fp,
     const char *name,
     const char *value,
+    int prefix_comma
+);
+int event_writer_write_bool_field(
+    FILE *fp,
+    const char *name,
+    int value,
     int prefix_comma
 );
 int event_writer_write_str_array_field(

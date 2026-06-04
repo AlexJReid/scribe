@@ -1,7 +1,10 @@
 #include "event_writer.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+static event_writer_t *active_binary_writer = NULL;
 
 static x12_str_t empty_str(void)
 {
@@ -55,6 +58,9 @@ int event_writer_open(
     writer->include_phi = 0;
     writer->phi_vault = NULL;
     writer->phi_source_ref = source_file;
+    writer->binary_journal = 0;
+    writer->payload_sink = NULL;
+    journal_record_builder_init(&writer->journal_record);
 
     if (out_path == NULL || strcmp(out_path, "-") == 0) {
         writer->fp = stdout;
@@ -93,6 +99,9 @@ int event_writer_open_stream(
     writer->include_phi = 0;
     writer->phi_vault = NULL;
     writer->phi_source_ref = source_file;
+    writer->binary_journal = 0;
+    writer->payload_sink = NULL;
+    journal_record_builder_init(&writer->journal_record);
 
     return X12_OK;
 }
@@ -113,6 +122,27 @@ int event_writer_include_phi(const event_writer_t *writer)
     }
 
     return writer->include_phi;
+}
+
+int event_writer_set_binary_journal(event_writer_t *writer, int binary_journal)
+{
+    if (writer == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    writer->binary_journal = binary_journal ? 1 : 0;
+    if (!writer->binary_journal) {
+        return X12_OK;
+    }
+
+    if (writer->payload_sink == NULL) {
+        writer->payload_sink = tmpfile();
+        if (writer->payload_sink == NULL) {
+            return X12_ERR_IO;
+        }
+    }
+
+    return X12_OK;
 }
 
 void event_writer_set_phi_vault(
@@ -250,20 +280,30 @@ int event_writer_close(event_writer_t *writer)
 {
     int rc = X12_OK;
 
-    if (writer == NULL || writer->fp == NULL) {
+    if (writer == NULL) {
         return X12_OK;
     }
 
-    if (fflush(writer->fp) != 0) {
+    if (active_binary_writer == writer) {
+        active_binary_writer = NULL;
+    }
+
+    if (writer->fp != NULL && fflush(writer->fp) != 0) {
         rc = X12_ERR_IO;
     }
 
-    if (writer->owns_file && fclose(writer->fp) != 0) {
+    if (writer->owns_file && writer->fp != NULL && fclose(writer->fp) != 0) {
         rc = X12_ERR_IO;
     }
+    if (writer->payload_sink != NULL && fclose(writer->payload_sink) != 0 && rc == X12_OK) {
+        rc = X12_ERR_IO;
+    }
+    journal_record_builder_free(&writer->journal_record);
 
     writer->fp = NULL;
     writer->owns_file = 0;
+    writer->payload_sink = NULL;
+    writer->binary_journal = 0;
 
     return rc;
 }
@@ -290,6 +330,9 @@ FILE *event_writer_stream(event_writer_t *writer)
 {
     if (writer == NULL) {
         return NULL;
+    }
+    if (writer->binary_journal) {
+        return writer->payload_sink;
     }
 
     return writer->fp;
@@ -371,9 +414,74 @@ int event_writer_begin_event(
 )
 {
     FILE *fp;
+    int rc;
 
     if (writer == NULL || writer->fp == NULL || event_type == NULL || seg == NULL) {
         return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    if (writer->binary_journal) {
+        if (writer->payload_sink == NULL) {
+            return X12_ERR_INVALID_ARGUMENT;
+        }
+        rewind(writer->payload_sink);
+        rc = journal_record_builder_reset(&writer->journal_record);
+        if (rc == X12_OK) {
+            rc = journal_record_add_cstring(&writer->journal_record, "event_type", event_type);
+        }
+        if (rc == X12_OK) {
+            rc = journal_record_add_cstring(&writer->journal_record, "source_file", writer->source_file);
+        }
+        if (rc == X12_OK) {
+            rc = journal_record_add_cstring(
+                &writer->journal_record,
+                "source_transaction",
+                writer->source_transaction
+            );
+        }
+        if (rc == X12_OK) {
+            rc = journal_record_add_u64(
+                &writer->journal_record,
+                "source_segment_index",
+                (unsigned long long)seg->segment_index
+            );
+        }
+        if (rc == X12_OK) {
+            rc = journal_record_add_u64(
+                &writer->journal_record,
+                "source_byte_offset",
+                (unsigned long long)seg->byte_offset
+            );
+        }
+        if (rc == X12_OK) {
+            rc = journal_record_add_string(
+                &writer->journal_record,
+                "isa13",
+                writer->isa13.ptr,
+                writer->isa13.len
+            );
+        }
+        if (rc == X12_OK) {
+            rc = journal_record_add_string(
+                &writer->journal_record,
+                "gs06",
+                writer->gs06.ptr,
+                writer->gs06.len
+            );
+        }
+        if (rc == X12_OK) {
+            rc = journal_record_add_string(
+                &writer->journal_record,
+                "st02",
+                writer->st02.ptr,
+                writer->st02.len
+            );
+        }
+        if (rc != X12_OK) {
+            return rc;
+        }
+        active_binary_writer = writer;
+        return X12_OK;
     }
 
     fp = writer->fp;
@@ -432,7 +540,18 @@ int event_writer_end_event(event_writer_t *writer)
         return X12_ERR_INVALID_ARGUMENT;
     }
 
-    if (fputs("}\n", writer->fp) == EOF) {
+    if (writer->binary_journal) {
+        int rc = journal_write_record(writer->fp, &writer->journal_record, NULL, NULL);
+        if (active_binary_writer == writer) {
+            active_binary_writer = NULL;
+        }
+        return rc;
+    }
+
+    if (fputc('}', writer->fp) == EOF) {
+        return X12_ERR_IO;
+    }
+    if (fputc('\n', writer->fp) == EOF) {
         return X12_ERR_IO;
     }
 
@@ -448,6 +567,14 @@ int event_writer_write_string_field(
 {
     if (fp == NULL || name == NULL) {
         return X12_ERR_INVALID_ARGUMENT;
+    }
+    if (active_binary_writer != NULL && fp == active_binary_writer->payload_sink) {
+        return journal_record_add_string(
+            &active_binary_writer->journal_record,
+            name,
+            value.ptr,
+            value.len
+        );
     }
 
     if (prefix_comma && write_char(fp, ',') != X12_OK) {
@@ -472,6 +599,9 @@ int event_writer_write_cstring_field(
     if (fp == NULL || name == NULL) {
         return X12_ERR_INVALID_ARGUMENT;
     }
+    if (active_binary_writer != NULL && fp == active_binary_writer->payload_sink) {
+        return journal_record_add_cstring(&active_binary_writer->journal_record, name, value);
+    }
 
     if (prefix_comma && write_char(fp, ',') != X12_OK) {
         return X12_ERR_IO;
@@ -483,6 +613,36 @@ int event_writer_write_cstring_field(
         return X12_ERR_IO;
     }
     return event_writer_write_cstring(fp, value);
+}
+
+int event_writer_write_bool_field(
+    FILE *fp,
+    const char *name,
+    int value,
+    int prefix_comma
+)
+{
+    if (fp == NULL || name == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+    if (active_binary_writer != NULL && fp == active_binary_writer->payload_sink) {
+        return journal_record_add_bool(&active_binary_writer->journal_record, name, value);
+    }
+
+    if (prefix_comma && write_char(fp, ',') != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_json_string(fp, name, strlen(name)) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (write_char(fp, ':') != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (fputs(value ? "true" : "false", fp) == EOF) {
+        return X12_ERR_IO;
+    }
+
+    return check_file(fp);
 }
 
 int event_writer_write_str_array_field(
@@ -497,6 +657,14 @@ int event_writer_write_str_array_field(
 
     if (fp == NULL || name == NULL || (values == NULL && count > 0u)) {
         return X12_ERR_INVALID_ARGUMENT;
+    }
+    if (active_binary_writer != NULL && fp == active_binary_writer->payload_sink) {
+        return journal_record_add_string_array(
+            &active_binary_writer->journal_record,
+            name,
+            values,
+            count
+        );
     }
 
     if (prefix_comma && write_char(fp, ',') != X12_OK) {

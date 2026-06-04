@@ -1,6 +1,7 @@
 #include "aggregate_stitcher.h"
 
 #include "event_writer.h"
+#include "journal.h"
 #include "phi_vault.h"
 #include "store.h"
 #include "tokenise.h"
@@ -8,6 +9,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#define json_get_string journal_event_get_string
+#define json_get_number_text journal_event_get_number_text
+#define json_get_array_string_at journal_event_get_array_string_at
 
 #define STITCH_LINE_MAX 8192u
 #define STITCH_ID_MAX 128u
@@ -322,188 +327,6 @@ static int json_buffer_append_bool_field(
     return json_buffer_append(buffer, value ? "true" : "false");
 }
 
-static int json_get_string(
-    const char *line,
-    const char *key,
-    char *out,
-    size_t out_len
-)
-{
-    char pattern[96];
-    const char *cursor;
-    const char *start;
-    size_t len = 0u;
-    int written;
-
-    if (line == NULL || key == NULL || out == NULL || out_len == 0u) {
-        return 0;
-    }
-
-    out[0] = '\0';
-    written = snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    if (written < 0 || (size_t)written >= sizeof(pattern)) {
-        return 0;
-    }
-
-    cursor = strstr(line, pattern);
-    if (cursor == NULL) {
-        return 0;
-    }
-    cursor += strlen(pattern);
-    while (*cursor == ' ' || *cursor == '\t') {
-        cursor++;
-    }
-    if (*cursor != ':') {
-        return 0;
-    }
-    cursor++;
-    while (*cursor == ' ' || *cursor == '\t') {
-        cursor++;
-    }
-    if (*cursor != '"') {
-        return 0;
-    }
-    cursor++;
-    start = cursor;
-
-    while (*cursor != '\0' && *cursor != '"' && len + 1u < out_len) {
-        if (*cursor == '\\' && cursor[1] != '\0') {
-            cursor++;
-        }
-        cursor++;
-        len = (size_t)(cursor - start);
-    }
-    if (*cursor != '"' || len >= out_len) {
-        return 0;
-    }
-
-    memcpy(out, start, len);
-    out[len] = '\0';
-    return 1;
-}
-
-static int json_get_number_text(
-    const char *line,
-    const char *key,
-    char *out,
-    size_t out_len
-)
-{
-    char pattern[96];
-    const char *cursor;
-    const char *start;
-    size_t len = 0u;
-    int written;
-
-    if (line == NULL || key == NULL || out == NULL || out_len == 0u) {
-        return 0;
-    }
-
-    out[0] = '\0';
-    written = snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    if (written < 0 || (size_t)written >= sizeof(pattern)) {
-        return 0;
-    }
-
-    cursor = strstr(line, pattern);
-    if (cursor == NULL) {
-        return 0;
-    }
-    cursor += strlen(pattern);
-    while (*cursor == ' ' || *cursor == '\t') {
-        cursor++;
-    }
-    if (*cursor != ':') {
-        return 0;
-    }
-    cursor++;
-    while (*cursor == ' ' || *cursor == '\t') {
-        cursor++;
-    }
-    start = cursor;
-    while ((*cursor >= '0' && *cursor <= '9') && len + 1u < out_len) {
-        cursor++;
-        len = (size_t)(cursor - start);
-    }
-    if (len == 0u || len >= out_len) {
-        return 0;
-    }
-
-    memcpy(out, start, len);
-    out[len] = '\0';
-    return 1;
-}
-
-static int json_get_array_string_at(
-    const char *line,
-    const char *key,
-    size_t index,
-    char *out,
-    size_t out_len
-)
-{
-    char pattern[96];
-    const char *cursor;
-    const char *start;
-    size_t current_index = 0u;
-    size_t len;
-    int written;
-
-    if (line == NULL || key == NULL || out == NULL || out_len == 0u) {
-        return 0;
-    }
-
-    out[0] = '\0';
-    written = snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-    if (written < 0 || (size_t)written >= sizeof(pattern)) {
-        return 0;
-    }
-
-    cursor = strstr(line, pattern);
-    if (cursor == NULL) {
-        return 0;
-    }
-    cursor = strchr(cursor, '[');
-    if (cursor == NULL) {
-        return 0;
-    }
-    cursor++;
-
-    while (*cursor != '\0' && *cursor != ']') {
-        while (*cursor == ' ' || *cursor == '\t' || *cursor == ',') {
-            cursor++;
-        }
-        if (*cursor == ']') {
-            break;
-        }
-        if (*cursor != '"') {
-            return 0;
-        }
-        cursor++;
-        start = cursor;
-        len = 0u;
-        while (*cursor != '\0' && *cursor != '"' && len + 1u < out_len) {
-            if (*cursor == '\\' && cursor[1] != '\0') {
-                cursor++;
-            }
-            cursor++;
-            len = (size_t)(cursor - start);
-        }
-        if (*cursor != '"' || len >= out_len) {
-            return 0;
-        }
-        if (current_index == index) {
-            memcpy(out, start, len);
-            out[len] = '\0';
-            return 1;
-        }
-        current_index++;
-        cursor++;
-    }
-
-    return 0;
-}
-
 static const char *claim_key(const char *claim_id, const char *claim_id_token)
 {
     if (claim_id_token != NULL && claim_id_token[0] != '\0') {
@@ -514,7 +337,7 @@ static const char *claim_key(const char *claim_id, const char *claim_id_token)
 }
 
 static void extract_claim_keys(
-    const char *journal_line,
+    const journal_event_t *journal_line,
     char *claim_id,
     size_t claim_id_len,
     char *claim_id_token,
@@ -580,7 +403,7 @@ static int resolve_phi_token(
 
 static int extract_value_token_pair(
     const stitch_state_t *state,
-    const char *journal_line,
+    const journal_event_t *journal_line,
     const char *value_field,
     const char *token_field,
     const char *namespace_name,
@@ -791,7 +614,7 @@ static int resolve_patient_name_by_id(
 
 static int capture_encounter_context(
     stitch_state_t *state,
-    const char *journal_line
+    const journal_event_t *journal_line
 )
 {
     char event_type[96];
@@ -897,7 +720,7 @@ static int apply_encounter_context_to_aggregate(
 static int capture_reference_patient_context(
     stitch_state_t *state,
     claim_aggregate_t *aggregate,
-    const char *journal_line,
+    const journal_event_t *journal_line,
     const char *event_type
 )
 {
@@ -1260,7 +1083,7 @@ static void update_service_line_date(stitched_service_line_t *line)
     }
 }
 
-static int apply_charge_service_line(claim_aggregate_t *aggregate, const char *journal_line)
+static int apply_charge_service_line(claim_aggregate_t *aggregate, const journal_event_t *journal_line)
 {
     char line_no[32];
     char value[STITCH_VALUE_MAX];
@@ -1290,7 +1113,7 @@ static int apply_charge_service_line(claim_aggregate_t *aggregate, const char *j
     return X12_OK;
 }
 
-static int apply_submitted_service_line(claim_aggregate_t *aggregate, const char *journal_line)
+static int apply_submitted_service_line(claim_aggregate_t *aggregate, const journal_event_t *journal_line)
 {
     char line_no[32];
     char value[STITCH_VALUE_MAX];
@@ -1332,7 +1155,7 @@ static int apply_submitted_service_line(claim_aggregate_t *aggregate, const char
     return X12_OK;
 }
 
-static int apply_submitted_line_date(claim_aggregate_t *aggregate, const char *journal_line)
+static int apply_submitted_line_date(claim_aggregate_t *aggregate, const journal_event_t *journal_line)
 {
     char line_no[32];
     char value[STITCH_VALUE_MAX];
@@ -1354,7 +1177,7 @@ static int apply_submitted_line_date(claim_aggregate_t *aggregate, const char *j
     return X12_OK;
 }
 
-static int apply_remittance_service_line(claim_aggregate_t *aggregate, const char *journal_line)
+static int apply_remittance_service_line(claim_aggregate_t *aggregate, const journal_event_t *journal_line)
 {
     char remit_line_no[32];
     char procedure_code[32];
@@ -1408,7 +1231,7 @@ static int apply_remittance_service_line(claim_aggregate_t *aggregate, const cha
     return X12_OK;
 }
 
-static int apply_remittance_line_date(claim_aggregate_t *aggregate, const char *journal_line)
+static int apply_remittance_line_date(claim_aggregate_t *aggregate, const journal_event_t *journal_line)
 {
     char remit_line_no[32];
     char value[STITCH_VALUE_MAX];
@@ -1430,7 +1253,7 @@ static int apply_remittance_line_date(claim_aggregate_t *aggregate, const char *
     return X12_OK;
 }
 
-static int apply_service_line_adjustment(claim_aggregate_t *aggregate, const char *journal_line)
+static int apply_service_line_adjustment(claim_aggregate_t *aggregate, const journal_event_t *journal_line)
 {
     char line_no[32];
     char value[STITCH_VALUE_MAX];
@@ -1493,7 +1316,7 @@ static int apply_service_line_adjustment(claim_aggregate_t *aggregate, const cha
 }
 
 static int make_drop_key(
-    const char *journal_line,
+    const journal_event_t *journal_line,
     char *out,
     size_t out_len
 )
@@ -1527,7 +1350,7 @@ static int make_drop_key(
 }
 
 static int make_fingerprint(
-    const char *journal_line,
+    const journal_event_t *journal_line,
     const char *event_type,
     const char *aggregate_key,
     char *out,
@@ -1566,7 +1389,7 @@ static int make_fingerprint(
     return X12_OK;
 }
 
-static int event_matches_filter(const stitch_state_t *state, const char *journal_line)
+static int event_matches_filter(const stitch_state_t *state, const journal_event_t *journal_line)
 {
     char encounter_id[STITCH_ID_MAX];
 
@@ -1581,7 +1404,7 @@ static int event_matches_filter(const stitch_state_t *state, const char *journal
     return strcmp(encounter_id, state->encounter_filter) == 0;
 }
 
-static int event_has_encounter_id(const char *journal_line)
+static int event_has_encounter_id(const journal_event_t *journal_line)
 {
     char encounter_id[STITCH_ID_MAX];
 
@@ -2667,9 +2490,10 @@ static int put_event_key_if_present(
 
 static int index_journal_event(
     stitch_state_t *state,
-    const char *journal_line,
+    const journal_event_t *journal_line,
     size_t numeric_event_id,
-    long long event_offset
+    long long event_offset,
+    long long event_length
 )
 {
     char event_id[32];
@@ -2717,7 +2541,7 @@ static int index_journal_event(
         event_type,
         segment_id,
         event_offset,
-        (long long)strlen(journal_line),
+        event_length,
         ""
     );
     if (rc != X12_OK) {
@@ -2833,7 +2657,7 @@ static int flush_update_batches(stitch_state_t *state)
 
 static int apply_claim_event(
     stitch_state_t *state,
-    const char *journal_line,
+    const journal_event_t *journal_line,
     size_t event_id,
     const char *drop_key
 )
@@ -2991,7 +2815,7 @@ static int apply_claim_event(
 
 static int discover_encounter_claim(
     stitch_state_t *state,
-    const char *journal_line
+    const journal_event_t *journal_line
 )
 {
     char event_type[96];
@@ -3041,32 +2865,32 @@ static int discover_encounter_claim(
 
 static int read_journal_for_discovery(stitch_state_t *state, const char *path)
 {
-    FILE *journal;
-    char line[STITCH_LINE_MAX];
+    journal_reader_t journal;
+    journal_event_t record;
     int rc = X12_OK;
 
     if (state->encounter_filter[0] == '\0') {
         return X12_OK;
     }
 
-    journal = fopen(path, "rb");
-    if (journal == NULL) {
-        return X12_ERR_IO;
+    journal_reader_init(&journal);
+    rc = journal_reader_open(&journal, path);
+    if (rc != X12_OK) {
+        return rc;
     }
 
-    while (fgets(line, sizeof(line), journal) != NULL) {
-        rc = capture_encounter_context(state, line);
-        if (rc == X12_OK) {
-            rc = discover_encounter_claim(state, line);
-        }
-        if (rc != X12_OK) {
+    while (rc == X12_OK) {
+        rc = journal_reader_next(&journal, &record);
+        if (rc != X12_OK || record.record_len == 0u) {
             break;
         }
+        rc = capture_encounter_context(state, &record);
+        if (rc == X12_OK) {
+            rc = discover_encounter_claim(state, &record);
+        }
     }
-    if (ferror(journal) && rc == X12_OK) {
-        rc = X12_ERR_IO;
-    }
-    if (fclose(journal) != 0 && rc == X12_OK) {
+
+    if (journal_reader_close(&journal) != X12_OK && rc == X12_OK) {
         rc = X12_ERR_IO;
     }
 
@@ -3085,9 +2909,9 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
     stitch_state_t *state;
     scribe_store_t read_store;
     phi_vault_t phi_vault;
-    FILE *journal;
+    journal_reader_t journal;
+    journal_event_t record;
     FILE *out;
-    char line[STITCH_LINE_MAX];
     char drop_key[STITCH_FINGERPRINT_MAX];
     size_t event_id = 0u;
     int owns_out = 0;
@@ -3099,9 +2923,10 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
         return X12_ERR_INVALID_ARGUMENT;
     }
 
-    journal = fopen(input->journal_path, "rb");
-    if (journal == NULL) {
-        return X12_ERR_IO;
+    journal_reader_init(&journal);
+    rc = journal_reader_open(&journal, input->journal_path);
+    if (rc != X12_OK) {
+        return rc;
     }
 
     if (strcmp(input->out_path, "-") == 0) {
@@ -3111,13 +2936,13 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
         owns_out = 1;
     }
     if (out == NULL) {
-        (void)fclose(journal);
+        (void)journal_reader_close(&journal);
         return X12_ERR_IO;
     }
 
     state = (stitch_state_t *)calloc(1u, sizeof(*state));
     if (state == NULL) {
-        (void)fclose(journal);
+        (void)journal_reader_close(&journal);
         if (owns_out) {
             (void)fclose(out);
         }
@@ -3134,7 +2959,7 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
         }
         if (rc != X12_OK) {
             (void)phi_vault_close(&phi_vault);
-            (void)fclose(journal);
+            (void)journal_reader_close(&journal);
             if (owns_out) {
                 (void)fclose(out);
             }
@@ -3155,7 +2980,7 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
         }
         if (rc != X12_OK) {
             (void)scribe_store_close(&read_store);
-            (void)fclose(journal);
+            (void)journal_reader_close(&journal);
             if (owns_out) {
                 (void)fclose(out);
             }
@@ -3171,7 +2996,7 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
 
     rc = read_journal_for_discovery(state, input->journal_path);
     if (rc != X12_OK) {
-        (void)fclose(journal);
+        (void)journal_reader_close(&journal);
         if (owns_out) {
             (void)fclose(out);
         }
@@ -3185,18 +3010,13 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
         return rc;
     }
 
-    while (1) {
-        long event_offset = ftell(journal);
-
-        if (event_offset < 0) {
-            rc = X12_ERR_IO;
-            break;
-        }
-        if (fgets(line, sizeof(line), journal) == NULL) {
+    while (rc == X12_OK) {
+        rc = journal_reader_next(&journal, &record);
+        if (rc != X12_OK || record.record_len == 0u) {
             break;
         }
         event_id++;
-        rc = make_drop_key(line, drop_key, sizeof(drop_key));
+        rc = make_drop_key(&record, drop_key, sizeof(drop_key));
         if (rc != X12_OK) {
             break;
         }
@@ -3211,14 +3031,20 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
             }
         }
 
-        rc = index_journal_event(state, line, event_id, (long long)event_offset);
+        rc = index_journal_event(
+            state,
+            &record,
+            event_id,
+            record.offset,
+            record.stored_len
+        );
         if (rc != X12_OK) {
             break;
         }
 
-        rc = capture_encounter_context(state, line);
+        rc = capture_encounter_context(state, &record);
         if (rc == X12_OK) {
-            rc = apply_claim_event(state, line, event_id, drop_key);
+            rc = apply_claim_event(state, &record, event_id, drop_key);
         }
         if (rc != X12_OK) {
             break;
@@ -3229,10 +3055,7 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
         rc = flush_update_batches(state);
     }
 
-    if (ferror(journal) && rc == X12_OK) {
-        rc = X12_ERR_IO;
-    }
-    if (fclose(journal) != 0 && rc == X12_OK) {
+    if (journal_reader_close(&journal) != X12_OK && rc == X12_OK) {
         rc = X12_ERR_IO;
     }
     if (fflush(out) != 0 && rc == X12_OK) {

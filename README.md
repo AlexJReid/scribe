@@ -19,7 +19,7 @@ amounts, and EDI content are not real PHI.
 
 Current proof of concept:
 
-- Journal: immutable evidence stream, NDJSON for now, binary log target
+- Journal: immutable binary evidence stream
 - PHI vault: separate resolver for `namespace + token -> raw`
 - Indexes: claim, payer control, encounter, and event locator lookup
 - Aggregate snapshot store: versioned claim state plus latest claim state
@@ -52,7 +52,7 @@ standing in for a managed database or document store.
   - Replicating the vault proliferates sensitive data and needs careful control
   - Prefer generating a purpose-built PHI dataset as the app read store where possible
   - Or keep an audited API as the central vault for access control and lookup history
-- `scribe` renders 835/837 JSON, journals, and aggregates for exploration
+- `scribe` renders parsed 835/837 JSON and aggregate exports for exploration
 - The C proof of concept is terse, compact, and extremely fast
   - It is a tiny executable, not a server
   - It can process large batches in milliseconds
@@ -64,7 +64,7 @@ standing in for a managed database or document store.
 flowchart LR
     input["charges + 837 + 835"]
     ingest["ingest/parser<br/>map + tokenise"]
-    journal[("journal<br/>NDJSON POC / binary target")]
+    journal[("journal<br/>binary event log")]
     vault[("PHI vault<br/>namespace + token -> raw")]
 
     input --> ingest
@@ -99,7 +99,7 @@ flowchart LR
 Create the journal and PHI vault:
 
 ```sh
-build/scribe journal --out stroke.journal.ndjson \
+build/scribe journal --out stroke.journal \
   --phi-vault stroke_phi_vault.sqlite \
   --charges tests/fixtures/stroke_encounter/charge_transactions.ndjson \
   --837 tests/fixtures/stroke_encounter/facility_837.edi \
@@ -116,7 +116,7 @@ Stitch into the read store:
 
 ```sh
 build/scribe stitch \
-  --journal stroke.journal.ndjson \
+  --journal stroke.journal \
   --encounter-id ENC-SYN-STROKE-001 \
   --read-store stroke_read_store.sqlite \
   --out stroke_aggregates.ndjson
@@ -135,7 +135,7 @@ PHI read store from the same tokenised journal:
 
 ```sh
 build/scribe stitch \
-  --journal stroke.journal.ndjson \
+  --journal stroke.journal \
   --encounter-id ENC-SYN-STROKE-001 \
   --read-store stroke_phi_read_store.sqlite \
   --phi-vault stroke_phi_vault.sqlite \
@@ -147,7 +147,7 @@ Optional: derive a ledger-style balance from the same journal:
 
 ```sh
 build/scribe project --projection balance \
-  --journal stroke.journal.ndjson \
+  --journal stroke.journal \
   --encounter-id ENC-SYN-STROKE-001 \
   --out stroke_balance.json
 ```
