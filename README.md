@@ -34,6 +34,9 @@ standing in for a managed database or document store.
 - Early PHI split
   - Tokenised events can move through normal dev and analytics paths
   - Raw values stay in the vault
+- Stable identifiers can be derived from composite input values
+  - Pluggable mapping rules tailor matching by file origin
+  - 837, 835, charges, and vendor variants can choose different key recipes
 - Journal reductions can answer state as of T
   - Chronologies and historic claim timelines become simple projections
 - Pre-calculated claim snapshots are one read for consuming apps
