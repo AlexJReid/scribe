@@ -1,6 +1,7 @@
 #include "aggregate_stitcher.h"
 
 #include "event_writer.h"
+#include "phi_vault.h"
 #include "store.h"
 #include "tokenise.h"
 
@@ -15,6 +16,7 @@
 #define STITCH_MAX_AGGREGATES 128u
 #define STITCH_MAX_SOURCE_EVENTS 512u
 #define STITCH_MAX_UPDATE_BATCHES 128u
+#define STITCH_MAX_ENCOUNTERS 64u
 
 typedef struct {
     size_t event_id;
@@ -28,6 +30,10 @@ typedef struct {
     char payer_claim_control_number[STITCH_ID_MAX];
     char payer_claim_control_number_token[TOKENISE_MAX_TOKEN_LEN];
     char encounter_id[STITCH_ID_MAX];
+    char patient_id[STITCH_ID_MAX];
+    char patient_id_token[TOKENISE_MAX_TOKEN_LEN];
+    char patient_name[STITCH_VALUE_MAX];
+    char patient_name_token[TOKENISE_MAX_TOKEN_LEN];
     char claim_type[64];
     char claim_status_code[32];
     size_t version;
@@ -52,10 +58,20 @@ typedef struct {
 } stitch_update_batch_t;
 
 typedef struct {
+    char encounter_id[STITCH_ID_MAX];
+    char patient_id[STITCH_ID_MAX];
+    char patient_id_token[TOKENISE_MAX_TOKEN_LEN];
+    char patient_name[STITCH_VALUE_MAX];
+    char patient_name_token[TOKENISE_MAX_TOKEN_LEN];
+} stitch_encounter_context_t;
+
+typedef struct {
     claim_aggregate_t aggregates[STITCH_MAX_AGGREGATES];
     size_t aggregate_count;
     stitch_update_batch_t update_batches[STITCH_MAX_UPDATE_BATCHES];
     size_t update_batch_count;
+    stitch_encounter_context_t encounter_contexts[STITCH_MAX_ENCOUNTERS];
+    size_t encounter_context_count;
     char current_drop_key[STITCH_FINGERPRINT_MAX];
     char current_source_drop_id[STITCH_VALUE_MAX];
     size_t source_drop_count;
@@ -63,6 +79,7 @@ typedef struct {
     int include_phi;
     FILE *out;
     scribe_store_t *read_store;
+    phi_vault_t *phi_vault;
 } stitch_state_t;
 
 typedef struct {
@@ -397,6 +414,524 @@ static void extract_claim_keys(
     (void)json_get_string(journal_line, "claim_id_token", claim_id_token, token_len);
 }
 
+static int tokenise_cstring(token_type_t type, const char *value, char *out, size_t out_len)
+{
+    x12_str_t raw;
+
+    if (value == NULL || value[0] == '\0') {
+        if (out != NULL && out_len > 0u) {
+            out[0] = '\0';
+        }
+        return X12_OK;
+    }
+
+    raw.ptr = (char *)value;
+    raw.len = strlen(value);
+    return tokenise_value(type, raw, out, out_len);
+}
+
+static int resolve_phi_token(
+    const stitch_state_t *state,
+    const char *namespace_name,
+    const char *token,
+    char *out,
+    size_t out_len
+)
+{
+    int rc;
+
+    if (out == NULL || out_len == 0u) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+    out[0] = '\0';
+    if (state == NULL || !state->include_phi || state->phi_vault == NULL ||
+        namespace_name == NULL || token == NULL || token[0] == '\0') {
+        return X12_OK;
+    }
+
+    rc = phi_vault_resolve(
+        state->phi_vault,
+        namespace_name,
+        token,
+        "stitch",
+        "aggregate",
+        out,
+        out_len
+    );
+    if (rc == X12_ERR_NOT_FOUND) {
+        out[0] = '\0';
+        return X12_OK;
+    }
+    return rc;
+}
+
+static int extract_value_token_pair(
+    const stitch_state_t *state,
+    const char *journal_line,
+    const char *value_field,
+    const char *token_field,
+    const char *namespace_name,
+    char *raw_out,
+    size_t raw_out_len,
+    char *token_out,
+    size_t token_out_len
+)
+{
+    char value[STITCH_VALUE_MAX];
+    char token[TOKENISE_MAX_TOKEN_LEN];
+    int has_value;
+    int has_token;
+    int rc;
+
+    if (raw_out == NULL || raw_out_len == 0u || token_out == NULL || token_out_len == 0u) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+    raw_out[0] = '\0';
+    token_out[0] = '\0';
+
+    has_value = json_get_string(journal_line, value_field, value, sizeof(value));
+    has_token = json_get_string(journal_line, token_field, token, sizeof(token));
+    if (!has_value && !has_token) {
+        return X12_OK;
+    }
+
+    if (has_token) {
+        copy_cstr(token_out, token_out_len, token);
+        if (has_value && state != NULL && state->include_phi) {
+            copy_cstr(raw_out, raw_out_len, value);
+        } else {
+            rc = resolve_phi_token(state, namespace_name, token, raw_out, raw_out_len);
+            if (rc != X12_OK) {
+                return rc;
+            }
+        }
+        return X12_OK;
+    }
+
+    copy_cstr(token_out, token_out_len, value);
+    return resolve_phi_token(state, namespace_name, value, raw_out, raw_out_len);
+}
+
+static int make_patient_name(
+    const char *last_name_or_org,
+    const char *first_name,
+    char *out,
+    size_t out_len
+)
+{
+    int written;
+
+    if (out == NULL || out_len == 0u) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+    out[0] = '\0';
+    if (last_name_or_org == NULL || last_name_or_org[0] == '\0') {
+        return X12_OK;
+    }
+
+    if (first_name != NULL && first_name[0] != '\0') {
+        written = snprintf(out, out_len, "%s|%s", last_name_or_org, first_name);
+    } else {
+        written = snprintf(out, out_len, "%s", last_name_or_org);
+    }
+    if (written < 0 || (size_t)written >= out_len) {
+        return X12_ERR_BUFFER_TOO_SMALL;
+    }
+
+    return X12_OK;
+}
+
+static int set_patient_name(
+    const stitch_state_t *state,
+    char *patient_name,
+    size_t patient_name_len,
+    char *patient_name_token,
+    size_t patient_name_token_len,
+    const char *raw_name,
+    int overwrite
+)
+{
+    char token[TOKENISE_MAX_TOKEN_LEN];
+    int rc;
+
+    if (raw_name == NULL || raw_name[0] == '\0') {
+        return X12_OK;
+    }
+    if (!overwrite && patient_name_token != NULL && patient_name_token[0] != '\0') {
+        return X12_OK;
+    }
+
+    rc = tokenise_cstring(TOK_PATIENT_NAME, raw_name, token, sizeof(token));
+    if (rc != X12_OK) {
+        return rc;
+    }
+    if (patient_name_token != NULL && patient_name_token_len > 0u) {
+        copy_cstr(patient_name_token, patient_name_token_len, token);
+    }
+    if (state != NULL && state->include_phi && patient_name != NULL && patient_name_len > 0u) {
+        copy_cstr(patient_name, patient_name_len, raw_name);
+    }
+
+    return X12_OK;
+}
+
+static int set_patient_id(
+    const stitch_state_t *state,
+    char *patient_id,
+    size_t patient_id_len,
+    char *patient_id_token,
+    size_t patient_id_token_len,
+    const char *raw_id,
+    const char *token,
+    int overwrite
+)
+{
+    if (!overwrite && patient_id_token != NULL && patient_id_token[0] != '\0') {
+        return X12_OK;
+    }
+    if (patient_id_token != NULL && patient_id_token_len > 0u && token != NULL && token[0] != '\0') {
+        copy_cstr(patient_id_token, patient_id_token_len, token);
+    }
+    if (state != NULL && state->include_phi &&
+        patient_id != NULL && patient_id_len > 0u && raw_id != NULL && raw_id[0] != '\0') {
+        copy_cstr(patient_id, patient_id_len, raw_id);
+    }
+
+    return X12_OK;
+}
+
+static stitch_encounter_context_t *find_or_add_encounter_context(
+    stitch_state_t *state,
+    const char *encounter_id
+)
+{
+    stitch_encounter_context_t *context;
+    size_t i;
+
+    if (state == NULL || encounter_id == NULL || encounter_id[0] == '\0') {
+        return NULL;
+    }
+    for (i = 0u; i < state->encounter_context_count; i++) {
+        if (strcmp(state->encounter_contexts[i].encounter_id, encounter_id) == 0) {
+            return &state->encounter_contexts[i];
+        }
+    }
+    if (state->encounter_context_count >= STITCH_MAX_ENCOUNTERS) {
+        return NULL;
+    }
+
+    context = &state->encounter_contexts[state->encounter_context_count++];
+    memset(context, 0, sizeof(*context));
+    copy_cstr(context->encounter_id, sizeof(context->encounter_id), encounter_id);
+    return context;
+}
+
+static stitch_encounter_context_t *find_encounter_context(
+    stitch_state_t *state,
+    const char *encounter_id
+)
+{
+    size_t i;
+
+    if (state == NULL || encounter_id == NULL || encounter_id[0] == '\0') {
+        return NULL;
+    }
+    for (i = 0u; i < state->encounter_context_count; i++) {
+        if (strcmp(state->encounter_contexts[i].encounter_id, encounter_id) == 0) {
+            return &state->encounter_contexts[i];
+        }
+    }
+    return NULL;
+}
+
+static int resolve_patient_name_by_id(
+    const stitch_state_t *state,
+    const char *id_name_namespace,
+    const char *id_token,
+    char *patient_name,
+    size_t patient_name_len,
+    char *patient_name_token,
+    size_t patient_name_token_len,
+    int overwrite
+)
+{
+    char raw_name[STITCH_VALUE_MAX];
+    int rc;
+
+    if (!overwrite && patient_name_token != NULL && patient_name_token[0] != '\0') {
+        return X12_OK;
+    }
+    rc = resolve_phi_token(state, id_name_namespace, id_token, raw_name, sizeof(raw_name));
+    if (rc != X12_OK) {
+        return rc;
+    }
+    return set_patient_name(
+        state,
+        patient_name,
+        patient_name_len,
+        patient_name_token,
+        patient_name_token_len,
+        raw_name,
+        overwrite
+    );
+}
+
+static int capture_encounter_context(
+    stitch_state_t *state,
+    const char *journal_line
+)
+{
+    char event_type[96];
+    char encounter_id[STITCH_ID_MAX];
+    char patient_id[STITCH_ID_MAX];
+    char patient_id_token[TOKENISE_MAX_TOKEN_LEN];
+    stitch_encounter_context_t *context;
+    int rc;
+
+    if (state == NULL || journal_line == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+    if (!json_get_string(journal_line, "event_type", event_type, sizeof(event_type)) ||
+        strcmp(event_type, "EncounterObserved") != 0 ||
+        !json_get_string(journal_line, "encounter_id", encounter_id, sizeof(encounter_id))) {
+        return X12_OK;
+    }
+
+    context = find_or_add_encounter_context(state, encounter_id);
+    if (context == NULL) {
+        return X12_ERR_NO_MEMORY;
+    }
+
+    rc = extract_value_token_pair(
+        state,
+        journal_line,
+        "patient_id",
+        "patient_id_token",
+        "patient_id",
+        patient_id,
+        sizeof(patient_id),
+        patient_id_token,
+        sizeof(patient_id_token)
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+    rc = set_patient_id(
+        state,
+        context->patient_id,
+        sizeof(context->patient_id),
+        context->patient_id_token,
+        sizeof(context->patient_id_token),
+        patient_id,
+        patient_id_token,
+        1
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+    return resolve_patient_name_by_id(
+        state,
+        "patient_id_name",
+        context->patient_id_token,
+        context->patient_name,
+        sizeof(context->patient_name),
+        context->patient_name_token,
+        sizeof(context->patient_name_token),
+        1
+    );
+}
+
+static int apply_encounter_context_to_aggregate(
+    stitch_state_t *state,
+    claim_aggregate_t *aggregate
+)
+{
+    stitch_encounter_context_t *context;
+    int rc;
+
+    if (state == NULL || aggregate == NULL || aggregate->encounter_id[0] == '\0') {
+        return X12_OK;
+    }
+    context = find_encounter_context(state, aggregate->encounter_id);
+    if (context == NULL) {
+        return X12_OK;
+    }
+
+    rc = set_patient_id(
+        state,
+        aggregate->patient_id,
+        sizeof(aggregate->patient_id),
+        aggregate->patient_id_token,
+        sizeof(aggregate->patient_id_token),
+        context->patient_id,
+        context->patient_id_token,
+        0
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+    return set_patient_name(
+        state,
+        aggregate->patient_name,
+        sizeof(aggregate->patient_name),
+        aggregate->patient_name_token,
+        sizeof(aggregate->patient_name_token),
+        context->patient_name,
+        0
+    );
+}
+
+static int capture_reference_patient_context(
+    stitch_state_t *state,
+    claim_aggregate_t *aggregate,
+    const char *journal_line,
+    const char *event_type
+)
+{
+    const char *id_namespace;
+    const char *id_name_namespace;
+    int overwrite;
+    char raw_id[STITCH_ID_MAX];
+    char id_token[TOKENISE_MAX_TOKEN_LEN];
+    char last_name_or_org[STITCH_VALUE_MAX];
+    char first_name[STITCH_VALUE_MAX];
+    char raw_name[STITCH_VALUE_MAX];
+    int rc;
+
+    if (state == NULL || aggregate == NULL || journal_line == NULL || event_type == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    if (strcmp(event_type, "ClaimReferencedPatient") == 0 ||
+        strcmp(event_type, "RemittanceClaimReferencedPatient") == 0) {
+        id_namespace = "patient_id";
+        id_name_namespace = "patient_id_name";
+        overwrite = 1;
+    } else if (strcmp(event_type, "ClaimReferencedSubscriber") == 0 ||
+               strcmp(event_type, "RemittanceClaimReferencedSubscriber") == 0) {
+        id_namespace = "member_id";
+        id_name_namespace = "member_id_name";
+        overwrite = 0;
+    } else {
+        return X12_OK;
+    }
+
+    rc = extract_value_token_pair(
+        state,
+        journal_line,
+        "id_value",
+        "id_value_token",
+        id_namespace,
+        raw_id,
+        sizeof(raw_id),
+        id_token,
+        sizeof(id_token)
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+    if (strcmp(id_namespace, "patient_id") == 0) {
+        rc = set_patient_id(
+            state,
+            aggregate->patient_id,
+            sizeof(aggregate->patient_id),
+            aggregate->patient_id_token,
+            sizeof(aggregate->patient_id_token),
+            raw_id,
+            id_token,
+            overwrite
+        );
+        if (rc != X12_OK) {
+            return rc;
+        }
+    }
+
+    last_name_or_org[0] = '\0';
+    first_name[0] = '\0';
+    raw_name[0] = '\0';
+    (void)json_get_string(journal_line, "last_name_or_org", last_name_or_org, sizeof(last_name_or_org));
+    (void)json_get_string(journal_line, "first_name", first_name, sizeof(first_name));
+    rc = make_patient_name(last_name_or_org, first_name, raw_name, sizeof(raw_name));
+    if (rc != X12_OK) {
+        return rc;
+    }
+    rc = set_patient_name(
+        state,
+        aggregate->patient_name,
+        sizeof(aggregate->patient_name),
+        aggregate->patient_name_token,
+        sizeof(aggregate->patient_name_token),
+        raw_name,
+        overwrite
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    return resolve_patient_name_by_id(
+        state,
+        id_name_namespace,
+        id_token,
+        aggregate->patient_name,
+        sizeof(aggregate->patient_name),
+        aggregate->patient_name_token,
+        sizeof(aggregate->patient_name_token),
+        overwrite
+    );
+}
+
+static int resolve_identifier_output_pair(
+    const stitch_state_t *state,
+    const char *namespace_name,
+    const char *raw_value,
+    const char *token_value,
+    char *raw_out,
+    size_t raw_out_len,
+    char *token_out,
+    size_t token_out_len
+)
+{
+    int rc;
+
+    if (raw_out == NULL || raw_out_len == 0u || token_out == NULL || token_out_len == 0u) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+    raw_out[0] = '\0';
+    token_out[0] = '\0';
+
+    if (token_value != NULL && token_value[0] != '\0') {
+        copy_cstr(token_out, token_out_len, token_value);
+        if (state != NULL && state->include_phi && raw_value != NULL && raw_value[0] != '\0') {
+            copy_cstr(raw_out, raw_out_len, raw_value);
+        } else {
+            rc = resolve_phi_token(state, namespace_name, token_value, raw_out, raw_out_len);
+            if (rc != X12_OK) {
+                return rc;
+            }
+        }
+        return X12_OK;
+    }
+
+    if (raw_value == NULL || raw_value[0] == '\0') {
+        return X12_OK;
+    }
+    if (state != NULL && state->include_phi) {
+        rc = resolve_phi_token(state, namespace_name, raw_value, raw_out, raw_out_len);
+        if (rc != X12_OK) {
+            return rc;
+        }
+        if (raw_out[0] == '\0') {
+            copy_cstr(raw_out, raw_out_len, raw_value);
+        } else {
+            copy_cstr(token_out, token_out_len, raw_value);
+        }
+    } else {
+        copy_cstr(token_out, token_out_len, raw_value);
+    }
+
+    return X12_OK;
+}
+
 static claim_aggregate_t *find_aggregate(stitch_state_t *state, const char *key)
 {
     size_t i;
@@ -643,6 +1178,10 @@ static int build_snapshot_state_json(
     stitch_json_buffer_t buffer;
     int include_phi;
     int rc;
+    char claim_id[STITCH_ID_MAX];
+    char claim_id_token[TOKENISE_MAX_TOKEN_LEN];
+    char payer_control[STITCH_ID_MAX];
+    char payer_control_token[TOKENISE_MAX_TOKEN_LEN];
 
     if (state == NULL || batch == NULL || batch->aggregate == NULL ||
         aggregate_id == NULL || out == NULL || out_len == 0u) {
@@ -710,32 +1249,61 @@ static int build_snapshot_state_json(
     if (rc == X12_OK) {
         rc = json_buffer_append(&buffer, ",\"keys\":{");
     }
-    if (rc == X12_OK && include_phi) {
-        rc = json_buffer_append_string_field(&buffer, "claim_id", aggregate->claim_id, 0);
+    if (rc == X12_OK) {
+        rc = resolve_identifier_output_pair(
+            state,
+            "claim_id",
+            aggregate->claim_id,
+            aggregate->claim_id_token,
+            claim_id,
+            sizeof(claim_id),
+            claim_id_token,
+            sizeof(claim_id_token)
+        );
+    }
+    if (rc == X12_OK && include_phi && claim_id[0] != '\0') {
+        rc = json_buffer_append_string_field(&buffer, "claim_id", claim_id, 0);
         if (rc == X12_OK) {
             rc = json_buffer_append_string_field(
                 &buffer,
                 "claim_id_token",
-                aggregate->claim_id_token,
+                claim_id_token,
                 1
             );
         }
     } else if (rc == X12_OK) {
-        rc = json_buffer_append_string_field(&buffer, "claim_id", aggregate->key, 0);
+        rc = json_buffer_append_string_field(
+            &buffer,
+            "claim_id",
+            claim_id_token[0] != '\0' ? claim_id_token : aggregate->key,
+            0
+        );
     }
-    if (rc == X12_OK && aggregate->payer_claim_control_number[0] != '\0') {
-        if (include_phi) {
+    if (rc == X12_OK) {
+        rc = resolve_identifier_output_pair(
+            state,
+            "payer_claim_control_number",
+            aggregate->payer_claim_control_number,
+            aggregate->payer_claim_control_number_token,
+            payer_control,
+            sizeof(payer_control),
+            payer_control_token,
+            sizeof(payer_control_token)
+        );
+    }
+    if (rc == X12_OK && (payer_control[0] != '\0' || payer_control_token[0] != '\0')) {
+        if (include_phi && payer_control[0] != '\0') {
             rc = json_buffer_append_string_field(
                 &buffer,
                 "payer_claim_control_number",
-                aggregate->payer_claim_control_number,
+                payer_control,
                 1
             );
             if (rc == X12_OK) {
                 rc = json_buffer_append_string_field(
                     &buffer,
                     "payer_claim_control_number_token",
-                    aggregate->payer_claim_control_number_token,
+                    payer_control_token,
                     1
                 );
             }
@@ -743,13 +1311,49 @@ static int build_snapshot_state_json(
             rc = json_buffer_append_string_field(
                 &buffer,
                 "payer_claim_control_number",
-                aggregate->payer_claim_control_number,
+                payer_control_token,
                 1
             );
         }
     }
     if (rc == X12_OK && aggregate->encounter_id[0] != '\0') {
         rc = json_buffer_append_string_field(&buffer, "encounter_id", aggregate->encounter_id, 1);
+    }
+    if (rc == X12_OK && include_phi && aggregate->patient_id[0] != '\0') {
+        rc = json_buffer_append_string_field(&buffer, "patient_id", aggregate->patient_id, 1);
+        if (rc == X12_OK && aggregate->patient_id_token[0] != '\0') {
+            rc = json_buffer_append_string_field(
+                &buffer,
+                "patient_id_token",
+                aggregate->patient_id_token,
+                1
+            );
+        }
+    } else if (rc == X12_OK && aggregate->patient_id_token[0] != '\0') {
+        rc = json_buffer_append_string_field(
+            &buffer,
+            "patient_id",
+            aggregate->patient_id_token,
+            1
+        );
+    }
+    if (rc == X12_OK && include_phi && aggregate->patient_name[0] != '\0') {
+        rc = json_buffer_append_string_field(&buffer, "patient_name", aggregate->patient_name, 1);
+        if (rc == X12_OK && aggregate->patient_name_token[0] != '\0') {
+            rc = json_buffer_append_string_field(
+                &buffer,
+                "patient_name_token",
+                aggregate->patient_name_token,
+                1
+            );
+        }
+    } else if (rc == X12_OK && aggregate->patient_name_token[0] != '\0') {
+        rc = json_buffer_append_string_field(
+            &buffer,
+            "patient_name_token",
+            aggregate->patient_name_token,
+            1
+        );
     }
     if (rc == X12_OK) {
         rc = json_buffer_append(&buffer, "},\"state\":{");
@@ -843,7 +1447,7 @@ static int persist_snapshot_to_read_store(
     const char *aggregate_id
 )
 {
-    char state_json[4096];
+    char state_json[8192];
     char updated_by_event_id[32];
     int written;
     int rc;
@@ -891,7 +1495,12 @@ static int write_snapshot(
     FILE *fp = state->out;
     const claim_aggregate_t *aggregate = batch->aggregate;
     char aggregate_id[STITCH_ID_MAX + 16u];
+    char claim_id[STITCH_ID_MAX];
+    char claim_id_token[TOKENISE_MAX_TOKEN_LEN];
+    char payer_control[STITCH_ID_MAX];
+    char payer_control_token[TOKENISE_MAX_TOKEN_LEN];
     int written;
+    int rc;
 
     if (fputc('{', fp) == EOF) {
         return X12_ERR_IO;
@@ -925,26 +1534,57 @@ static int write_snapshot(
     if (fputs(",\"keys\":{", fp) == EOF) {
         return X12_ERR_IO;
     }
-    if (state->include_phi) {
-        if (event_writer_write_cstring_field(fp, "claim_id", aggregate->claim_id, 0) != X12_OK ||
-            event_writer_write_cstring_field(fp, "claim_id_token", aggregate->claim_id_token, 1) != X12_OK) {
+    rc = resolve_identifier_output_pair(
+        state,
+        "claim_id",
+        aggregate->claim_id,
+        aggregate->claim_id_token,
+        claim_id,
+        sizeof(claim_id),
+        claim_id_token,
+        sizeof(claim_id_token)
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+    if (state->include_phi && claim_id[0] != '\0') {
+        if (event_writer_write_cstring_field(fp, "claim_id", claim_id, 0) != X12_OK ||
+            event_writer_write_cstring_field(fp, "claim_id_token", claim_id_token, 1) != X12_OK) {
             return X12_ERR_IO;
         }
-    } else if (event_writer_write_cstring_field(fp, "claim_id", aggregate->key, 0) != X12_OK) {
+    } else if (event_writer_write_cstring_field(
+            fp,
+            "claim_id",
+            claim_id_token[0] != '\0' ? claim_id_token : aggregate->key,
+            0
+        ) != X12_OK) {
         return X12_ERR_IO;
     }
-    if (aggregate->payer_claim_control_number[0] != '\0') {
-        if (state->include_phi) {
+    rc = resolve_identifier_output_pair(
+        state,
+        "payer_claim_control_number",
+        aggregate->payer_claim_control_number,
+        aggregate->payer_claim_control_number_token,
+        payer_control,
+        sizeof(payer_control),
+        payer_control_token,
+        sizeof(payer_control_token)
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+    if (payer_control[0] != '\0' || payer_control_token[0] != '\0') {
+        if (state->include_phi && payer_control[0] != '\0') {
             if (event_writer_write_cstring_field(
                     fp,
                     "payer_claim_control_number",
-                    aggregate->payer_claim_control_number,
+                    payer_control,
                     1
                 ) != X12_OK ||
                 event_writer_write_cstring_field(
                     fp,
                     "payer_claim_control_number_token",
-                    aggregate->payer_claim_control_number_token,
+                    payer_control_token,
                     1
                 ) != X12_OK) {
                 return X12_ERR_IO;
@@ -952,7 +1592,7 @@ static int write_snapshot(
         } else if (event_writer_write_cstring_field(
                 fp,
                 "payer_claim_control_number",
-                aggregate->payer_claim_control_number,
+                payer_control_token,
                 1
             ) != X12_OK) {
             return X12_ERR_IO;
@@ -960,6 +1600,50 @@ static int write_snapshot(
     }
     if (aggregate->encounter_id[0] != '\0' &&
         event_writer_write_cstring_field(fp, "encounter_id", aggregate->encounter_id, 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (state->include_phi && aggregate->patient_id[0] != '\0') {
+        if (event_writer_write_cstring_field(fp, "patient_id", aggregate->patient_id, 1) != X12_OK) {
+            return X12_ERR_IO;
+        }
+        if (aggregate->patient_id_token[0] != '\0' &&
+            event_writer_write_cstring_field(
+                fp,
+                "patient_id_token",
+                aggregate->patient_id_token,
+                1
+            ) != X12_OK) {
+            return X12_ERR_IO;
+        }
+    } else if (aggregate->patient_id_token[0] != '\0' &&
+               event_writer_write_cstring_field(
+                   fp,
+                   "patient_id",
+                   aggregate->patient_id_token,
+                   1
+               ) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (state->include_phi && aggregate->patient_name[0] != '\0') {
+        if (event_writer_write_cstring_field(fp, "patient_name", aggregate->patient_name, 1) != X12_OK) {
+            return X12_ERR_IO;
+        }
+        if (aggregate->patient_name_token[0] != '\0' &&
+            event_writer_write_cstring_field(
+                fp,
+                "patient_name_token",
+                aggregate->patient_name_token,
+                1
+            ) != X12_OK) {
+            return X12_ERR_IO;
+        }
+    } else if (aggregate->patient_name_token[0] != '\0' &&
+               event_writer_write_cstring_field(
+                   fp,
+                   "patient_name_token",
+                   aggregate->patient_name_token,
+                   1
+               ) != X12_OK) {
         return X12_ERR_IO;
     }
     if (fputs("},\"state\":{", fp) == EOF) {
@@ -1148,8 +1832,12 @@ static int index_journal_event(
     char segment_id[32];
     char claim_id[STITCH_ID_MAX];
     char claim_id_token[TOKENISE_MAX_TOKEN_LEN];
+    char claim_id_raw[STITCH_ID_MAX];
+    char claim_id_index_token[TOKENISE_MAX_TOKEN_LEN];
     char payer_control[STITCH_ID_MAX];
     char payer_control_token[TOKENISE_MAX_TOKEN_LEN];
+    char payer_control_raw[STITCH_ID_MAX];
+    char payer_control_index_token[TOKENISE_MAX_TOKEN_LEN];
     char encounter_id[STITCH_ID_MAX];
     const char *claim_index_key;
     const char *payer_index_key;
@@ -1204,7 +1892,19 @@ static int index_journal_event(
         return rc;
     }
     if (state->include_phi) {
-        rc = put_event_key_if_present(state->read_store, "claim_id_raw", claim_id, event_id);
+        rc = resolve_identifier_output_pair(
+            state,
+            "claim_id",
+            claim_id,
+            claim_id_token,
+            claim_id_raw,
+            sizeof(claim_id_raw),
+            claim_id_index_token,
+            sizeof(claim_id_index_token)
+        );
+        if (rc == X12_OK) {
+            rc = put_event_key_if_present(state->read_store, "claim_id_raw", claim_id_raw, event_id);
+        }
         if (rc != X12_OK) {
             return rc;
         }
@@ -1235,12 +1935,24 @@ static int index_journal_event(
         return rc;
     }
     if (state->include_phi) {
-        rc = put_event_key_if_present(
-            state->read_store,
-            "payer_claim_control_number_raw",
+        rc = resolve_identifier_output_pair(
+            state,
+            "payer_claim_control_number",
             payer_control,
-            event_id
+            payer_control_token,
+            payer_control_raw,
+            sizeof(payer_control_raw),
+            payer_control_index_token,
+            sizeof(payer_control_index_token)
         );
+        if (rc == X12_OK) {
+            rc = put_event_key_if_present(
+                state->read_store,
+                "payer_claim_control_number_raw",
+                payer_control_raw,
+                event_id
+            );
+        }
         if (rc != X12_OK) {
             return rc;
         }
@@ -1337,6 +2049,10 @@ static int apply_claim_event(
         aggregate->has_charge_context = 1;
         if (json_get_string(journal_line, "encounter_id", value, sizeof(value))) {
             copy_cstr(aggregate->encounter_id, sizeof(aggregate->encounter_id), value);
+            rc = apply_encounter_context_to_aggregate(state, aggregate);
+            if (rc != X12_OK) {
+                return rc;
+            }
         }
         if (json_get_string(journal_line, "claim_type", value, sizeof(value))) {
             copy_cstr(aggregate->claim_type, sizeof(aggregate->claim_type), value);
@@ -1351,6 +2067,10 @@ static int apply_claim_event(
                strcmp(event_type, "ClaimDiagnosesRecorded") == 0 ||
                strcmp(event_type, "ClaimServiceLineRecorded") == 0) {
         aggregate->has_837 = 1;
+        rc = capture_reference_patient_context(state, aggregate, journal_line, event_type);
+        if (rc != X12_OK) {
+            return rc;
+        }
         if (strcmp(event_type, "ClaimServiceLineRecorded") == 0) {
             aggregate->submitted_service_line_count++;
         }
@@ -1361,6 +2081,10 @@ static int apply_claim_event(
                strcmp(event_type, "RemittanceAdjustmentObserved") == 0 ||
                strcmp(event_type, "RemittanceDateRecorded") == 0) {
         aggregate->has_835 = 1;
+        rc = capture_reference_patient_context(state, aggregate, journal_line, event_type);
+        if (rc != X12_OK) {
+            return rc;
+        }
         if (json_get_string(journal_line, "claim_status_code", value, sizeof(value))) {
             copy_cstr(aggregate->claim_status_code, sizeof(aggregate->claim_status_code), value);
         }
@@ -1404,6 +2128,7 @@ static int discover_encounter_claim(
     char claim_id_token[TOKENISE_MAX_TOKEN_LEN];
     char value[STITCH_VALUE_MAX];
     claim_aggregate_t *aggregate;
+    int rc;
 
     if (state->encounter_filter[0] == '\0') {
         return X12_OK;
@@ -1431,6 +2156,10 @@ static int discover_encounter_claim(
     }
     if (json_get_string(journal_line, "encounter_id", value, sizeof(value))) {
         copy_cstr(aggregate->encounter_id, sizeof(aggregate->encounter_id), value);
+        rc = apply_encounter_context_to_aggregate(state, aggregate);
+        if (rc != X12_OK) {
+            return rc;
+        }
     }
     if (json_get_string(journal_line, "claim_type", value, sizeof(value))) {
         copy_cstr(aggregate->claim_type, sizeof(aggregate->claim_type), value);
@@ -1455,7 +2184,10 @@ static int read_journal_for_discovery(stitch_state_t *state, const char *path)
     }
 
     while (fgets(line, sizeof(line), journal) != NULL) {
-        rc = discover_encounter_claim(state, line);
+        rc = capture_encounter_context(state, line);
+        if (rc == X12_OK) {
+            rc = discover_encounter_claim(state, line);
+        }
         if (rc != X12_OK) {
             break;
         }
@@ -1481,6 +2213,7 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
 {
     stitch_state_t *state;
     scribe_store_t read_store;
+    phi_vault_t phi_vault;
     FILE *journal;
     FILE *out;
     char line[STITCH_LINE_MAX];
@@ -1488,6 +2221,7 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
     size_t event_id = 0u;
     int owns_out = 0;
     int owns_read_store = 0;
+    int owns_phi_vault = 0;
     int rc = X12_OK;
 
     if (input == NULL || input->journal_path == NULL || input->out_path == NULL) {
@@ -1521,6 +2255,24 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
 
     state->out = out;
     state->include_phi = input->include_phi;
+    if (input->phi_vault_path != NULL) {
+        phi_vault_init(&phi_vault);
+        rc = phi_vault_open(&phi_vault, input->phi_vault_path);
+        if (rc == X12_OK) {
+            rc = phi_vault_init_schema(&phi_vault);
+        }
+        if (rc != X12_OK) {
+            (void)phi_vault_close(&phi_vault);
+            (void)fclose(journal);
+            if (owns_out) {
+                (void)fclose(out);
+            }
+            free(state);
+            return rc;
+        }
+        state->phi_vault = &phi_vault;
+        owns_phi_vault = 1;
+    }
     if (input->encounter_id != NULL) {
         copy_cstr(state->encounter_filter, sizeof(state->encounter_filter), input->encounter_id);
     }
@@ -1535,6 +2287,9 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
             (void)fclose(journal);
             if (owns_out) {
                 (void)fclose(out);
+            }
+            if (owns_phi_vault) {
+                (void)phi_vault_close(&phi_vault);
             }
             free(state);
             return rc;
@@ -1551,6 +2306,9 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
         }
         if (owns_read_store) {
             (void)scribe_store_close(&read_store);
+        }
+        if (owns_phi_vault) {
+            (void)phi_vault_close(&phi_vault);
         }
         free(state);
         return rc;
@@ -1587,7 +2345,10 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
             break;
         }
 
-        rc = apply_claim_event(state, line, event_id, drop_key);
+        rc = capture_encounter_context(state, line);
+        if (rc == X12_OK) {
+            rc = apply_claim_event(state, line, event_id, drop_key);
+        }
         if (rc != X12_OK) {
             break;
         }
@@ -1610,6 +2371,9 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
         rc = X12_ERR_IO;
     }
     if (owns_read_store && scribe_store_close(&read_store) != X12_OK && rc == X12_OK) {
+        rc = X12_ERR_IO;
+    }
+    if (owns_phi_vault && phi_vault_close(&phi_vault) != X12_OK && rc == X12_OK) {
         rc = X12_ERR_IO;
     }
 
@@ -1641,6 +2405,11 @@ int aggregate_stitcher_run_cli(int argc, char **argv)
                 return -1;
             }
             input.read_store_path = argv[++i];
+        } else if (strcmp(argv[i], "--phi-vault") == 0) {
+            if (i + 1 >= argc) {
+                return -1;
+            }
+            input.phi_vault_path = argv[++i];
         } else if (strcmp(argv[i], "--encounter-id") == 0) {
             if (i + 1 >= argc) {
                 return -1;

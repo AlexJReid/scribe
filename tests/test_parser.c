@@ -536,9 +536,13 @@ static int test_stroke_balance_projection_from_journal(void)
     char nonphi_journal_path[512];
     char aggregate_path[512];
     char nonphi_aggregate_path[512];
+    char resolved_phi_aggregate_path[512];
     char nonphi_read_store_path[512];
     char nonphi_read_store_wal_path[560];
     char nonphi_read_store_shm_path[560];
+    char resolved_phi_read_store_path[512];
+    char resolved_phi_read_store_wal_path[560];
+    char resolved_phi_read_store_shm_path[560];
     char projection_path[512];
     char nonphi_projection_path[512];
     char phi_vault_path[512];
@@ -574,12 +578,16 @@ static int test_stroke_balance_projection_from_journal(void)
     REQUIRE(make_path(nonphi_journal_path, sizeof(nonphi_journal_path), TEST_OUTPUT_DIR, "stroke_encounter_nonphi.journal.ndjson") == 0);
     REQUIRE(make_path(aggregate_path, sizeof(aggregate_path), TEST_OUTPUT_DIR, "stroke_claim_aggregates.ndjson") == 0);
     REQUIRE(make_path(nonphi_aggregate_path, sizeof(nonphi_aggregate_path), TEST_OUTPUT_DIR, "stroke_claim_aggregates_nonphi.ndjson") == 0);
+    REQUIRE(make_path(resolved_phi_aggregate_path, sizeof(resolved_phi_aggregate_path), TEST_OUTPUT_DIR, "stroke_claim_aggregates_resolved_phi.ndjson") == 0);
     REQUIRE(make_path(nonphi_read_store_path, sizeof(nonphi_read_store_path), TEST_OUTPUT_DIR, "stroke_read_store_nonphi.sqlite") == 0);
+    REQUIRE(make_path(resolved_phi_read_store_path, sizeof(resolved_phi_read_store_path), TEST_OUTPUT_DIR, "stroke_read_store_resolved_phi.sqlite") == 0);
     REQUIRE(make_path(projection_path, sizeof(projection_path), TEST_OUTPUT_DIR, "stroke_balance_projection.json") == 0);
     REQUIRE(make_path(nonphi_projection_path, sizeof(nonphi_projection_path), TEST_OUTPUT_DIR, "stroke_balance_projection_nonphi.json") == 0);
     REQUIRE(make_path(phi_vault_path, sizeof(phi_vault_path), TEST_OUTPUT_DIR, "stroke_phi_vault.sqlite") == 0);
     REQUIRE(snprintf(nonphi_read_store_wal_path, sizeof(nonphi_read_store_wal_path), "%s-wal", nonphi_read_store_path) > 0);
     REQUIRE(snprintf(nonphi_read_store_shm_path, sizeof(nonphi_read_store_shm_path), "%s-shm", nonphi_read_store_path) > 0);
+    REQUIRE(snprintf(resolved_phi_read_store_wal_path, sizeof(resolved_phi_read_store_wal_path), "%s-wal", resolved_phi_read_store_path) > 0);
+    REQUIRE(snprintf(resolved_phi_read_store_shm_path, sizeof(resolved_phi_read_store_shm_path), "%s-shm", resolved_phi_read_store_path) > 0);
     REQUIRE(snprintf(phi_vault_wal_path, sizeof(phi_vault_wal_path), "%s-wal", phi_vault_path) > 0);
     REQUIRE(snprintf(phi_vault_shm_path, sizeof(phi_vault_shm_path), "%s-shm", phi_vault_path) > 0);
 
@@ -612,6 +620,10 @@ static int test_stroke_balance_projection_from_journal(void)
     REQUIRE(strstr(aggregates, "\"claim_id\":\"CLM-STROKE-RAD-PRO-001\"") != NULL);
     REQUIRE(strstr(aggregates, "\"claim_id\":\"CLM-STROKE-REHAB-001\"") != NULL);
     REQUIRE(strstr(aggregates, "\"claim_id\":\"CLM-STROKE-NEURO-001\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"patient_id\":\"PAT-STROKE-001\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"patient_id_token\":\"483f7b234ed109f0e2323052f22e4e59\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"patient_name\":\"REID|ALEX\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"patient_name_token\":\"4b108ab4544b581362f5809685352233\"") != NULL);
     REQUIRE(strstr(aggregates, "\"version\":1") != NULL);
     REQUIRE(strstr(aggregates, "\"version\":3") != NULL);
     REQUIRE(strstr(aggregates, "\"version\":4") == NULL);
@@ -737,16 +749,46 @@ static int test_stroke_balance_projection_from_journal(void)
                 "test-conflict"
             ) == X12_ERR_CONFLICT);
     REQUIRE(phi_vault_close(&phi_vault) == X12_OK);
-    (void)remove(phi_vault_path);
-    (void)remove(phi_vault_wal_path);
-    (void)remove(phi_vault_shm_path);
+    (void)remove(resolved_phi_read_store_path);
+    (void)remove(resolved_phi_read_store_wal_path);
+    (void)remove(resolved_phi_read_store_shm_path);
+    stitch_input.journal_path = nonphi_journal_path;
+    stitch_input.out_path = resolved_phi_aggregate_path;
+    stitch_input.read_store_path = resolved_phi_read_store_path;
+    stitch_input.phi_vault_path = phi_vault_path;
+    stitch_input.include_phi = 1;
+    REQUIRE(aggregate_stitcher_stitch(&stitch_input) == X12_OK);
+    scribe_store_init(&read_store);
+    REQUIRE(scribe_store_open(&read_store, resolved_phi_read_store_path) == X12_OK);
+    REQUIRE(scribe_store_init_schema(&read_store) == X12_OK);
+    REQUIRE(scribe_store_get_latest_claim_aggregate(
+                &read_store,
+                "claim:8259c238232f9585e95fc8f45b0bb410",
+                &latest_version,
+                latest_aggregate,
+                sizeof(latest_aggregate)
+            ) == X12_OK);
+    REQUIRE(latest_version == 3u);
+    REQUIRE(strstr(latest_aggregate, "\"contains_phi\":true") != NULL);
+    REQUIRE(strstr(latest_aggregate, "\"claim_id\":\"CLM-STROKE-RAD-FAC-001\"") != NULL);
+    REQUIRE(strstr(latest_aggregate, "\"claim_id_token\":\"8259c238232f9585e95fc8f45b0bb410\"") != NULL);
+    REQUIRE(strstr(latest_aggregate, "\"payer_claim_control_number\":\"PAYER-STROKE-FAC-001\"") != NULL);
+    REQUIRE(strstr(latest_aggregate, "\"payer_claim_control_number_token\":\"edf29f09740ab104da309e2b036e14d1\"") != NULL);
+    REQUIRE(strstr(latest_aggregate, "\"patient_id\":\"PAT-STROKE-001\"") != NULL);
+    REQUIRE(strstr(latest_aggregate, "\"patient_id_token\":\"483f7b234ed109f0e2323052f22e4e59\"") != NULL);
+    REQUIRE(strstr(latest_aggregate, "\"patient_name\":\"REID|ALEX\"") != NULL);
+    REQUIRE(scribe_store_close(&read_store) == X12_OK);
     (void)remove(nonphi_read_store_path);
     (void)remove(nonphi_read_store_wal_path);
     (void)remove(nonphi_read_store_shm_path);
+    (void)remove(resolved_phi_read_store_path);
+    (void)remove(resolved_phi_read_store_wal_path);
+    (void)remove(resolved_phi_read_store_shm_path);
 
     stitch_input.journal_path = nonphi_journal_path;
     stitch_input.out_path = nonphi_aggregate_path;
     stitch_input.read_store_path = nonphi_read_store_path;
+    stitch_input.phi_vault_path = NULL;
     stitch_input.include_phi = 0;
     REQUIRE(aggregate_stitcher_stitch(&stitch_input) == X12_OK);
     REQUIRE(read_file_text(nonphi_aggregate_path, aggregates, sizeof(aggregates)) == 0);
@@ -837,6 +879,9 @@ static int test_stroke_balance_projection_from_journal(void)
     (void)remove(nonphi_read_store_path);
     (void)remove(nonphi_read_store_wal_path);
     (void)remove(nonphi_read_store_shm_path);
+    (void)remove(phi_vault_path);
+    (void)remove(phi_vault_wal_path);
+    (void)remove(phi_vault_shm_path);
 
     return 0;
 }

@@ -7,6 +7,7 @@ typedef struct {
     const char *journal_path;
     const char *out_path;
     const char *read_store_path;
+    const char *phi_vault_path;
     const char *encounter_id;
     int include_phi;
 } aggregate_stitcher_input_t;

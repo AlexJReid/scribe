@@ -131,6 +131,18 @@ build/scribe stitch \
 
 `stroke_aggregates.ndjson` is an inspection/export stream only.
 
+PHI read store from the same tokenised journal:
+
+```sh
+build/scribe stitch \
+  --journal stroke.journal.ndjson \
+  --encounter-id ENC-SYN-STROKE-001 \
+  --read-store stroke_phi_read_store.sqlite \
+  --phi-vault stroke_phi_vault.sqlite \
+  --include-phi \
+  --out stroke_phi_aggregates.ndjson
+```
+
 Optional: derive a ledger-style balance from the same journal:
 
 ```sh
@@ -149,6 +161,18 @@ Aggregates are in SQLite:
 ```sh
 sqlite3 -header -column stroke_read_store.sqlite "
 select aggregate_id, version, state_json
+from claim_aggregate_latest
+order by aggregate_id;
+"
+```
+
+For a PHI read store:
+
+```sh
+sqlite3 -header -column stroke_phi_read_store.sqlite "
+select aggregate_id, version,
+       json_extract(state_json, '$.keys.claim_id') as claim_id,
+       json_extract(state_json, '$.keys.patient_name') as patient_name
 from claim_aggregate_latest
 order by aggregate_id;
 "
@@ -239,8 +263,8 @@ Encryption and extracts:
 - Keep tokenised read stores as the default outside the authorised PHI domain
 
 HITRUST-zone apps may deliberately create/read PHI-containing aggregates with
-`--include-phi --read-store`, or render PHI by resolving tokens through the
-vault. Normal developer stores should stay tokenised.
+`--include-phi --phi-vault --read-store`, or render PHI by resolving tokens
+through the vault. Normal developer stores should stay tokenised.
 
 ## PHI aggregate rendering
 
