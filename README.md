@@ -15,16 +15,6 @@ The PHI-looking values are fake synthetic data. The treatment shape reflects
 stroke-related treatment I had in the UK; names, IDs, payer details, dates,
 amounts, and EDI content are not real PHI.
 
-## Build
-
-Tested on macOS. Boring C so likely OK on Linux, as-is.. will compile with MSVC.
-
-```sh
-cmake -S . -B build
-cmake --build build
-ctest --test-dir build --output-on-failure
-```
-
 ## Model
 
 Current proof of concept:
@@ -36,6 +26,20 @@ Current proof of concept:
 
 SQLite backs the vault, indexes, and snapshots in this proof of concept. It is
 standing in for a managed database or document store.
+
+### Good things about this approach
+
+- Parsed 837/835 inputs are kept in an immutable journal.
+- Journal events have refs back to source file locations.
+- PHI is split early: tokenised events, raw values in the vault.
+- Journal reductions can answer state as of T.
+- Stitched claim snapshots are one read for consuming apps.
+- Snapshots can be tokenised or PHI-containing.
+- PHI can also be a stream or a separate read store.
+- HITRUST apps can replicate vault keys and join PHI at ingest.
+- An audited API can centralise the PHI vault instead.
+- `scribe` renders 835/837 JSON, journals, and aggregates for exploration.
+- SQLite is a flexible stand-in for read stores and vaults.
 
 **Figure 1: ingest writes journal evidence and PHI vault mappings.**
 
@@ -205,4 +209,15 @@ CLM-STROKE-REHAB-001          outpatient_rehab         660.00   420.00 120.00
 CLM-STROKE-NEURO-001          neurology_followup       320.00   210.00  40.00
 
 Totals: billed 3720.00, paid 2340.00, PR/current balance 550.00
+```
+
+## Build
+
+Tested on macOS; likely fine on Linux. MSVC should be possible with project-file
+work.
+
+```sh
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build --output-on-failure
 ```
