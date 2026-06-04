@@ -11,28 +11,28 @@ Encounter:
 
 Files:
 
-- `facility_837.edi`: facility claim submission for the three imaging services.
-- `facility_835.edi`: payer remittance for the facility claim.
-- `professional_837.edi`: professional/radiologist interpretation claim.
-- `professional_835.edi`: payer remittance for the professional claim.
-- `rehab_837.edi`: outpatient rehab claim for recovery treatment.
-- `rehab_835.edi`: payer remittance for the rehab claim.
-- `neurology_837.edi`: neurology follow-up claim during recovery.
-- `neurology_835.edi`: payer remittance for the neurology claim.
+- `facility_837.edi`: facility claim submission for the three imaging services
+- `facility_835.edi`: payer remittance for the facility claim
+- `professional_837.edi`: professional/radiologist interpretation claim
+- `professional_835.edi`: payer remittance for the professional claim
+- `rehab_837.edi`: outpatient rehab claim for recovery treatment
+- `rehab_835.edi`: payer remittance for the rehab claim
+- `neurology_837.edi`: neurology follow-up claim during recovery
+- `neurology_835.edi`: payer remittance for the neurology claim
 - `charge_transactions.ndjson`: example upstream charge/encounter rows that a
   future charge transaction importer could map into ledger entries. This file
   seeds `ENC-SYN-STROKE-001` and links each synthetic claim back to that
-  encounter before the 837 and 835 files are stitched in.
+  encounter before the 837 and 835 files are stitched in
 - `expected_balance_projection.json`: compact reference projection shape. The
-  generated `balance` projection also includes per-line ledger entries.
+  generated `balance` projection also includes per-line ledger entries
 
 Current parser behaviour:
 
 - 837 `CLM01` and 835 `CLP01` should tokenise into the same `claim_id` value for
-  each claim.
-- 835 `CLP07` should tokenise under the `payer_claim_control_number` namespace.
+  each claim
+- 835 `CLP07` should tokenise under the `payer_claim_control_number` namespace
 - Service lines can be matched by claim ID, service line number, procedure code,
-  charge amount, date, and line order.
+  charge amount, date, and line order
 
 Expected encounter-level balance from the 835 files:
 
