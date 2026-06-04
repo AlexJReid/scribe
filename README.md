@@ -27,10 +27,15 @@ ctest --test-dir build --output-on-failure
 
 ## Model
 
-Current POC consists of an NDJSON journal, SQLite read store, SQLite PHI vault. Note that SQLite is used as a dumb index/document DB, in reality a managed DB will be used.
+Current proof of concept:
 
-Target: binary journal, pluggable read store. The read store owns indexes and
-aggregate snapshots, not raw journal payloads.
+- Journal: immutable evidence stream, NDJSON for now, binary log target.
+- PHI vault: separate resolver for `namespace + token -> raw`.
+- Indexes: claim, payer control, encounter, and event locator lookup.
+- Aggregate snapshot store: versioned claim state plus latest claim state.
+
+SQLite backs the vault, indexes, and snapshots in this proof of concept. It is
+standing in for a managed database or document store.
 
 **Figure 1: ingest writes journal evidence and PHI vault mappings.**
 
