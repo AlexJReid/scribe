@@ -2,6 +2,7 @@
 
 #include "event_writer.h"
 #include "journal.h"
+#include "json_write.h"
 #include "phi_vault.h"
 #include "store.h"
 #include "tokenise.h"
@@ -130,12 +131,6 @@ typedef struct {
     phi_vault_t *phi_vault;
 } stitch_state_t;
 
-typedef struct {
-    char *data;
-    size_t len;
-    size_t cap;
-} stitch_json_buffer_t;
-
 static void copy_cstr(char *out, size_t out_len, const char *value)
 {
     size_t len;
@@ -153,178 +148,6 @@ static void copy_cstr(char *out, size_t out_len, const char *value)
     }
     memcpy(out, value, len);
     out[len] = '\0';
-}
-
-static int json_buffer_append(stitch_json_buffer_t *buffer, const char *value)
-{
-    size_t len;
-
-    if (buffer == NULL || buffer->data == NULL || value == NULL) {
-        return X12_ERR_INVALID_ARGUMENT;
-    }
-
-    len = strlen(value);
-    if (buffer->len + len >= buffer->cap) {
-        return X12_ERR_BUFFER_TOO_SMALL;
-    }
-
-    memcpy(buffer->data + buffer->len, value, len);
-    buffer->len += len;
-    buffer->data[buffer->len] = '\0';
-    return X12_OK;
-}
-
-static int json_buffer_append_char(stitch_json_buffer_t *buffer, char value)
-{
-    if (buffer == NULL || buffer->data == NULL) {
-        return X12_ERR_INVALID_ARGUMENT;
-    }
-    if (buffer->len + 1u >= buffer->cap) {
-        return X12_ERR_BUFFER_TOO_SMALL;
-    }
-
-    buffer->data[buffer->len++] = value;
-    buffer->data[buffer->len] = '\0';
-    return X12_OK;
-}
-
-static int json_buffer_append_json_string(stitch_json_buffer_t *buffer, const char *value)
-{
-    const unsigned char *cursor;
-    char escaped[8];
-    int written;
-    int rc;
-
-    if (value == NULL) {
-        value = "";
-    }
-
-    rc = json_buffer_append_char(buffer, '"');
-    if (rc != X12_OK) {
-        return rc;
-    }
-
-    for (cursor = (const unsigned char *)value; *cursor != '\0'; cursor++) {
-        switch (*cursor) {
-            case '"':
-                rc = json_buffer_append(buffer, "\\\"");
-                break;
-            case '\\':
-                rc = json_buffer_append(buffer, "\\\\");
-                break;
-            case '\n':
-                rc = json_buffer_append(buffer, "\\n");
-                break;
-            case '\r':
-                rc = json_buffer_append(buffer, "\\r");
-                break;
-            case '\t':
-                rc = json_buffer_append(buffer, "\\t");
-                break;
-            default:
-                if (*cursor < 0x20u) {
-                    written = snprintf(escaped, sizeof(escaped), "\\u%04x", (unsigned int)*cursor);
-                    if (written < 0 || (size_t)written >= sizeof(escaped)) {
-                        return X12_ERR_BUFFER_TOO_SMALL;
-                    }
-                    rc = json_buffer_append(buffer, escaped);
-                } else {
-                    rc = json_buffer_append_char(buffer, (char)*cursor);
-                }
-                break;
-        }
-        if (rc != X12_OK) {
-            return rc;
-        }
-    }
-
-    return json_buffer_append_char(buffer, '"');
-}
-
-static int json_buffer_append_string_field(
-    stitch_json_buffer_t *buffer,
-    const char *key,
-    const char *value,
-    int with_comma
-)
-{
-    int rc;
-
-    if (with_comma) {
-        rc = json_buffer_append_char(buffer, ',');
-        if (rc != X12_OK) {
-            return rc;
-        }
-    }
-
-    rc = json_buffer_append_json_string(buffer, key);
-    if (rc != X12_OK) {
-        return rc;
-    }
-    rc = json_buffer_append_char(buffer, ':');
-    if (rc != X12_OK) {
-        return rc;
-    }
-    return json_buffer_append_json_string(buffer, value);
-}
-
-static int json_buffer_append_size_field(
-    stitch_json_buffer_t *buffer,
-    const char *key,
-    size_t value,
-    int with_comma
-)
-{
-    char number[32];
-    int written;
-    int rc;
-
-    written = snprintf(number, sizeof(number), "%zu", value);
-    if (written < 0 || (size_t)written >= sizeof(number)) {
-        return X12_ERR_BUFFER_TOO_SMALL;
-    }
-
-    if (with_comma) {
-        rc = json_buffer_append_char(buffer, ',');
-        if (rc != X12_OK) {
-            return rc;
-        }
-    }
-    rc = json_buffer_append_json_string(buffer, key);
-    if (rc != X12_OK) {
-        return rc;
-    }
-    rc = json_buffer_append_char(buffer, ':');
-    if (rc != X12_OK) {
-        return rc;
-    }
-    return json_buffer_append(buffer, number);
-}
-
-static int json_buffer_append_bool_field(
-    stitch_json_buffer_t *buffer,
-    const char *key,
-    int value,
-    int with_comma
-)
-{
-    int rc;
-
-    if (with_comma) {
-        rc = json_buffer_append_char(buffer, ',');
-        if (rc != X12_OK) {
-            return rc;
-        }
-    }
-    rc = json_buffer_append_json_string(buffer, key);
-    if (rc != X12_OK) {
-        return rc;
-    }
-    rc = json_buffer_append_char(buffer, ':');
-    if (rc != X12_OK) {
-        return rc;
-    }
-    return json_buffer_append(buffer, value ? "true" : "false");
 }
 
 static const char *claim_key(const char *claim_id, const char *claim_id_token)
@@ -1411,407 +1234,652 @@ static int event_has_encounter_id(const journal_event_t *journal_line)
     return json_get_string(journal_line, "encounter_id", encounter_id, sizeof(encounter_id));
 }
 
-static int write_applied_event_ids(FILE *fp, const claim_aggregate_t *aggregate)
-{
-    size_t i;
-
-    if (fputs(",\"applied_event_ids\":[", fp) == EOF) {
-        return X12_ERR_IO;
-    }
-    for (i = 0u; i < aggregate->source_event_count; i++) {
-        if (i > 0u && fputc(',', fp) == EOF) {
-            return X12_ERR_IO;
-        }
-        if (fprintf(fp, "%zu", aggregate->source_events[i].event_id) < 0) {
-            return X12_ERR_IO;
-        }
-    }
-    if (fputc(']', fp) == EOF) {
-        return X12_ERR_IO;
-    }
-
-    return X12_OK;
-}
-
-static int write_update_event_ids(FILE *fp, const stitch_update_batch_t *batch)
-{
-    size_t i;
-    size_t end;
-
-    if (batch == NULL || batch->aggregate == NULL) {
-        return X12_ERR_INVALID_ARGUMENT;
-    }
-
-    if (fputs(",\"update_event_ids\":[", fp) == EOF) {
-        return X12_ERR_IO;
-    }
-    end = batch->first_source_event_index + batch->source_event_count;
-    for (i = batch->first_source_event_index; i < end; i++) {
-        if (i > batch->first_source_event_index && fputc(',', fp) == EOF) {
-            return X12_ERR_IO;
-        }
-        if (fprintf(fp, "%zu", batch->aggregate->source_events[i].event_id) < 0) {
-            return X12_ERR_IO;
-        }
-    }
-    if (fputc(']', fp) == EOF) {
-        return X12_ERR_IO;
-    }
-
-    return X12_OK;
-}
-
-static int json_buffer_append_string_array_field(
-    stitch_json_buffer_t *buffer,
+static int snapshot_add_string_array32(
+    json_writer_t *writer,
+    yyjson_mut_val *obj,
     const char *key,
     const char values[][32],
-    size_t value_count,
-    int with_comma
+    size_t value_count
 )
 {
+    yyjson_mut_val *arr;
     size_t i;
     int rc;
 
-    if (with_comma) {
-        rc = json_buffer_append_char(buffer, ',');
-        if (rc != X12_OK) {
-            return rc;
-        }
+    arr = json_writer_add_array(writer, obj, key);
+    if (arr == NULL) {
+        return X12_ERR_NO_MEMORY;
     }
-    rc = json_buffer_append_json_string(buffer, key);
-    if (rc != X12_OK) {
-        return rc;
-    }
-    rc = json_buffer_append(buffer, ":[");
-    if (rc != X12_OK) {
-        return rc;
-    }
+
     for (i = 0u; i < value_count; i++) {
-        if (i > 0u) {
-            rc = json_buffer_append_char(buffer, ',');
-            if (rc != X12_OK) {
-                return rc;
-            }
-        }
-        rc = json_buffer_append_json_string(buffer, values[i]);
+        rc = json_writer_array_add_string(writer, arr, values[i]);
         if (rc != X12_OK) {
             return rc;
         }
     }
-    return json_buffer_append_char(buffer, ']');
+
+    return X12_OK;
 }
 
-static int json_buffer_append_adjustments(
-    stitch_json_buffer_t *buffer,
-    const stitched_service_line_t *line,
-    int with_comma
+static int snapshot_add_adjustments(
+    json_writer_t *writer,
+    yyjson_mut_val *line_obj,
+    const stitched_service_line_t *line
 )
 {
+    yyjson_mut_val *arr;
+    yyjson_mut_val *adjustment_obj;
     const stitched_line_adjustment_t *adjustment;
     size_t i;
     int rc;
 
-    if (with_comma) {
-        rc = json_buffer_append_char(buffer, ',');
-        if (rc != X12_OK) {
-            return rc;
-        }
+    arr = json_writer_add_array(writer, line_obj, "adjustments");
+    if (arr == NULL) {
+        return X12_ERR_NO_MEMORY;
     }
-    rc = json_buffer_append(buffer, "\"adjustments\":[");
-    if (rc != X12_OK) {
-        return rc;
-    }
+
     for (i = 0u; i < line->adjustment_count; i++) {
         adjustment = &line->adjustments[i];
-        if (i > 0u) {
-            rc = json_buffer_append_char(buffer, ',');
-            if (rc != X12_OK) {
-                return rc;
-            }
+        adjustment_obj = json_writer_array_add_object(writer, arr);
+        if (adjustment_obj == NULL) {
+            return X12_ERR_NO_MEMORY;
         }
-        rc = json_buffer_append_char(buffer, '{');
+
+        rc = json_writer_add_string(
+            writer,
+            adjustment_obj,
+            "adjustment_group_code",
+            adjustment->adjustment_group_code
+        );
         if (rc == X12_OK) {
-            rc = json_buffer_append_string_field(
-                buffer,
-                "adjustment_group_code",
-                adjustment->adjustment_group_code,
-                0
-            );
-        }
-        if (rc == X12_OK) {
-            rc = json_buffer_append_string_array_field(
-                buffer,
+            rc = snapshot_add_string_array32(
+                writer,
+                adjustment_obj,
                 "reason_codes",
                 adjustment->reason_codes,
-                adjustment->value_count,
-                1
+                adjustment->value_count
             );
         }
         if (rc == X12_OK) {
-            rc = json_buffer_append_string_array_field(
-                buffer,
+            rc = snapshot_add_string_array32(
+                writer,
+                adjustment_obj,
                 "amounts",
                 adjustment->amounts,
-                adjustment->value_count,
-                1
+                adjustment->value_count
             );
         }
         if (rc == X12_OK) {
-            rc = json_buffer_append_string_array_field(
-                buffer,
+            rc = snapshot_add_string_array32(
+                writer,
+                adjustment_obj,
                 "quantities",
                 adjustment->quantities,
-                adjustment->value_count,
-                1
+                adjustment->value_count
             );
-        }
-        if (rc == X12_OK) {
-            rc = json_buffer_append_char(buffer, '}');
         }
         if (rc != X12_OK) {
             return rc;
         }
     }
-    return json_buffer_append_char(buffer, ']');
+
+    return X12_OK;
 }
 
-static int json_buffer_append_charge_context(
-    stitch_json_buffer_t *buffer,
+static int snapshot_add_charge_context(
+    json_writer_t *writer,
+    yyjson_mut_val *line_obj,
     const stitched_service_line_t *line
 )
 {
+    yyjson_mut_val *obj;
     int rc;
 
     if (!line->has_charge_context) {
         return X12_OK;
     }
-    rc = json_buffer_append(buffer, ",\"charge_context\":{");
+
+    obj = json_writer_add_object(writer, line_obj, "charge_context");
+    if (obj == NULL) {
+        return X12_ERR_NO_MEMORY;
+    }
+
+    rc = json_writer_add_string(writer, obj, "amount", line->charge_amount);
     if (rc == X12_OK) {
-        rc = json_buffer_append_string_field(buffer, "amount", line->charge_amount, 0);
+        rc = json_writer_add_string(writer, obj, "description", line->description);
     }
     if (rc == X12_OK) {
-        rc = json_buffer_append_string_field(buffer, "description", line->description, 1);
+        rc = json_writer_add_string(writer, obj, "service_date", line->charge_service_date);
     }
-    if (rc == X12_OK) {
-        rc = json_buffer_append_string_field(buffer, "service_date", line->charge_service_date, 1);
-    }
-    if (rc == X12_OK) {
-        rc = json_buffer_append_char(buffer, '}');
-    }
+
     return rc;
 }
 
-static int json_buffer_append_submitted_line(
-    stitch_json_buffer_t *buffer,
+static int snapshot_add_submitted_line(
+    json_writer_t *writer,
+    yyjson_mut_val *line_obj,
     const stitched_service_line_t *line
 )
 {
+    yyjson_mut_val *obj;
     int rc;
 
     if (!line->has_submitted) {
         return X12_OK;
     }
-    rc = json_buffer_append(buffer, ",\"submitted\":{");
-    if (rc == X12_OK) {
-        rc = json_buffer_append_string_field(buffer, "line_type", line->submitted_line_type, 0);
+
+    obj = json_writer_add_object(writer, line_obj, "submitted");
+    if (obj == NULL) {
+        return X12_ERR_NO_MEMORY;
     }
+
+    rc = json_writer_add_string(writer, obj, "line_type", line->submitted_line_type);
     if (rc == X12_OK) {
-        rc = json_buffer_append_string_field(
-            buffer,
+        rc = json_writer_add_string(
+            writer,
+            obj,
             "procedure_code_qualifier",
-            line->submitted_procedure_code_qualifier,
-            1
+            line->submitted_procedure_code_qualifier
         );
     }
     if (rc == X12_OK) {
-        rc = json_buffer_append_string_field(
-            buffer,
+        rc = json_writer_add_string(
+            writer,
+            obj,
             "procedure_code_set",
-            line->submitted_procedure_code_set,
-            1
+            line->submitted_procedure_code_set
         );
     }
     if (rc == X12_OK) {
-        rc = json_buffer_append_string_field(buffer, "charge_amount", line->submitted_charge_amount, 1);
+        rc = json_writer_add_string(writer, obj, "charge_amount", line->submitted_charge_amount);
     }
     if (rc == X12_OK) {
-        rc = json_buffer_append_string_field(
-            buffer,
+        rc = json_writer_add_string(
+            writer,
+            obj,
             "unit_measure_code",
-            line->submitted_unit_measure_code,
-            1
+            line->submitted_unit_measure_code
         );
     }
     if (rc == X12_OK) {
-        rc = json_buffer_append_string_field(buffer, "unit_count", line->submitted_unit_count, 1);
+        rc = json_writer_add_string(writer, obj, "unit_count", line->submitted_unit_count);
     }
     if (rc == X12_OK) {
-        rc = json_buffer_append_string_field(buffer, "service_date", line->submitted_service_date, 1);
+        rc = json_writer_add_string(writer, obj, "service_date", line->submitted_service_date);
     }
-    if (rc == X12_OK) {
-        rc = json_buffer_append_char(buffer, '}');
-    }
+
     return rc;
 }
 
-static int json_buffer_append_remittance_line(
-    stitch_json_buffer_t *buffer,
+static int snapshot_add_remittance_line(
+    json_writer_t *writer,
+    yyjson_mut_val *line_obj,
     const stitched_service_line_t *line
 )
 {
+    yyjson_mut_val *obj;
     int rc;
 
     if (!line->has_remittance) {
         return X12_OK;
     }
-    rc = json_buffer_append(buffer, ",\"remittance\":{");
-    if (rc == X12_OK) {
-        rc = json_buffer_append_string_field(
-            buffer,
-            "procedure_code_qualifier",
-            line->remittance_procedure_code_qualifier,
-            0
-        );
+
+    obj = json_writer_add_object(writer, line_obj, "remittance");
+    if (obj == NULL) {
+        return X12_ERR_NO_MEMORY;
     }
+
+    rc = json_writer_add_string(
+        writer,
+        obj,
+        "procedure_code_qualifier",
+        line->remittance_procedure_code_qualifier
+    );
     if (rc == X12_OK) {
-        rc = json_buffer_append_string_field(
-            buffer,
+        rc = json_writer_add_string(
+            writer,
+            obj,
             "procedure_code_set",
-            line->remittance_procedure_code_set,
-            1
+            line->remittance_procedure_code_set
         );
     }
     if (rc == X12_OK) {
-        rc = json_buffer_append_string_field(
-            buffer,
+        rc = json_writer_add_string(
+            writer,
+            obj,
             "line_charge_amount",
-            line->remittance_line_charge_amount,
-            1
+            line->remittance_line_charge_amount
         );
     }
     if (rc == X12_OK) {
-        rc = json_buffer_append_string_field(
-            buffer,
+        rc = json_writer_add_string(
+            writer,
+            obj,
             "line_paid_amount",
-            line->remittance_line_paid_amount,
-            1
+            line->remittance_line_paid_amount
         );
     }
     if (rc == X12_OK) {
-        rc = json_buffer_append_string_field(
-            buffer,
+        rc = json_writer_add_string(
+            writer,
+            obj,
             "paid_service_unit_count",
-            line->remittance_paid_unit_count,
-            1
+            line->remittance_paid_unit_count
         );
     }
     if (rc == X12_OK) {
-        rc = json_buffer_append_string_field(buffer, "service_date", line->remittance_service_date, 1);
+        rc = json_writer_add_string(writer, obj, "service_date", line->remittance_service_date);
     }
-    if (rc == X12_OK) {
-        rc = json_buffer_append_char(buffer, '}');
-    }
+
     return rc;
 }
 
-static int json_buffer_append_service_lines(
-    stitch_json_buffer_t *buffer,
-    const claim_aggregate_t *aggregate,
-    int with_comma
+static int snapshot_add_service_lines(
+    json_writer_t *writer,
+    yyjson_mut_val *root,
+    const claim_aggregate_t *aggregate
 )
 {
+    yyjson_mut_val *arr;
+    yyjson_mut_val *line_obj;
     const stitched_service_line_t *line;
     size_t i;
     int rc;
 
-    if (with_comma) {
-        rc = json_buffer_append_char(buffer, ',');
-        if (rc != X12_OK) {
-            return rc;
-        }
+    arr = json_writer_add_array(writer, root, "service_lines");
+    if (arr == NULL) {
+        return X12_ERR_NO_MEMORY;
     }
-    rc = json_buffer_append(buffer, "\"service_lines\":[");
-    if (rc != X12_OK) {
-        return rc;
-    }
+
     for (i = 0u; i < aggregate->service_line_count; i++) {
         line = &aggregate->service_lines[i];
-        if (i > 0u) {
-            rc = json_buffer_append_char(buffer, ',');
-            if (rc != X12_OK) {
-                return rc;
-            }
+        line_obj = json_writer_array_add_object(writer, arr);
+        if (line_obj == NULL) {
+            return X12_ERR_NO_MEMORY;
         }
-        rc = json_buffer_append_char(buffer, '{');
+
+        rc = json_writer_add_string(writer, line_obj, "service_line_number", line->service_line_number);
         if (rc == X12_OK) {
-            rc = json_buffer_append_string_field(buffer, "service_line_number", line->service_line_number, 0);
-        }
-        if (rc == X12_OK) {
-            rc = json_buffer_append_string_field(
-                buffer,
+            rc = json_writer_add_string(
+                writer,
+                line_obj,
                 "remittance_service_line_number",
-                line->remit_service_line_number,
-                1
+                line->remit_service_line_number
             );
         }
         if (rc == X12_OK) {
-            rc = json_buffer_append_string_field(buffer, "procedure_code", line->procedure_code, 1);
+            rc = json_writer_add_string(writer, line_obj, "procedure_code", line->procedure_code);
         }
         if (rc == X12_OK) {
-            rc = json_buffer_append_string_field(buffer, "description", line->description, 1);
+            rc = json_writer_add_string(writer, line_obj, "description", line->description);
         }
         if (rc == X12_OK) {
-            rc = json_buffer_append_string_field(buffer, "service_date", line->service_date, 1);
+            rc = json_writer_add_string(writer, line_obj, "service_date", line->service_date);
         }
         if (rc == X12_OK) {
-            rc = json_buffer_append_string_field(buffer, "match_method", line->match_method, 1);
+            rc = json_writer_add_string(writer, line_obj, "match_method", line->match_method);
         }
         if (rc == X12_OK) {
-            rc = json_buffer_append_charge_context(buffer, line);
+            rc = snapshot_add_charge_context(writer, line_obj, line);
         }
         if (rc == X12_OK) {
-            rc = json_buffer_append_submitted_line(buffer, line);
+            rc = snapshot_add_submitted_line(writer, line_obj, line);
         }
         if (rc == X12_OK) {
-            rc = json_buffer_append_remittance_line(buffer, line);
+            rc = snapshot_add_remittance_line(writer, line_obj, line);
         }
         if (rc == X12_OK) {
-            rc = json_buffer_append_adjustments(buffer, line, 1);
-        }
-        if (rc == X12_OK) {
-            rc = json_buffer_append_char(buffer, '}');
+            rc = snapshot_add_adjustments(writer, line_obj, line);
         }
         if (rc != X12_OK) {
             return rc;
         }
     }
-    return json_buffer_append_char(buffer, ']');
+
+    return X12_OK;
 }
 
-static int write_service_lines(FILE *fp, const claim_aggregate_t *aggregate)
+static int snapshot_add_source_event_ids(
+    json_writer_t *writer,
+    yyjson_mut_val *root,
+    const claim_aggregate_t *aggregate
+)
 {
-    stitch_json_buffer_t buffer;
-    char *json;
+    yyjson_mut_val *arr;
+    size_t i;
     int rc;
 
-    if (fp == NULL || aggregate == NULL) {
+    arr = json_writer_add_array(writer, root, "applied_event_ids");
+    if (arr == NULL) {
+        return X12_ERR_NO_MEMORY;
+    }
+
+    for (i = 0u; i < aggregate->source_event_count; i++) {
+        rc = json_writer_array_add_size(writer, arr, aggregate->source_events[i].event_id);
+        if (rc != X12_OK) {
+            return rc;
+        }
+    }
+
+    return X12_OK;
+}
+
+static int snapshot_add_update_event_ids(
+    json_writer_t *writer,
+    yyjson_mut_val *root,
+    const stitch_update_batch_t *batch
+)
+{
+    yyjson_mut_val *arr;
+    size_t i;
+    size_t end;
+    int rc;
+
+    if (batch == NULL || batch->aggregate == NULL) {
         return X12_ERR_INVALID_ARGUMENT;
     }
 
-    json = (char *)malloc(STITCH_STATE_JSON_MAX);
-    if (json == NULL) {
+    arr = json_writer_add_array(writer, root, "update_event_ids");
+    if (arr == NULL) {
         return X12_ERR_NO_MEMORY;
     }
-    buffer.data = json;
-    buffer.len = 0u;
-    buffer.cap = STITCH_STATE_JSON_MAX;
-    json[0] = '\0';
 
-    rc = json_buffer_append_service_lines(&buffer, aggregate, 1);
-    if (rc == X12_OK && fputs(json, fp) == EOF) {
-        rc = X12_ERR_IO;
+    end = batch->first_source_event_index + batch->source_event_count;
+    for (i = batch->first_source_event_index; i < end; i++) {
+        rc = json_writer_array_add_size(writer, arr, batch->aggregate->source_events[i].event_id);
+        if (rc != X12_OK) {
+            return rc;
+        }
     }
-    free(json);
+
+    return X12_OK;
+}
+
+static int build_snapshot_doc(
+    const stitch_state_t *state,
+    const stitch_update_batch_t *batch,
+    const char *aggregate_id,
+    json_writer_t *writer,
+    int include_contains_phi,
+    int include_lineage,
+    int include_event_ids
+)
+{
+    const claim_aggregate_t *aggregate;
+    yyjson_mut_val *root;
+    yyjson_mut_val *keys;
+    yyjson_mut_val *snapshot_state;
+    yyjson_mut_val *lineage;
+    int include_phi;
+    int rc;
+    char claim_id[STITCH_ID_MAX];
+    char claim_id_token[TOKENISE_MAX_TOKEN_LEN];
+    char payer_control[STITCH_ID_MAX];
+    char payer_control_token[TOKENISE_MAX_TOKEN_LEN];
+
+    if (state == NULL || batch == NULL || batch->aggregate == NULL ||
+        aggregate_id == NULL || writer == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    aggregate = batch->aggregate;
+    include_phi = state->include_phi;
+
+    rc = json_writer_init_object(writer);
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    root = json_writer_root(writer);
+    rc = json_writer_add_string(writer, root, "event_type", "ClaimAggregateUpdated");
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(writer, root, "aggregate_type", "claim");
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(writer, root, "aggregate_id", aggregate_id);
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_size(writer, root, "version", aggregate->version);
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_size(writer, root, "updated_by_event_id", batch->updated_by_event_id);
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(writer, root, "updated_by_event_type", batch->updated_by_event_type);
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(writer, root, "update_scope", "source_drop");
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(writer, root, "source_drop_id", batch->source_drop_id);
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_size(
+            writer,
+            root,
+            "compacted_source_event_count",
+            batch->source_event_count
+        );
+    }
+    if (rc == X12_OK && include_contains_phi) {
+        rc = json_writer_add_bool(writer, root, "contains_phi", include_phi);
+    }
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    keys = json_writer_add_object(writer, root, "keys");
+    if (keys == NULL) {
+        return X12_ERR_NO_MEMORY;
+    }
+
+    rc = resolve_identifier_output_pair(
+        state,
+        "claim_id",
+        aggregate->claim_id,
+        aggregate->claim_id_token,
+        claim_id,
+        sizeof(claim_id),
+        claim_id_token,
+        sizeof(claim_id_token)
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+    if (include_phi && claim_id[0] != '\0') {
+        rc = json_writer_add_string(writer, keys, "claim_id", claim_id);
+        if (rc == X12_OK) {
+            rc = json_writer_add_string(writer, keys, "claim_id_token", claim_id_token);
+        }
+    } else {
+        rc = json_writer_add_string(
+            writer,
+            keys,
+            "claim_id",
+            claim_id_token[0] != '\0' ? claim_id_token : aggregate->key
+        );
+    }
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    rc = resolve_identifier_output_pair(
+        state,
+        "payer_claim_control_number",
+        aggregate->payer_claim_control_number,
+        aggregate->payer_claim_control_number_token,
+        payer_control,
+        sizeof(payer_control),
+        payer_control_token,
+        sizeof(payer_control_token)
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+    if (payer_control[0] != '\0' || payer_control_token[0] != '\0') {
+        if (include_phi && payer_control[0] != '\0') {
+            rc = json_writer_add_string(
+                writer,
+                keys,
+                "payer_claim_control_number",
+                payer_control
+            );
+            if (rc == X12_OK) {
+                rc = json_writer_add_string(
+                    writer,
+                    keys,
+                    "payer_claim_control_number_token",
+                    payer_control_token
+                );
+            }
+        } else {
+            rc = json_writer_add_string(
+                writer,
+                keys,
+                "payer_claim_control_number",
+                payer_control_token
+            );
+        }
+        if (rc != X12_OK) {
+            return rc;
+        }
+    }
+    if (aggregate->encounter_id[0] != '\0') {
+        rc = json_writer_add_string(writer, keys, "encounter_id", aggregate->encounter_id);
+        if (rc != X12_OK) {
+            return rc;
+        }
+    }
+    if (include_phi && aggregate->patient_id[0] != '\0') {
+        rc = json_writer_add_string(writer, keys, "patient_id", aggregate->patient_id);
+        if (rc == X12_OK && aggregate->patient_id_token[0] != '\0') {
+            rc = json_writer_add_string(
+                writer,
+                keys,
+                "patient_id_token",
+                aggregate->patient_id_token
+            );
+        }
+    } else if (aggregate->patient_id_token[0] != '\0') {
+        rc = json_writer_add_string(writer, keys, "patient_id", aggregate->patient_id_token);
+    }
+    if (rc != X12_OK) {
+        return rc;
+    }
+    if (include_phi && aggregate->patient_name[0] != '\0') {
+        rc = json_writer_add_string(writer, keys, "patient_name", aggregate->patient_name);
+        if (rc == X12_OK && aggregate->patient_name_token[0] != '\0') {
+            rc = json_writer_add_string(
+                writer,
+                keys,
+                "patient_name_token",
+                aggregate->patient_name_token
+            );
+        }
+    } else if (aggregate->patient_name_token[0] != '\0') {
+        rc = json_writer_add_string(writer, keys, "patient_name_token", aggregate->patient_name_token);
+    }
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    snapshot_state = json_writer_add_object(writer, root, "state");
+    if (snapshot_state == NULL) {
+        return X12_ERR_NO_MEMORY;
+    }
+
+    rc = json_writer_add_bool(
+        writer,
+        snapshot_state,
+        "has_charge_context",
+        aggregate->has_charge_context
+    );
+    if (rc == X12_OK) {
+        rc = json_writer_add_bool(writer, snapshot_state, "has_837", aggregate->has_837);
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_bool(writer, snapshot_state, "has_835", aggregate->has_835);
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(writer, snapshot_state, "claim_type", aggregate->claim_type);
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(
+            writer,
+            snapshot_state,
+            "claim_status_code",
+            aggregate->claim_status_code
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_size(
+            writer,
+            snapshot_state,
+            "source_event_count",
+            aggregate->source_event_count
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_size(
+            writer,
+            snapshot_state,
+            "submitted_service_line_count",
+            aggregate->submitted_service_line_count
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_size(
+            writer,
+            snapshot_state,
+            "remittance_service_line_count",
+            aggregate->remittance_service_line_count
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_size(
+            writer,
+            snapshot_state,
+            "adjustment_count",
+            aggregate->adjustment_count
+        );
+    }
+    if (rc == X12_OK) {
+        rc = snapshot_add_service_lines(writer, root, aggregate);
+    }
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    if (include_lineage) {
+        lineage = json_writer_add_object(writer, root, "lineage");
+        if (lineage == NULL) {
+            return X12_ERR_NO_MEMORY;
+        }
+        rc = json_writer_add_size(
+            writer,
+            lineage,
+            "applied_event_count",
+            aggregate->source_event_count
+        );
+        if (rc == X12_OK) {
+            rc = json_writer_add_size(
+                writer,
+                lineage,
+                "update_event_count",
+                batch->source_event_count
+            );
+        }
+        if (rc != X12_OK) {
+            return rc;
+        }
+    }
+    if (include_event_ids) {
+        rc = snapshot_add_source_event_ids(writer, root, aggregate);
+        if (rc == X12_OK) {
+            rc = snapshot_add_update_event_ids(writer, root, batch);
+        }
+    }
+
     return rc;
 }
 
@@ -1823,276 +1891,27 @@ static int build_snapshot_state_json(
     size_t out_len
 )
 {
-    const claim_aggregate_t *aggregate;
-    stitch_json_buffer_t buffer;
-    int include_phi;
+    json_writer_t writer = {0};
     int rc;
-    char claim_id[STITCH_ID_MAX];
-    char claim_id_token[TOKENISE_MAX_TOKEN_LEN];
-    char payer_control[STITCH_ID_MAX];
-    char payer_control_token[TOKENISE_MAX_TOKEN_LEN];
 
-    if (state == NULL || batch == NULL || batch->aggregate == NULL ||
-        aggregate_id == NULL || out == NULL || out_len == 0u) {
+    if (out == NULL || out_len == 0u) {
         return X12_ERR_INVALID_ARGUMENT;
     }
-
-    aggregate = batch->aggregate;
-    include_phi = state->include_phi;
-    buffer.data = out;
-    buffer.len = 0u;
-    buffer.cap = out_len;
     out[0] = '\0';
 
-    rc = json_buffer_append_char(&buffer, '{');
+    rc = build_snapshot_doc(
+        state,
+        batch,
+        aggregate_id,
+        &writer,
+        1,
+        1,
+        0
+    );
     if (rc == X12_OK) {
-        rc = json_buffer_append_string_field(
-            &buffer,
-            "event_type",
-            "ClaimAggregateUpdated",
-            0
-        );
+        rc = json_writer_write_cstring(&writer, out, out_len);
     }
-    if (rc == X12_OK) {
-        rc = json_buffer_append_string_field(&buffer, "aggregate_type", "claim", 1);
-    }
-    if (rc == X12_OK) {
-        rc = json_buffer_append_string_field(&buffer, "aggregate_id", aggregate_id, 1);
-    }
-    if (rc == X12_OK) {
-        rc = json_buffer_append_size_field(&buffer, "version", aggregate->version, 1);
-    }
-    if (rc == X12_OK) {
-        rc = json_buffer_append_size_field(
-            &buffer,
-            "updated_by_event_id",
-            batch->updated_by_event_id,
-            1
-        );
-    }
-    if (rc == X12_OK) {
-        rc = json_buffer_append_string_field(
-            &buffer,
-            "updated_by_event_type",
-            batch->updated_by_event_type,
-            1
-        );
-    }
-    if (rc == X12_OK) {
-        rc = json_buffer_append_string_field(&buffer, "update_scope", "source_drop", 1);
-    }
-    if (rc == X12_OK) {
-        rc = json_buffer_append_string_field(&buffer, "source_drop_id", batch->source_drop_id, 1);
-    }
-    if (rc == X12_OK) {
-        rc = json_buffer_append_size_field(
-            &buffer,
-            "compacted_source_event_count",
-            batch->source_event_count,
-            1
-        );
-    }
-    if (rc == X12_OK) {
-        rc = json_buffer_append_bool_field(&buffer, "contains_phi", include_phi, 1);
-    }
-    if (rc == X12_OK) {
-        rc = json_buffer_append(&buffer, ",\"keys\":{");
-    }
-    if (rc == X12_OK) {
-        rc = resolve_identifier_output_pair(
-            state,
-            "claim_id",
-            aggregate->claim_id,
-            aggregate->claim_id_token,
-            claim_id,
-            sizeof(claim_id),
-            claim_id_token,
-            sizeof(claim_id_token)
-        );
-    }
-    if (rc == X12_OK && include_phi && claim_id[0] != '\0') {
-        rc = json_buffer_append_string_field(&buffer, "claim_id", claim_id, 0);
-        if (rc == X12_OK) {
-            rc = json_buffer_append_string_field(
-                &buffer,
-                "claim_id_token",
-                claim_id_token,
-                1
-            );
-        }
-    } else if (rc == X12_OK) {
-        rc = json_buffer_append_string_field(
-            &buffer,
-            "claim_id",
-            claim_id_token[0] != '\0' ? claim_id_token : aggregate->key,
-            0
-        );
-    }
-    if (rc == X12_OK) {
-        rc = resolve_identifier_output_pair(
-            state,
-            "payer_claim_control_number",
-            aggregate->payer_claim_control_number,
-            aggregate->payer_claim_control_number_token,
-            payer_control,
-            sizeof(payer_control),
-            payer_control_token,
-            sizeof(payer_control_token)
-        );
-    }
-    if (rc == X12_OK && (payer_control[0] != '\0' || payer_control_token[0] != '\0')) {
-        if (include_phi && payer_control[0] != '\0') {
-            rc = json_buffer_append_string_field(
-                &buffer,
-                "payer_claim_control_number",
-                payer_control,
-                1
-            );
-            if (rc == X12_OK) {
-                rc = json_buffer_append_string_field(
-                    &buffer,
-                    "payer_claim_control_number_token",
-                    payer_control_token,
-                    1
-                );
-            }
-        } else {
-            rc = json_buffer_append_string_field(
-                &buffer,
-                "payer_claim_control_number",
-                payer_control_token,
-                1
-            );
-        }
-    }
-    if (rc == X12_OK && aggregate->encounter_id[0] != '\0') {
-        rc = json_buffer_append_string_field(&buffer, "encounter_id", aggregate->encounter_id, 1);
-    }
-    if (rc == X12_OK && include_phi && aggregate->patient_id[0] != '\0') {
-        rc = json_buffer_append_string_field(&buffer, "patient_id", aggregate->patient_id, 1);
-        if (rc == X12_OK && aggregate->patient_id_token[0] != '\0') {
-            rc = json_buffer_append_string_field(
-                &buffer,
-                "patient_id_token",
-                aggregate->patient_id_token,
-                1
-            );
-        }
-    } else if (rc == X12_OK && aggregate->patient_id_token[0] != '\0') {
-        rc = json_buffer_append_string_field(
-            &buffer,
-            "patient_id",
-            aggregate->patient_id_token,
-            1
-        );
-    }
-    if (rc == X12_OK && include_phi && aggregate->patient_name[0] != '\0') {
-        rc = json_buffer_append_string_field(&buffer, "patient_name", aggregate->patient_name, 1);
-        if (rc == X12_OK && aggregate->patient_name_token[0] != '\0') {
-            rc = json_buffer_append_string_field(
-                &buffer,
-                "patient_name_token",
-                aggregate->patient_name_token,
-                1
-            );
-        }
-    } else if (rc == X12_OK && aggregate->patient_name_token[0] != '\0') {
-        rc = json_buffer_append_string_field(
-            &buffer,
-            "patient_name_token",
-            aggregate->patient_name_token,
-            1
-        );
-    }
-    if (rc == X12_OK) {
-        rc = json_buffer_append(&buffer, "},\"state\":{");
-    }
-    if (rc == X12_OK) {
-        rc = json_buffer_append_bool_field(
-            &buffer,
-            "has_charge_context",
-            aggregate->has_charge_context,
-            0
-        );
-    }
-    if (rc == X12_OK) {
-        rc = json_buffer_append_bool_field(&buffer, "has_837", aggregate->has_837, 1);
-    }
-    if (rc == X12_OK) {
-        rc = json_buffer_append_bool_field(&buffer, "has_835", aggregate->has_835, 1);
-    }
-    if (rc == X12_OK) {
-        rc = json_buffer_append_string_field(&buffer, "claim_type", aggregate->claim_type, 1);
-    }
-    if (rc == X12_OK) {
-        rc = json_buffer_append_string_field(
-            &buffer,
-            "claim_status_code",
-            aggregate->claim_status_code,
-            1
-        );
-    }
-    if (rc == X12_OK) {
-        rc = json_buffer_append_size_field(
-            &buffer,
-            "source_event_count",
-            aggregate->source_event_count,
-            1
-        );
-    }
-    if (rc == X12_OK) {
-        rc = json_buffer_append_size_field(
-            &buffer,
-            "submitted_service_line_count",
-            aggregate->submitted_service_line_count,
-            1
-        );
-    }
-    if (rc == X12_OK) {
-        rc = json_buffer_append_size_field(
-            &buffer,
-            "remittance_service_line_count",
-            aggregate->remittance_service_line_count,
-            1
-        );
-    }
-    if (rc == X12_OK) {
-        rc = json_buffer_append_size_field(
-            &buffer,
-            "adjustment_count",
-            aggregate->adjustment_count,
-            1
-        );
-    }
-    if (rc == X12_OK) {
-        rc = json_buffer_append_char(&buffer, '}');
-    }
-    if (rc == X12_OK) {
-        rc = json_buffer_append_service_lines(&buffer, aggregate, 1);
-    }
-    if (rc == X12_OK) {
-        rc = json_buffer_append(&buffer, ",\"lineage\":{");
-    }
-    if (rc == X12_OK) {
-        rc = json_buffer_append_size_field(
-            &buffer,
-            "applied_event_count",
-            aggregate->source_event_count,
-            0
-        );
-    }
-    if (rc == X12_OK) {
-        rc = json_buffer_append_size_field(
-            &buffer,
-            "update_event_count",
-            batch->source_event_count,
-            1
-        );
-    }
-    if (rc == X12_OK) {
-        rc = json_buffer_append(&buffer, "}}");
-    }
-
+    json_writer_free(&writer);
     return rc;
 }
 
@@ -2156,202 +1975,40 @@ static int write_snapshot(
     const stitch_update_batch_t *batch
 )
 {
-    FILE *fp = state->out;
-    const claim_aggregate_t *aggregate = batch->aggregate;
+    json_writer_t writer = {0};
     char aggregate_id[STITCH_ID_MAX + 16u];
-    char claim_id[STITCH_ID_MAX];
-    char claim_id_token[TOKENISE_MAX_TOKEN_LEN];
-    char payer_control[STITCH_ID_MAX];
-    char payer_control_token[TOKENISE_MAX_TOKEN_LEN];
     int written;
     int rc;
 
-    if (fputc('{', fp) == EOF) {
-        return X12_ERR_IO;
+    if (state == NULL || batch == NULL || batch->aggregate == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
     }
-    written = snprintf(aggregate_id, sizeof(aggregate_id), "claim:%s", aggregate->key);
+
+    written = snprintf(
+        aggregate_id,
+        sizeof(aggregate_id),
+        "claim:%s",
+        batch->aggregate->key
+    );
     if (written < 0 || (size_t)written >= sizeof(aggregate_id)) {
         return X12_ERR_BUFFER_TOO_SMALL;
     }
-    if (event_writer_write_cstring_field(fp, "event_type", "ClaimAggregateUpdated", 0) != X12_OK ||
-        event_writer_write_cstring_field(fp, "aggregate_type", "claim", 1) != X12_OK ||
-        event_writer_write_cstring_field(fp, "aggregate_id", aggregate_id, 1) != X12_OK) {
-        return X12_ERR_IO;
-    }
-    if (fprintf(
-            fp,
-            ",\"version\":%zu,\"updated_by_event_id\":%zu",
-            aggregate->version,
-            batch->updated_by_event_id
-        ) < 0) {
-        return X12_ERR_IO;
-    }
-    if (event_writer_write_cstring_field(fp, "updated_by_event_type", batch->updated_by_event_type, 1) != X12_OK ||
-        event_writer_write_cstring_field(fp, "update_scope", "source_drop", 1) != X12_OK ||
-        event_writer_write_cstring_field(fp, "source_drop_id", batch->source_drop_id, 1) != X12_OK) {
-        return X12_ERR_IO;
-    }
-    if (fprintf(fp, ",\"compacted_source_event_count\":%zu", batch->source_event_count) < 0) {
-        return X12_ERR_IO;
-    }
 
-    if (fputs(",\"keys\":{", fp) == EOF) {
-        return X12_ERR_IO;
-    }
-    rc = resolve_identifier_output_pair(
+    rc = build_snapshot_doc(
         state,
-        "claim_id",
-        aggregate->claim_id,
-        aggregate->claim_id_token,
-        claim_id,
-        sizeof(claim_id),
-        claim_id_token,
-        sizeof(claim_id_token)
+        batch,
+        aggregate_id,
+        &writer,
+        0,
+        0,
+        1
     );
+    if (rc == X12_OK) {
+        rc = json_writer_write_fp(&writer, state->out, 1);
+    }
+    json_writer_free(&writer);
     if (rc != X12_OK) {
         return rc;
-    }
-    if (state->include_phi && claim_id[0] != '\0') {
-        if (event_writer_write_cstring_field(fp, "claim_id", claim_id, 0) != X12_OK ||
-            event_writer_write_cstring_field(fp, "claim_id_token", claim_id_token, 1) != X12_OK) {
-            return X12_ERR_IO;
-        }
-    } else if (event_writer_write_cstring_field(
-            fp,
-            "claim_id",
-            claim_id_token[0] != '\0' ? claim_id_token : aggregate->key,
-            0
-        ) != X12_OK) {
-        return X12_ERR_IO;
-    }
-    rc = resolve_identifier_output_pair(
-        state,
-        "payer_claim_control_number",
-        aggregate->payer_claim_control_number,
-        aggregate->payer_claim_control_number_token,
-        payer_control,
-        sizeof(payer_control),
-        payer_control_token,
-        sizeof(payer_control_token)
-    );
-    if (rc != X12_OK) {
-        return rc;
-    }
-    if (payer_control[0] != '\0' || payer_control_token[0] != '\0') {
-        if (state->include_phi && payer_control[0] != '\0') {
-            if (event_writer_write_cstring_field(
-                    fp,
-                    "payer_claim_control_number",
-                    payer_control,
-                    1
-                ) != X12_OK ||
-                event_writer_write_cstring_field(
-                    fp,
-                    "payer_claim_control_number_token",
-                    payer_control_token,
-                    1
-                ) != X12_OK) {
-                return X12_ERR_IO;
-            }
-        } else if (event_writer_write_cstring_field(
-                fp,
-                "payer_claim_control_number",
-                payer_control_token,
-                1
-            ) != X12_OK) {
-            return X12_ERR_IO;
-        }
-    }
-    if (aggregate->encounter_id[0] != '\0' &&
-        event_writer_write_cstring_field(fp, "encounter_id", aggregate->encounter_id, 1) != X12_OK) {
-        return X12_ERR_IO;
-    }
-    if (state->include_phi && aggregate->patient_id[0] != '\0') {
-        if (event_writer_write_cstring_field(fp, "patient_id", aggregate->patient_id, 1) != X12_OK) {
-            return X12_ERR_IO;
-        }
-        if (aggregate->patient_id_token[0] != '\0' &&
-            event_writer_write_cstring_field(
-                fp,
-                "patient_id_token",
-                aggregate->patient_id_token,
-                1
-            ) != X12_OK) {
-            return X12_ERR_IO;
-        }
-    } else if (aggregate->patient_id_token[0] != '\0' &&
-               event_writer_write_cstring_field(
-                   fp,
-                   "patient_id",
-                   aggregate->patient_id_token,
-                   1
-               ) != X12_OK) {
-        return X12_ERR_IO;
-    }
-    if (state->include_phi && aggregate->patient_name[0] != '\0') {
-        if (event_writer_write_cstring_field(fp, "patient_name", aggregate->patient_name, 1) != X12_OK) {
-            return X12_ERR_IO;
-        }
-        if (aggregate->patient_name_token[0] != '\0' &&
-            event_writer_write_cstring_field(
-                fp,
-                "patient_name_token",
-                aggregate->patient_name_token,
-                1
-            ) != X12_OK) {
-            return X12_ERR_IO;
-        }
-    } else if (aggregate->patient_name_token[0] != '\0' &&
-               event_writer_write_cstring_field(
-                   fp,
-                   "patient_name_token",
-                   aggregate->patient_name_token,
-                   1
-               ) != X12_OK) {
-        return X12_ERR_IO;
-    }
-    if (fputs("},\"state\":{", fp) == EOF) {
-        return X12_ERR_IO;
-    }
-    if (fprintf(
-            fp,
-            "\"has_charge_context\":%s,\"has_837\":%s,\"has_835\":%s",
-            aggregate->has_charge_context ? "true" : "false",
-            aggregate->has_837 ? "true" : "false",
-            aggregate->has_835 ? "true" : "false"
-        ) < 0) {
-        return X12_ERR_IO;
-    }
-    if (event_writer_write_cstring_field(fp, "claim_type", aggregate->claim_type, 1) != X12_OK ||
-        event_writer_write_cstring_field(fp, "claim_status_code", aggregate->claim_status_code, 1) != X12_OK) {
-        return X12_ERR_IO;
-    }
-    if (fprintf(
-            fp,
-            ",\"source_event_count\":%zu,\"submitted_service_line_count\":%zu,"
-            "\"remittance_service_line_count\":%zu,\"adjustment_count\":%zu",
-            aggregate->source_event_count,
-            aggregate->submitted_service_line_count,
-            aggregate->remittance_service_line_count,
-            aggregate->adjustment_count
-        ) < 0) {
-        return X12_ERR_IO;
-    }
-    if (fputc('}', fp) == EOF) {
-        return X12_ERR_IO;
-    }
-    rc = write_service_lines(fp, aggregate);
-    if (rc != X12_OK) {
-        return rc;
-    }
-    if (write_applied_event_ids(fp, aggregate) != X12_OK) {
-        return X12_ERR_IO;
-    }
-    if (write_update_event_ids(fp, batch) != X12_OK) {
-        return X12_ERR_IO;
-    }
-    if (fputs("}\n", fp) == EOF) {
-        return X12_ERR_IO;
     }
 
     return persist_snapshot_to_read_store(state, batch, aggregate_id);

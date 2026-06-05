@@ -19,6 +19,9 @@ function(scribe_enable_warnings target)
     endif()
 endfunction()
 
+add_library(yyjson third_party/yyjson/yyjson.c)
+target_include_directories(yyjson PUBLIC third_party/yyjson)
+
 add_library(scribe_core
     src/aggregate_stitcher.c
     src/balance_projector.c
@@ -26,6 +29,7 @@ add_library(scribe_core
     src/journal.c
     src/journal_builder.c
     src/json_scan.c
+    src/json_write.c
     src/phi_vault.c
     src/projection.c
     src/store.c
@@ -38,7 +42,7 @@ add_library(scribe_core
 )
 
 target_include_directories(scribe_core PUBLIC src)
-target_link_libraries(scribe_core PUBLIC SQLite::SQLite3)
+target_link_libraries(scribe_core PUBLIC SQLite::SQLite3 yyjson)
 scribe_enable_warnings(scribe_core)
 
 add_executable(scribe src/main.c)

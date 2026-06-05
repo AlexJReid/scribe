@@ -2,6 +2,7 @@
 #include "balance_projector.h"
 #include "event_writer.h"
 #include "journal_builder.h"
+#include "json_scan.h"
 #include "phi_vault.h"
 #include "store.h"
 #include "tokenise.h"
@@ -1022,6 +1023,25 @@ static int test_json_escaping(void)
     return 0;
 }
 
+static int test_json_scan_unescapes_strings(void)
+{
+    char value[128];
+    int synthetic = 0;
+    const char line[] =
+        "{\"description\":\"a\\\"b\\\\c\\n\","
+        "\"synthetic\":true,"
+        "\"raw_elements\":[\"x\",\"y\\tz\"]}";
+
+    REQUIRE(json_get_string(line, "description", value, sizeof(value)) == 1);
+    REQUIRE(strcmp(value, "a\"b\\c\n") == 0);
+    REQUIRE(json_get_bool(line, "synthetic", &synthetic) == 1);
+    REQUIRE(synthetic == 1);
+    REQUIRE(json_get_array_string_at(line, "raw_elements", 1u, value, sizeof(value)) == 1);
+    REQUIRE(strcmp(value, "y\tz") == 0);
+
+    return 0;
+}
+
 static int test_tokenise_format(void)
 {
     char token[TOKENISE_MAX_TOKEN_LEN];
@@ -1047,6 +1067,7 @@ int main(void)
     REQUIRE(test_stroke_balance_projection_from_journal() == 0);
     REQUIRE(test_store_indexes_and_aggregates() == 0);
     REQUIRE(test_json_escaping() == 0);
+    REQUIRE(test_json_scan_unescapes_strings() == 0);
     REQUIRE(test_tokenise_format() == 0);
 
     return 0;
