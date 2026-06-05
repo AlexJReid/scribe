@@ -26,8 +26,8 @@ for this proof of concept and are not real PHI.
 - Use SQLite as the proof-of-concept vault, index, and snapshot store.
 - Keep this as a small C executable, not a service.
 
-Keep these decisions visible here. More background on the 837/835 model,
-tokenisation, and PHI tradeoffs lives in `theory.md`.
+More background on the 837/835 model, tokenisation, and PHI tradeoffs lives in
+[theory.md](theory.md).
 
 ## Build
 
