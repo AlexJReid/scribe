@@ -8,7 +8,9 @@ arrive as separate files:
 - 835 remittances: payer-to-provider adjudication and payment detail
 
 The proof of concept turns those inputs into an immutable journal, then reduces
-the journal into versioned claim aggregates and balance projections.
+the journal into versioned claim aggregates and balance projections. PHI-bearing
+values are [tokenised](#phi) before they enter the normal journal/read-store
+path, with raw values held separately in a PHI vault.
 
 The stroke case study uses synthesized PHI-looking data. It is inspired by the
 broad shape of a stroke-related episode I had in the UK, outside the US
