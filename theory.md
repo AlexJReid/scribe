@@ -1,4 +1,4 @@
-# Theory
+# scribe deep dive
 
 `scribe` is about joining the parts of a healthcare money trail that usually
 arrive as separate files:
@@ -17,17 +17,17 @@ broad shape of a stroke-related episode I had in the UK, outside the US
 healthcare system; the names, IDs, payer details, dates, amounts, and EDI
 content are invented.
 
-## 837 And 835
+## 837/835
 
-An 837 says what was claimed. In this project it contributes claim identity,
+An 837 says *what* was claimed. In this project it contributes claim identity,
 encounter context, patient/subscriber/provider fields, service lines, billed
 amounts, and source locators.
 
-An 835 says how the payer adjudicated the claim. It contributes payer control
+An 835 says *how* the payer adjudicated the claim. It contributes payer control
 numbers, paid amounts, adjustments, patient responsibility, remittance status,
 and source locators.
 
-The useful aggregate appears only after those views are stitched together:
+A useful aggregate appears only after those views are stitched together:
 
 ```text
 charges + 837 claim + 835 remittance -> claim aggregate versions
@@ -83,7 +83,7 @@ flowchart LR
     notify --> subscribers
 ```
 
-## Why This Shape
+## Why
 
 - Immutable journal for parsed 837/835 inputs
 - Source file locators on events for audit and replay
@@ -129,7 +129,7 @@ HITRUST-zone apps may deliberately create/read PHI-containing aggregates with
 `--include-phi --phi-vault --read-store`, or render PHI by resolving tokens
 through the vault. Normal developer stores should stay tokenised.
 
-## Balance Example
+## Balance example
 
 Synthetic PHI view. The care pattern is inspired by a UK, non-US healthcare
 episode I had, but the patient, identifiers, payer details, dates, amounts, and
