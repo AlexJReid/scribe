@@ -107,9 +107,7 @@ from claim_aggregate_latest
 order by aggregate_id;
 "
 ```
-
-`demo/stroke_aggregates.ndjson` is an inspection/export stream only. The read
-store tables are `event_keys`, `events`, `claim_aggregate_versions`, and
+The read store tables are `event_keys`, `events`, `claim_aggregate_versions`, and
 `claim_aggregate_latest`.
 
 ## License
