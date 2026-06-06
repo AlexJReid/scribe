@@ -34,13 +34,12 @@ for this proof of concept and are not real PHI.
 
 ## Architecture Decisions
 
-- Use an immutable binary journal as the evidence stream.
+- Use an immutable binary journal as the evidence stream, derived from .edi
 - Split PHI early: tokenised events are the default path; raw values stay in a
-  separate PHI vault.
-- Store event locators, not payloads, in the read-store event index.
-- Materialise versioned claim aggregates plus a latest snapshot for consumers.
-- Use SQLite as the proof-of-concept vault, index, and snapshot store.
-- Keep this as a small C executable, not a service.
+  separate PHI vault
+- Store event locators, not payloads, in the read-store event index
+- Materialise versioned claim aggregates plus a latest snapshot for consumers
+- Use SQLite as a stand-in for the PHI vault, index, and snapshot store: a managed document DB would replace this
 
 More background on the 837/835 model, tokenisation, and PHI tradeoffs lives in
 [theory.md](theory.md).
