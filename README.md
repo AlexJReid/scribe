@@ -39,6 +39,7 @@ for this proof of concept and are not real PHI.
   separate PHI vault
 - Store event locators, not payloads, in the read-store event index
 - Materialise versioned claim aggregates plus a latest snapshot for consumers
+- Emit lightweight notifications (no PHI payload) when an new snapshot is generated for downstream to consume
 - Use SQLite as a stand-in for the PHI vault, index, and snapshot store: a managed document DB would replace this
 
 More background on the 837/835 model, tokenisation, and PHI tradeoffs lives in
