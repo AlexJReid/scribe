@@ -3,6 +3,22 @@
 Proof of concept for stitching provider charge context, 837 claims, and 835
 remittances into versioned claim aggregates and ledger-style balance projections.
 
+## What
+
+`scribe` is about joining the parts of a healthcare money trail that usually
+arrive as separate files:
+
+- provider charges: local context about work performed
+- 837 claims: provider-to-payer claim submissions
+- 835 remittances: payer-to-provider adjudication and payment detail
+
+The proof of concept turns those inputs into an immutable journal, then reduces
+the journal into versioned claim aggregates and balance projections. PHI-bearing
+values are tokenized before they enter the normal journal/read-store
+path, with raw values held separately in a PHI vault.
+
+## Case study
+
 The main case study is a semi-synthetic stroke recovery encounter:
 
 - Encounter: `ENC-SYN-STROKE-001`
