@@ -11,14 +11,16 @@ auditable evidence trails.
 arrive as separate files:
 
 - provider charges: local context about work performed
-- 834 enrollment: member and coverage change context
-- 270/271 eligibility: coverage questions and payer answers at a point in time
 - 837 claims: provider-to-payer claim submissions
 - 835 remittances: payer-to-provider adjudication and payment detail
 
 The proof of concept turns those inputs into an immutable journal. The claim
-money trail reduces into versioned claim aggregates and balance projections;
-coverage/member evidence reduces into temporal `member_coverage` aggregates.
+money trail reduces into versioned claim aggregates and balance projections.
+
+Coverage context from 834 enrollment and 270/271 eligibility files is modeled
+separately in the deeper design notes, so claim aggregates stay focused on
+charges, submissions, and remittances.
+
 PHI-bearing values are tokenized before they enter the normal journal/read-store
 path, with raw values held separately in a PHI vault.
 
