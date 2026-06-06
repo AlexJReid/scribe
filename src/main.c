@@ -24,15 +24,22 @@ static void usage(FILE *fp)
         "  scribe parse --type 837 input.edi [--out events.ndjson] [--include-phi] [--run-id id]\n"
         "  scribe parse --type 835 input.edi [--out events.ndjson] [--include-phi] [--run-id id]\n"
         "  scribe parse --type 834 input.edi [--out events.ndjson] [--include-phi] [--run-id id]\n"
-        "  scribe journal --out journal.scribe [--charges charges.ndjson] [--270 inquiry.edi] [--271 response.edi] [--834 enroll.edi] [--837 claim.edi] [--835 remit.edi] [--phi-vault phi.sqlite] [--include-phi] [--run-id id]\n"
-        "  scribe vault-resolve --phi-vault phi.sqlite --namespace ns --token token [--actor user] [--purpose reason]\n"
-        "  scribe stitch --journal journal.scribe [--encounter-id id] [--read-store store.sqlite] [--phi-vault phi.sqlite] [--out aggregates.ndjson] [--notify-out notifications.ndjson] [--include-phi] [--run-id id]\n"
-        "  scribe coverage --journal journal.scribe [--read-store store.sqlite] [--phi-vault phi.sqlite] [--out coverage.ndjson] [--include-phi] [--run-id id]\n"
-        "  scribe project --projection balance --journal journal.scribe [--encounter-id id] [--out balance.json] [--include-phi]\n"
-        "  scribe project-balance --journal journal.scribe [--encounter-id id] [--out balance.json] [--include-phi]\n"
+        "  scribe ingest --out journal.scribe [--charges charges.ndjson] [--270 inquiry.edi] [--271 response.edi] [--834 enroll.edi] [--837 claim.edi] [--835 remit.edi] [--phi-vault phi.sqlite] [--include-phi] [--run-id id]\n"
+        "  scribe stitch claims --journal journal.scribe [--encounter-id id] [--read-store store.sqlite] [--phi-vault phi.sqlite] [--out aggregates.ndjson] [--notify-out notifications.ndjson] [--include-phi] [--run-id id]\n"
+        "  scribe stitch coverage --journal journal.scribe [--read-store store.sqlite] [--phi-vault phi.sqlite] [--out coverage.ndjson] [--include-phi] [--run-id id]\n"
+        "  scribe project balance --journal journal.scribe [--encounter-id id] [--out balance.json] [--include-phi]\n"
+        "  scribe vault resolve --phi-vault phi.sqlite --namespace ns --token token [--actor user] [--purpose reason]\n"
         "  scribe dump input.edi\n"
         "\n"
-        "For parse/stitch/coverage/project, --out may be '-' or omitted for stdout. journal requires a file path.\n",
+        "compatibility aliases:\n"
+        "  scribe journal ...\n"
+        "  scribe stitch --journal ...\n"
+        "  scribe coverage ...\n"
+        "  scribe project --projection balance ...\n"
+        "  scribe project-balance ...\n"
+        "  scribe vault-resolve ...\n"
+        "\n"
+        "For parse/stitch/project, --out may be '-' or omitted for stdout. ingest/journal requires a journal file path.\n",
         fp
     );
     projection_write_usage(fp);
@@ -183,17 +190,28 @@ static int parse_command(int argc, char **argv)
     return run_parse(type, input_path, out_path, include_phi, run_id);
 }
 
-static int journal_command(int argc, char **argv)
+static int ingest_command(int argc, char **argv, const char *command_name)
 {
     int rc = journal_builder_run_cli(argc, argv);
 
     if (rc < 0) {
         if (rc != -1) {
-            fprintf(stderr, "journal: %s\n", x12_error_message(rc));
+            fprintf(stderr, "%s: %s\n", command_name, x12_error_message(rc));
         }
         return rc;
     }
 
+    return rc;
+}
+
+static int project_balance_command(int argc, char **argv, const char *command_name)
+{
+    int rc;
+
+    rc = balance_projector_run_cli(argc, argv);
+    if (rc < 0 && rc != -1) {
+        fprintf(stderr, "%s: %s\n", command_name, x12_error_message(rc));
+    }
     return rc;
 }
 
@@ -203,6 +221,10 @@ static int project_command(int argc, char **argv)
     const char *projection_name = NULL;
     int i;
     int rc;
+
+    if (argc >= 3 && strcmp(argv[2], "balance") == 0) {
+        return project_balance_command(argc - 1, argv + 1, "project balance");
+    }
 
     for (i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--projection") == 0) {
@@ -231,37 +253,59 @@ static int project_command(int argc, char **argv)
     return rc;
 }
 
-static int project_balance_command(int argc, char **argv)
+static int stitch_claims_command(int argc, char **argv, const char *command_name)
 {
     int rc;
 
-    rc = balance_projector_run_cli(argc, argv);
+    rc = aggregate_stitcher_run_cli(argc, argv);
     if (rc < 0 && rc != -1) {
-        fprintf(stderr, "project balance: %s\n", x12_error_message(rc));
+        fprintf(stderr, "%s: %s\n", command_name, x12_error_message(rc));
+    }
+    return rc;
+}
+
+static int stitch_coverage_command(int argc, char **argv, const char *command_name)
+{
+    int rc;
+
+    rc = coverage_stitcher_run_cli(argc, argv);
+    if (rc < 0 && rc != -1) {
+        fprintf(stderr, "%s: %s\n", command_name, x12_error_message(rc));
     }
     return rc;
 }
 
 static int stitch_command(int argc, char **argv)
 {
-    int rc;
-
-    rc = aggregate_stitcher_run_cli(argc, argv);
-    if (rc < 0 && rc != -1) {
-        fprintf(stderr, "stitch: %s\n", x12_error_message(rc));
+    if (argc >= 3) {
+        if (strcmp(argv[2], "claims") == 0) {
+            return stitch_claims_command(argc - 1, argv + 1, "stitch claims");
+        }
+        if (strcmp(argv[2], "coverage") == 0) {
+            return stitch_coverage_command(argc - 1, argv + 1, "stitch coverage");
+        }
+        if (argv[2][0] != '-') {
+            return -1;
+        }
     }
-    return rc;
+
+    return stitch_claims_command(argc, argv, "stitch");
 }
 
 static int coverage_command(int argc, char **argv)
 {
-    int rc;
+    return stitch_coverage_command(argc, argv, "coverage");
+}
 
-    rc = coverage_stitcher_run_cli(argc, argv);
-    if (rc < 0 && rc != -1) {
-        fprintf(stderr, "coverage: %s\n", x12_error_message(rc));
+static int vault_resolve_command(int argc, char **argv);
+
+static int vault_command(int argc, char **argv)
+{
+    if (argc >= 3 && strcmp(argv[2], "resolve") == 0) {
+        return vault_resolve_command(argc - 1, argv + 1);
     }
-    return rc;
+
+    return -1;
 }
 
 static int vault_resolve_command(int argc, char **argv)
@@ -365,8 +409,8 @@ int main(int argc, char **argv)
         return rc;
     }
 
-    if (strcmp(argv[1], "journal") == 0) {
-        int rc = journal_command(argc, argv);
+    if (strcmp(argv[1], "ingest") == 0 || strcmp(argv[1], "journal") == 0) {
+        int rc = ingest_command(argc, argv, argv[1]);
         if (rc < 0) {
             usage(stderr);
             return 1;
@@ -392,6 +436,15 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    if (strcmp(argv[1], "vault") == 0) {
+        int rc = vault_command(argc, argv);
+        if (rc == -1) {
+            usage(stderr);
+            return 1;
+        }
+        return rc == X12_OK ? 0 : 1;
+    }
+
     if (strcmp(argv[1], "vault-resolve") == 0) {
         int rc = vault_resolve_command(argc, argv);
         if (rc == -1) {
@@ -411,7 +464,7 @@ int main(int argc, char **argv)
     }
 
     if (strcmp(argv[1], "project-balance") == 0) {
-        int rc = project_balance_command(argc, argv);
+        int rc = project_balance_command(argc, argv, "project balance");
         if (rc < 0) {
             usage(stderr);
             return 1;

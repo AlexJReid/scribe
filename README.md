@@ -96,7 +96,7 @@ If `demo/` is missing or stale, regenerate it first:
 Or regenerate the journal and PHI vault directly:
 
 ```sh
-build/scribe journal --out demo/stroke.journal \
+build/scribe ingest --out demo/stroke.journal \
   --run-id stroke-ingest-demo \
   --phi-vault demo/stroke_phi_vault.sqlite \
   --charges tests/fixtures/stroke_encounter/charge_transactions.ndjson \
@@ -116,7 +116,7 @@ build/scribe journal --out demo/stroke.journal \
 Stitch into the tokenised read store:
 
 ```sh
-build/scribe stitch \
+build/scribe stitch claims \
   --journal demo/stroke.journal \
   --encounter-id ENC-SYN-STROKE-001 \
   --read-store demo/stroke_read_store.sqlite \
@@ -133,7 +133,7 @@ for idempotency. The binary journal remains the source evidence.
 Reduce coverage/member context:
 
 ```sh
-build/scribe coverage \
+build/scribe stitch coverage \
   --journal demo/stroke.journal \
   --read-store demo/stroke_read_store.sqlite \
   --run-id stroke-coverage-demo \
@@ -143,7 +143,7 @@ build/scribe coverage \
 Create a PHI-containing read store only when needed:
 
 ```sh
-build/scribe stitch \
+build/scribe stitch claims \
   --journal demo/stroke.journal \
   --encounter-id ENC-SYN-STROKE-001 \
   --read-store demo/stroke_phi_read_store.sqlite \
@@ -155,7 +155,7 @@ build/scribe stitch \
 The coverage reducer follows the same PHI switch:
 
 ```sh
-build/scribe coverage \
+build/scribe stitch coverage \
   --journal demo/stroke.journal \
   --read-store demo/stroke_phi_read_store.sqlite \
   --phi-vault demo/stroke_phi_vault.sqlite \
@@ -166,7 +166,7 @@ build/scribe coverage \
 Project the ledger-style balance:
 
 ```sh
-build/scribe project --projection balance \
+build/scribe project balance \
   --journal demo/stroke.journal \
   --encounter-id ENC-SYN-STROKE-001 \
   --out demo/stroke_balance.json

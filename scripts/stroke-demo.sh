@@ -24,8 +24,8 @@ rm -f \
   demo/stroke_phi_member_coverage.ndjson \
   demo/stroke_balance.json
 
-echo "importing 270, 271, 837, 835s to journal, phi enabled"
-build/scribe journal --out demo/stroke.journal \
+echo "ingesting 270, 271, 837, 835s to journal, phi enabled"
+build/scribe ingest --out demo/stroke.journal \
   --run-id stroke-ingest-demo \
   --phi-vault demo/stroke_phi_vault.sqlite \
   --charges tests/fixtures/stroke_encounter/charge_transactions.ndjson \
@@ -42,7 +42,7 @@ build/scribe journal --out demo/stroke.journal \
   --271 tests/fixtures/stroke_encounter/eligibility_271.edi
 
 echo "stitching for single encounter"
-build/scribe stitch \
+build/scribe stitch claims \
   --journal demo/stroke.journal \
   --encounter-id ENC-SYN-STROKE-001 \
   --read-store demo/stroke_read_store.sqlite \
@@ -51,14 +51,14 @@ build/scribe stitch \
   --out demo/stroke_aggregates.ndjson
 
 echo "reducing coverage/member context"
-build/scribe coverage \
+build/scribe stitch coverage \
   --journal demo/stroke.journal \
   --read-store demo/stroke_read_store.sqlite \
   --run-id stroke-coverage-demo \
   --out demo/stroke_member_coverage.ndjson
 
 echo "stitching again for single encounter, with phi decoded" 
-build/scribe stitch \
+build/scribe stitch claims \
   --journal demo/stroke.journal \
   --encounter-id ENC-SYN-STROKE-001 \
   --read-store demo/stroke_phi_read_store.sqlite \
@@ -67,7 +67,7 @@ build/scribe stitch \
   --out demo/stroke_phi_aggregates.ndjson
 
 echo "reducing coverage/member context, with phi decoded"
-build/scribe coverage \
+build/scribe stitch coverage \
   --journal demo/stroke.journal \
   --read-store demo/stroke_phi_read_store.sqlite \
   --phi-vault demo/stroke_phi_vault.sqlite \
@@ -76,7 +76,7 @@ build/scribe coverage \
   --out demo/stroke_phi_member_coverage.ndjson
 
 echo "projecting balance"
-build/scribe project --projection balance \
+build/scribe project balance \
   --journal demo/stroke.journal \
   --encounter-id ENC-SYN-STROKE-001 \
   --out demo/stroke_balance.json
