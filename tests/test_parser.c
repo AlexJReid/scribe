@@ -925,7 +925,8 @@ static int test_stroke_balance_projection_from_journal(void)
     REQUIRE(strstr(aggregates, "\"claim_id\":\"CLM-STROKE-NEURO-001\"") != NULL);
     REQUIRE(strstr(aggregates, "\"patient_id\":\"PAT-STROKE-001\"") != NULL);
     REQUIRE(strstr(aggregates, "\"patient_id_token\":\"483f7b234ed109f0e2323052f22e4e59\"") != NULL);
-    REQUIRE(strstr(aggregates, "\"patient_name\":\"REID|ALEX\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"patient_last_name_or_org\":\"REID\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"patient_first_name\":\"ALEX\"") != NULL);
     REQUIRE(strstr(aggregates, "\"patient_name_token\":\"4b108ab4544b581362f5809685352233\"") != NULL);
     REQUIRE(strstr(aggregates, "\"version\":1") != NULL);
     REQUIRE(strstr(aggregates, "\"version\":3") != NULL);
@@ -1085,7 +1086,8 @@ static int test_stroke_balance_projection_from_journal(void)
     REQUIRE(strstr(latest_aggregate, "\"payer_claim_control_number_token\":\"edf29f09740ab104da309e2b036e14d1\"") != NULL);
     REQUIRE(strstr(latest_aggregate, "\"patient_id\":\"PAT-STROKE-001\"") != NULL);
     REQUIRE(strstr(latest_aggregate, "\"patient_id_token\":\"483f7b234ed109f0e2323052f22e4e59\"") != NULL);
-    REQUIRE(strstr(latest_aggregate, "\"patient_name\":\"REID|ALEX\"") != NULL);
+    REQUIRE(strstr(latest_aggregate, "\"patient_last_name_or_org\":\"REID\"") != NULL);
+    REQUIRE(strstr(latest_aggregate, "\"patient_first_name\":\"ALEX\"") != NULL);
     REQUIRE(strstr(latest_aggregate, "\"service_lines\":[") != NULL);
     REQUIRE(strstr(latest_aggregate, "\"match_method\":\"procedure_charge_date\"") != NULL);
     REQUIRE(strstr(latest_aggregate, "\"line_paid_amount\":\"250.00\"") != NULL);

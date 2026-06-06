@@ -157,6 +157,22 @@ static void copy_cstr(char *out, size_t out_len, const char *value)
     out[len] = '\0';
 }
 
+static void copy_str_slice(char *out, size_t out_len, const char *value, size_t value_len)
+{
+    if (out == NULL || out_len == 0u) {
+        return;
+    }
+    if (value == NULL) {
+        value = "";
+        value_len = 0u;
+    }
+    if (value_len >= out_len) {
+        value_len = out_len - 1u;
+    }
+    memcpy(out, value, value_len);
+    out[value_len] = '\0';
+}
+
 static const char *claim_key(const char *claim_id, const char *claim_id_token)
 {
     if (claim_id_token != NULL && claim_id_token[0] != '\0') {
@@ -305,6 +321,36 @@ static int make_patient_name(
     }
 
     return X12_OK;
+}
+
+static void split_patient_name(
+    const char *raw_name,
+    char *last_name_or_org,
+    size_t last_name_or_org_len,
+    char *first_name,
+    size_t first_name_len
+)
+{
+    const char *sep;
+
+    if (last_name_or_org != NULL && last_name_or_org_len > 0u) {
+        last_name_or_org[0] = '\0';
+    }
+    if (first_name != NULL && first_name_len > 0u) {
+        first_name[0] = '\0';
+    }
+    if (raw_name == NULL || raw_name[0] == '\0') {
+        return;
+    }
+
+    sep = strchr(raw_name, '|');
+    if (sep == NULL) {
+        copy_cstr(last_name_or_org, last_name_or_org_len, raw_name);
+        return;
+    }
+
+    copy_str_slice(last_name_or_org, last_name_or_org_len, raw_name, (size_t)(sep - raw_name));
+    copy_cstr(first_name, first_name_len, sep + 1);
 }
 
 static int set_patient_name(
@@ -1780,7 +1826,25 @@ static int build_snapshot_doc(
         return rc;
     }
     if (include_phi && aggregate->patient_name[0] != '\0') {
-        rc = json_writer_add_string(writer, keys, "patient_name", aggregate->patient_name);
+        char patient_last_name_or_org[STITCH_VALUE_MAX];
+        char patient_first_name[STITCH_VALUE_MAX];
+
+        split_patient_name(
+            aggregate->patient_name,
+            patient_last_name_or_org,
+            sizeof(patient_last_name_or_org),
+            patient_first_name,
+            sizeof(patient_first_name)
+        );
+        rc = json_writer_add_string(
+            writer,
+            keys,
+            "patient_last_name_or_org",
+            patient_last_name_or_org
+        );
+        if (rc == X12_OK && patient_first_name[0] != '\0') {
+            rc = json_writer_add_string(writer, keys, "patient_first_name", patient_first_name);
+        }
         if (rc == X12_OK && aggregate->patient_name_token[0] != '\0') {
             rc = json_writer_add_string(
                 writer,

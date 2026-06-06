@@ -79,10 +79,16 @@ ctest --test-dir build --output-on-failure
 - `demo/stroke_aggregates.ndjson`
 - `demo/stroke_notifications.ndjson`
 
-Regenerate the full walked demo:
+Run the walked demo:
 
 ```sh
-scripts/stroke-demo.sh
+./demo.sh
+```
+
+If `demo/` is missing or stale, regenerate it first:
+
+```sh
+./scripts/stroke-demo.sh
 ```
 
 Or regenerate the journal and PHI vault directly:
