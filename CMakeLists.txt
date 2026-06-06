@@ -35,6 +35,7 @@ add_library(scribe_core
     src/run_id.c
     src/store.c
     src/tokenise_stub.c
+    src/x12_mapper_270_271.c
     src/x12_mapper_834.c
     src/x12_mapper_835.c
     src/x12_mapper_837.c

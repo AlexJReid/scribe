@@ -11,6 +11,10 @@ Encounter:
 
 Files:
 
+- Coverage/member context
+  - `coverage_834.edi`: enrollment context for the synthetic member
+  - `eligibility_270.edi`: eligibility inquiry for the encounter service window
+  - `eligibility_271.edi`: payer eligibility response with benefit context
 - Facility imaging claim
   - `facility_837.edi`: submission for the three imaging services
   - `facility_835.edi`: payer remittance
@@ -32,6 +36,8 @@ Files:
 
 Current parser behaviour:
 
+- 834, 270, and 271 records should journal tokenised coverage/member context
+  evidence for future `member_coverage` reductions
 - 837 `CLM01` and 835 `CLP01` should tokenise into the same `claim_id` value for
   each claim
 - 835 `CLP07` should tokenise under the `payer_claim_control_number` namespace

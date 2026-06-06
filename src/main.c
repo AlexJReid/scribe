@@ -5,6 +5,7 @@
 #include "phi_vault.h"
 #include "projection.h"
 #include "run_id.h"
+#include "x12_mapper_270_271.h"
 #include "x12_mapper_834.h"
 #include "x12_mapper_835.h"
 #include "x12_mapper_837.h"
@@ -17,10 +18,12 @@ static void usage(FILE *fp)
 {
     fputs(
         "usage:\n"
+        "  scribe parse --type 270 input.edi [--out events.ndjson] [--include-phi] [--run-id id]\n"
+        "  scribe parse --type 271 input.edi [--out events.ndjson] [--include-phi] [--run-id id]\n"
         "  scribe parse --type 837 input.edi [--out events.ndjson] [--include-phi] [--run-id id]\n"
         "  scribe parse --type 835 input.edi [--out events.ndjson] [--include-phi] [--run-id id]\n"
         "  scribe parse --type 834 input.edi [--out events.ndjson] [--include-phi] [--run-id id]\n"
-        "  scribe journal --out journal.scribe [--charges charges.ndjson] [--837 claim.edi] [--835 remit.edi] [--phi-vault phi.sqlite] [--include-phi] [--run-id id]\n"
+        "  scribe journal --out journal.scribe [--charges charges.ndjson] [--270 inquiry.edi] [--271 response.edi] [--834 enroll.edi] [--837 claim.edi] [--835 remit.edi] [--phi-vault phi.sqlite] [--include-phi] [--run-id id]\n"
         "  scribe vault-resolve --phi-vault phi.sqlite --namespace ns --token token [--actor user] [--purpose reason]\n"
         "  scribe stitch --journal journal.scribe [--encounter-id id] [--read-store store.sqlite] [--phi-vault phi.sqlite] [--out aggregates.ndjson] [--notify-out notifications.ndjson] [--include-phi] [--run-id id]\n"
         "  scribe project --projection balance --journal journal.scribe [--encounter-id id] [--out balance.json] [--include-phi]\n"
@@ -108,7 +111,11 @@ static int run_parse(
     event_writer_set_include_phi(&writer, include_phi);
     event_writer_set_run_id(&writer, run_id);
 
-    if (strcmp(type, "837") == 0) {
+    if (strcmp(type, "270") == 0) {
+        rc = x12_map_270_document(&doc, &writer);
+    } else if (strcmp(type, "271") == 0) {
+        rc = x12_map_271_document(&doc, &writer);
+    } else if (strcmp(type, "837") == 0) {
         rc = x12_map_837_document(&doc, &writer);
     } else if (strcmp(type, "835") == 0) {
         rc = x12_map_835_document(&doc, &writer);

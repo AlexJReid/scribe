@@ -1,11 +1,13 @@
 #include "aggregate_stitcher.h"
 #include "balance_projector.h"
 #include "event_writer.h"
+#include "journal.h"
 #include "journal_builder.h"
 #include "json_scan.h"
 #include "phi_vault.h"
 #include "store.h"
 #include "tokenise.h"
+#include "x12_mapper_270_271.h"
 #include "x12_mapper_834.h"
 #include "x12_mapper_835.h"
 #include "x12_mapper_837.h"
@@ -140,7 +142,13 @@ static int parse_fixture_to_output(
     rc = event_writer_open(&writer, out_path, input_path, transaction_type);
     REQUIRE(rc == X12_OK);
 
-    if (strcmp(transaction_type, "837") == 0) {
+    if (strcmp(transaction_type, "270") == 0) {
+        rc = x12_map_270_document(&doc, &writer);
+    } else if (strcmp(transaction_type, "271") == 0) {
+        rc = x12_map_271_document(&doc, &writer);
+    } else if (strcmp(transaction_type, "834") == 0) {
+        rc = x12_map_834_document(&doc, &writer);
+    } else if (strcmp(transaction_type, "837") == 0) {
         rc = x12_map_837_document(&doc, &writer);
     } else if (strcmp(transaction_type, "835") == 0) {
         rc = x12_map_835_document(&doc, &writer);
@@ -344,6 +352,223 @@ static int test_834_ins_event(void)
     return 0;
 }
 
+static int test_270_271_eligibility_events(void)
+{
+    char x834_path[512];
+    char x270_path[512];
+    char x271_path[512];
+    char x270_out_path[512];
+    char x271_out_path[512];
+    char x270_phi_out_path[512];
+    char x271_phi_out_path[512];
+    char journal_path[512];
+    char output_270[20000];
+    char output_271[24000];
+    char phi_output_270[20000];
+    char phi_output_271[24000];
+    char member_token[TOKENISE_MAX_TOKEN_LEN];
+    char payer_token[TOKENISE_MAX_TOKEN_LEN];
+    char provider_token[TOKENISE_MAX_TOKEN_LEN];
+    char dob_token[TOKENISE_MAX_TOKEN_LEN];
+    char member_snippet[128];
+    char payer_snippet[128];
+    char provider_snippet[128];
+    char dob_snippet[128];
+    x12_str_t raw;
+    x12_document_t doc;
+    event_writer_t writer;
+    journal_builder_input_t journal_input;
+    journal_reader_t reader;
+    journal_event_t event;
+    char event_type[128];
+    char source_transaction[32];
+    char member_value[128];
+    int saw_834 = 0;
+    int saw_270 = 0;
+    int saw_271 = 0;
+    int rc;
+
+    REQUIRE(make_path(x834_path, sizeof(x834_path), TEST_FIXTURE_DIR, "sample_834.edi") == 0);
+    REQUIRE(make_path(x270_path, sizeof(x270_path), TEST_FIXTURE_DIR, "sample_270.edi") == 0);
+    REQUIRE(make_path(x271_path, sizeof(x271_path), TEST_FIXTURE_DIR, "sample_271.edi") == 0);
+    REQUIRE(make_path(x270_out_path, sizeof(x270_out_path), TEST_OUTPUT_DIR, "sample_270.ndjson") == 0);
+    REQUIRE(make_path(x271_out_path, sizeof(x271_out_path), TEST_OUTPUT_DIR, "sample_271.ndjson") == 0);
+    REQUIRE(make_path(x270_phi_out_path, sizeof(x270_phi_out_path), TEST_OUTPUT_DIR, "sample_270_phi.ndjson") == 0);
+    REQUIRE(make_path(x271_phi_out_path, sizeof(x271_phi_out_path), TEST_OUTPUT_DIR, "sample_271_phi.ndjson") == 0);
+    REQUIRE(make_path(journal_path, sizeof(journal_path), TEST_OUTPUT_DIR, "coverage_context.journal") == 0);
+
+    raw.ptr = "SUB12345";
+    raw.len = strlen(raw.ptr);
+    REQUIRE(tokenise_value(TOK_MEMBER_ID, raw, member_token, sizeof(member_token)) == X12_OK);
+    raw.ptr = "842610001";
+    raw.len = strlen(raw.ptr);
+    REQUIRE(tokenise_value(TOK_PAYER_ID, raw, payer_token, sizeof(payer_token)) == X12_OK);
+    raw.ptr = "1234567893";
+    raw.len = strlen(raw.ptr);
+    REQUIRE(tokenise_value(TOK_PROVIDER_ID, raw, provider_token, sizeof(provider_token)) == X12_OK);
+    raw.ptr = "19800101";
+    raw.len = strlen(raw.ptr);
+    REQUIRE(tokenise_value(TOK_MEMBER_DOB, raw, dob_token, sizeof(dob_token)) == X12_OK);
+    REQUIRE(snprintf(member_snippet, sizeof(member_snippet), "\"member_id\":\"%s\"", member_token) > 0);
+    REQUIRE(snprintf(payer_snippet, sizeof(payer_snippet), "\"payer_id\":\"%s\"", payer_token) > 0);
+    REQUIRE(snprintf(provider_snippet, sizeof(provider_snippet), "\"provider_id\":\"%s\"", provider_token) > 0);
+    REQUIRE(snprintf(dob_snippet, sizeof(dob_snippet), "\"date_of_birth\":\"%s\"", dob_token) > 0);
+
+    rc = x12_document_load(x270_path, &doc);
+    REQUIRE(rc == X12_OK);
+    rc = event_writer_open(&writer, x270_out_path, x270_path, "270");
+    REQUIRE(rc == X12_OK);
+    rc = x12_map_270_document(&doc, &writer);
+    REQUIRE(rc == X12_OK);
+    rc = event_writer_close(&writer);
+    REQUIRE(rc == X12_OK);
+    x12_document_free(&doc);
+
+    REQUIRE(read_file_text(x270_out_path, output_270, sizeof(output_270)) == 0);
+    REQUIRE(strstr(output_270, "\"source_transaction\":\"270\"") != NULL);
+    REQUIRE(strstr(output_270, "\"event_type\":\"EligibilityInquiryObserved\"") != NULL);
+    REQUIRE(strstr(output_270, "\"eligibility_id\":\"ELIG270001\"") != NULL);
+    REQUIRE(strstr(output_270, "\"transaction_set_purpose_code\":\"13\"") != NULL);
+    REQUIRE(strstr(output_270, "\"event_type\":\"EligibilityInquiryPartyReferenced\"") != NULL);
+    REQUIRE(strstr(output_270, payer_snippet) != NULL);
+    REQUIRE(strstr(output_270, provider_snippet) != NULL);
+    REQUIRE(strstr(output_270, member_snippet) != NULL);
+    REQUIRE(strstr(output_270, "\"event_type\":\"EligibilityInquiryTraceRecorded\"") != NULL);
+    REQUIRE(strstr(output_270, "\"trace_number\":\"TRACE270001\"") != NULL);
+    REQUIRE(strstr(output_270, "\"event_type\":\"EligibilityInquiryDemographicsObserved\"") != NULL);
+    REQUIRE(strstr(output_270, dob_snippet) != NULL);
+    REQUIRE(strstr(output_270, "\"event_type\":\"EligibilityInquiryServiceTypeRequested\"") != NULL);
+    REQUIRE(strstr(output_270, "\"service_type_code\":\"30\"") != NULL);
+    REQUIRE(strstr(output_270, "\"member_id\":\"SUB12345\"") == NULL);
+    REQUIRE(strstr(output_270, "\"id_value\":\"SUB12345\"") == NULL);
+    REQUIRE(strstr(output_270, "\"date_of_birth\":\"19800101\"") == NULL);
+    REQUIRE(strstr(output_270, "\"last_name_or_org\"") == NULL);
+    REQUIRE(strstr(output_270, "\"first_name\"") == NULL);
+    REQUIRE(strstr(output_270, "\"gender_code\"") == NULL);
+
+    rc = x12_document_load(x270_path, &doc);
+    REQUIRE(rc == X12_OK);
+    rc = event_writer_open(&writer, x270_phi_out_path, x270_path, "270");
+    REQUIRE(rc == X12_OK);
+    event_writer_set_include_phi(&writer, 1);
+    rc = x12_map_270_document(&doc, &writer);
+    REQUIRE(rc == X12_OK);
+    rc = event_writer_close(&writer);
+    REQUIRE(rc == X12_OK);
+    x12_document_free(&doc);
+
+    REQUIRE(read_file_text(x270_phi_out_path, phi_output_270, sizeof(phi_output_270)) == 0);
+    REQUIRE(strstr(phi_output_270, "\"last_name_or_org\":\"DOE\"") != NULL);
+    REQUIRE(strstr(phi_output_270, "\"first_name\":\"JANE\"") != NULL);
+    REQUIRE(strstr(phi_output_270, "\"member_id\":\"SUB12345\"") != NULL);
+    REQUIRE(strstr(phi_output_270, "\"member_id_token\"") != NULL);
+    REQUIRE(strstr(phi_output_270, member_token) != NULL);
+    REQUIRE(strstr(phi_output_270, "\"date_of_birth\":\"19800101\"") != NULL);
+    REQUIRE(strstr(phi_output_270, "\"date_of_birth_token\"") != NULL);
+    REQUIRE(strstr(phi_output_270, dob_token) != NULL);
+    REQUIRE(strstr(phi_output_270, "\"gender_code\":\"F\"") != NULL);
+
+    rc = x12_document_load(x271_path, &doc);
+    REQUIRE(rc == X12_OK);
+    rc = event_writer_open(&writer, x271_out_path, x271_path, "271");
+    REQUIRE(rc == X12_OK);
+    rc = x12_map_271_document(&doc, &writer);
+    REQUIRE(rc == X12_OK);
+    rc = event_writer_close(&writer);
+    REQUIRE(rc == X12_OK);
+    x12_document_free(&doc);
+
+    REQUIRE(read_file_text(x271_out_path, output_271, sizeof(output_271)) == 0);
+    REQUIRE(strstr(output_271, "\"source_transaction\":\"271\"") != NULL);
+    REQUIRE(strstr(output_271, "\"event_type\":\"EligibilityResponseObserved\"") != NULL);
+    REQUIRE(strstr(output_271, "\"eligibility_id\":\"ELIG271001\"") != NULL);
+    REQUIRE(strstr(output_271, "\"transaction_set_purpose_code\":\"11\"") != NULL);
+    REQUIRE(strstr(output_271, "\"event_type\":\"EligibilityResponsePartyReferenced\"") != NULL);
+    REQUIRE(strstr(output_271, member_snippet) != NULL);
+    REQUIRE(strstr(output_271, "\"event_type\":\"EligibilityBenefitObserved\"") != NULL);
+    REQUIRE(strstr(output_271, "\"eligibility_or_benefit_information_code\":\"1\"") != NULL);
+    REQUIRE(strstr(output_271, "\"service_type_code\":\"30\"") != NULL);
+    REQUIRE(strstr(output_271, "\"monetary_amount\":\"20.00\"") != NULL);
+    REQUIRE(strstr(output_271, "\"in_plan_network_indicator\":\"Y\"") != NULL);
+    REQUIRE(strstr(output_271, "\"event_type\":\"EligibilityResponseDateRecorded\"") != NULL);
+    REQUIRE(strstr(output_271, "\"date_scope\":\"benefit\"") != NULL);
+    REQUIRE(strstr(output_271, "\"date_qualifier\":\"346\"") != NULL);
+    REQUIRE(strstr(output_271, "\"date_qualifier\":\"347\"") != NULL);
+    REQUIRE(strstr(output_271, "\"member_id\":\"SUB12345\"") == NULL);
+    REQUIRE(strstr(output_271, "\"date_of_birth\":\"19800101\"") == NULL);
+    REQUIRE(strstr(output_271, "\"last_name_or_org\"") == NULL);
+    REQUIRE(strstr(output_271, "\"first_name\"") == NULL);
+
+    rc = x12_document_load(x271_path, &doc);
+    REQUIRE(rc == X12_OK);
+    rc = event_writer_open(&writer, x271_phi_out_path, x271_path, "271");
+    REQUIRE(rc == X12_OK);
+    event_writer_set_include_phi(&writer, 1);
+    rc = x12_map_271_document(&doc, &writer);
+    REQUIRE(rc == X12_OK);
+    rc = event_writer_close(&writer);
+    REQUIRE(rc == X12_OK);
+    x12_document_free(&doc);
+
+    REQUIRE(read_file_text(x271_phi_out_path, phi_output_271, sizeof(phi_output_271)) == 0);
+    REQUIRE(strstr(phi_output_271, "\"last_name_or_org\":\"DOE\"") != NULL);
+    REQUIRE(strstr(phi_output_271, "\"first_name\":\"JANE\"") != NULL);
+    REQUIRE(strstr(phi_output_271, "\"member_id\":\"SUB12345\"") != NULL);
+    REQUIRE(strstr(phi_output_271, "\"member_id_token\"") != NULL);
+    REQUIRE(strstr(phi_output_271, member_token) != NULL);
+    REQUIRE(strstr(phi_output_271, "\"date_of_birth\":\"19800101\"") != NULL);
+    REQUIRE(strstr(phi_output_271, "\"date_of_birth_token\"") != NULL);
+    REQUIRE(strstr(phi_output_271, dob_token) != NULL);
+
+    (void)remove(journal_path);
+    journal_builder_input_init(&journal_input);
+    journal_input.run_id = "coverage-context-test";
+    REQUIRE(journal_builder_input_add_834(&journal_input, x834_path) == X12_OK);
+    REQUIRE(journal_builder_input_add_270(&journal_input, x270_path) == X12_OK);
+    REQUIRE(journal_builder_input_add_271(&journal_input, x271_path) == X12_OK);
+    REQUIRE(journal_builder_build(&journal_input, journal_path) == X12_OK);
+
+    journal_reader_init(&reader);
+    REQUIRE(journal_reader_open(&reader, journal_path) == X12_OK);
+    while (1) {
+        rc = journal_reader_next(&reader, &event);
+        REQUIRE(rc == X12_OK);
+        if (event.record_len == 0u) {
+            break;
+        }
+        event_type[0] = '\0';
+        source_transaction[0] = '\0';
+        (void)journal_event_get_string(&event, "event_type", event_type, sizeof(event_type));
+        (void)journal_event_get_string(
+            &event,
+            "source_transaction",
+            source_transaction,
+            sizeof(source_transaction)
+        );
+        if (strcmp(source_transaction, "834") == 0 &&
+            strcmp(event_type, "MemberEnrollmentChanged") == 0) {
+            saw_834 = 1;
+        }
+        if (strcmp(source_transaction, "270") == 0 &&
+            strcmp(event_type, "EligibilityInquiryServiceTypeRequested") == 0) {
+            saw_270 = 1;
+        }
+        if (strcmp(source_transaction, "271") == 0 &&
+            strcmp(event_type, "EligibilityBenefitObserved") == 0) {
+            REQUIRE(journal_event_get_string(&event, "member_id", member_value, sizeof(member_value)) == 1);
+            REQUIRE(strcmp(member_value, member_token) == 0);
+            saw_271 = 1;
+        }
+    }
+    REQUIRE(journal_reader_close(&reader) == X12_OK);
+    REQUIRE(saw_834);
+    REQUIRE(saw_270);
+    REQUIRE(saw_271);
+    (void)remove(journal_path);
+
+    return 0;
+}
+
 static int test_835_remittance_events(void)
 {
     char input_path[512];
@@ -525,6 +750,9 @@ static int test_stroke_encounter_fixture_set(void)
 static int test_stroke_balance_projection_from_journal(void)
 {
     char charges_path[512];
+    char coverage_834_path[512];
+    char eligibility_270_path[512];
+    char eligibility_271_path[512];
     char facility_837_path[512];
     char facility_835_path[512];
     char professional_837_path[512];
@@ -557,9 +785,13 @@ static int test_stroke_balance_projection_from_journal(void)
     char resolved[256];
     char indexed_event_ids[16][SCRIBE_STORE_ID_MAX];
     char patient_name_token[TOKENISE_MAX_TOKEN_LEN];
+    char event_type[128];
+    char source_transaction[32];
     x12_str_t conflicting_raw;
     x12_str_t patient_name_raw;
     journal_builder_input_t journal_input;
+    journal_reader_t journal_reader;
+    journal_event_t journal_event;
     aggregate_stitcher_input_t stitch_input;
     balance_projector_input_t projection_input;
     phi_vault_t phi_vault;
@@ -567,8 +799,15 @@ static int test_stroke_balance_projection_from_journal(void)
     scribe_event_locator_t indexed_locator;
     size_t indexed_event_count = 0u;
     size_t latest_version = 0u;
+    int saw_stroke_834 = 0;
+    int saw_stroke_270 = 0;
+    int saw_stroke_271 = 0;
+    int rc;
 
     REQUIRE(make_path(charges_path, sizeof(charges_path), TEST_FIXTURE_DIR, "stroke_encounter/charge_transactions.ndjson") == 0);
+    REQUIRE(make_path(coverage_834_path, sizeof(coverage_834_path), TEST_FIXTURE_DIR, "stroke_encounter/coverage_834.edi") == 0);
+    REQUIRE(make_path(eligibility_270_path, sizeof(eligibility_270_path), TEST_FIXTURE_DIR, "stroke_encounter/eligibility_270.edi") == 0);
+    REQUIRE(make_path(eligibility_271_path, sizeof(eligibility_271_path), TEST_FIXTURE_DIR, "stroke_encounter/eligibility_271.edi") == 0);
     REQUIRE(make_path(facility_837_path, sizeof(facility_837_path), TEST_FIXTURE_DIR, "stroke_encounter/facility_837.edi") == 0);
     REQUIRE(make_path(facility_835_path, sizeof(facility_835_path), TEST_FIXTURE_DIR, "stroke_encounter/facility_835.edi") == 0);
     REQUIRE(make_path(professional_837_path, sizeof(professional_837_path), TEST_FIXTURE_DIR, "stroke_encounter/professional_837.edi") == 0);
@@ -599,6 +838,9 @@ static int test_stroke_balance_projection_from_journal(void)
     journal_input.include_phi = 1;
     journal_input.run_id = "ingest-test-run";
     REQUIRE(journal_builder_input_add_charges(&journal_input, charges_path) == X12_OK);
+    REQUIRE(journal_builder_input_add_834(&journal_input, coverage_834_path) == X12_OK);
+    REQUIRE(journal_builder_input_add_270(&journal_input, eligibility_270_path) == X12_OK);
+    REQUIRE(journal_builder_input_add_271(&journal_input, eligibility_271_path) == X12_OK);
     REQUIRE(journal_builder_input_add_837(&journal_input, facility_837_path) == X12_OK);
     REQUIRE(journal_builder_input_add_837(&journal_input, professional_837_path) == X12_OK);
     REQUIRE(journal_builder_input_add_837(&journal_input, rehab_837_path) == X12_OK);
@@ -608,6 +850,41 @@ static int test_stroke_balance_projection_from_journal(void)
     REQUIRE(journal_builder_input_add_835(&journal_input, rehab_835_path) == X12_OK);
     REQUIRE(journal_builder_input_add_835(&journal_input, neurology_835_path) == X12_OK);
     REQUIRE(journal_builder_build(&journal_input, journal_path) == X12_OK);
+
+    journal_reader_init(&journal_reader);
+    REQUIRE(journal_reader_open(&journal_reader, journal_path) == X12_OK);
+    while (1) {
+        rc = journal_reader_next(&journal_reader, &journal_event);
+        REQUIRE(rc == X12_OK);
+        if (journal_event.record_len == 0u) {
+            break;
+        }
+        event_type[0] = '\0';
+        source_transaction[0] = '\0';
+        (void)journal_event_get_string(&journal_event, "event_type", event_type, sizeof(event_type));
+        (void)journal_event_get_string(
+            &journal_event,
+            "source_transaction",
+            source_transaction,
+            sizeof(source_transaction)
+        );
+        if (strcmp(source_transaction, "834") == 0 &&
+            strcmp(event_type, "MemberEnrollmentChanged") == 0) {
+            saw_stroke_834 = 1;
+        }
+        if (strcmp(source_transaction, "270") == 0 &&
+            strcmp(event_type, "EligibilityInquiryServiceTypeRequested") == 0) {
+            saw_stroke_270 = 1;
+        }
+        if (strcmp(source_transaction, "271") == 0 &&
+            strcmp(event_type, "EligibilityBenefitObserved") == 0) {
+            saw_stroke_271 = 1;
+        }
+    }
+    REQUIRE(journal_reader_close(&journal_reader) == X12_OK);
+    REQUIRE(saw_stroke_834);
+    REQUIRE(saw_stroke_270);
+    REQUIRE(saw_stroke_271);
 
     aggregate_stitcher_input_init(&stitch_input);
     stitch_input.journal_path = journal_path;
@@ -1087,6 +1364,7 @@ int main(void)
     REQUIRE(test_segment_and_element_splitting() == 0);
     REQUIRE(test_837_claim_event() == 0);
     REQUIRE(test_834_ins_event() == 0);
+    REQUIRE(test_270_271_eligibility_events() == 0);
     REQUIRE(test_835_remittance_events() == 0);
     REQUIRE(test_stroke_encounter_fixture_set() == 0);
     REQUIRE(test_stroke_balance_projection_from_journal() == 0);

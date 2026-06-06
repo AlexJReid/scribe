@@ -9,12 +9,15 @@ remittances into versioned claim aggregates and ledger-style balance projections
 arrive as separate files:
 
 - provider charges: local context about work performed
+- 834 enrollment: member and coverage change context
+- 270/271 eligibility: coverage questions and payer answers at a point in time
 - 837 claims: provider-to-payer claim submissions
 - 835 remittances: payer-to-provider adjudication and payment detail
 
-The proof of concept turns those inputs into an immutable journal, then reduces
-the journal into versioned claim aggregates and balance projections. PHI-bearing
-values are tokenized before they enter the normal journal/read-store
+The proof of concept turns those inputs into an immutable journal. The claim
+money trail reduces into versioned claim aggregates and balance projections;
+coverage/member events are journaled for a future `member_coverage` aggregate.
+PHI-bearing values are tokenized before they enter the normal journal/read-store
 path, with raw values held separately in a PHI vault.
 
 [Read more](./theory.md)
@@ -47,6 +50,14 @@ for this proof of concept and are not real PHI.
 More background on the 837/835 model, tokenisation, and PHI tradeoffs lives in
 [theory.md](theory.md).
 
+## Modeling backlog
+
+- `member_coverage` aggregate: stitch 834 enrollment changes with 270
+  eligibility inquiries and 271 eligibility responses into member-centric,
+  temporal coverage context. Keep this separate from claim aggregates; claim
+  workflows can reference it by member token, payer token, service date, and
+  service type.
+
 ## Build
 
 Tested on macOS; Linux should be fine. MSVC should be possible with project-file
@@ -68,7 +79,13 @@ ctest --test-dir build --output-on-failure
 - `demo/stroke_aggregates.ndjson`
 - `demo/stroke_notifications.ndjson`
 
-Regenerate the journal and PHI vault:
+Regenerate the full walked demo:
+
+```sh
+scripts/stroke-demo.sh
+```
+
+Or regenerate the journal and PHI vault directly:
 
 ```sh
 build/scribe journal --out demo/stroke.journal \
@@ -82,7 +99,10 @@ build/scribe journal --out demo/stroke.journal \
   --835 tests/fixtures/stroke_encounter/facility_835.edi \
   --835 tests/fixtures/stroke_encounter/professional_835.edi \
   --835 tests/fixtures/stroke_encounter/rehab_835.edi \
-  --835 tests/fixtures/stroke_encounter/neurology_835.edi
+  --835 tests/fixtures/stroke_encounter/neurology_835.edi \
+  --834 tests/fixtures/stroke_encounter/coverage_834.edi \
+  --270 tests/fixtures/stroke_encounter/eligibility_270.edi \
+  --271 tests/fixtures/stroke_encounter/eligibility_271.edi
 ```
 
 Stitch into the tokenised read store:

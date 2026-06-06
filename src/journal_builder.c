@@ -6,6 +6,8 @@
 #include "phi_vault.h"
 #include "run_id.h"
 #include "tokenise.h"
+#include "x12_mapper_270_271.h"
+#include "x12_mapper_834.h"
 #include "x12_mapper_835.h"
 #include "x12_mapper_837.h"
 #include "x12_reader.h"
@@ -45,6 +47,39 @@ int journal_builder_input_add_charges(journal_builder_input_t *input, const char
     }
 
     input->charges_paths[input->charges_count++] = path;
+    return X12_OK;
+}
+
+int journal_builder_input_add_270(journal_builder_input_t *input, const char *path)
+{
+    if (input == NULL || path == NULL ||
+        input->x270_count >= JOURNAL_BUILDER_MAX_INPUT_FILES) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    input->x270_paths[input->x270_count++] = path;
+    return X12_OK;
+}
+
+int journal_builder_input_add_271(journal_builder_input_t *input, const char *path)
+{
+    if (input == NULL || path == NULL ||
+        input->x271_count >= JOURNAL_BUILDER_MAX_INPUT_FILES) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    input->x271_paths[input->x271_count++] = path;
+    return X12_OK;
+}
+
+int journal_builder_input_add_834(journal_builder_input_t *input, const char *path)
+{
+    if (input == NULL || path == NULL ||
+        input->x834_count >= JOURNAL_BUILDER_MAX_INPUT_FILES) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    input->x834_paths[input->x834_count++] = path;
     return X12_OK;
 }
 
@@ -368,7 +403,13 @@ static int append_x12_file(
     }
     event_writer_set_phi_vault(&writer, phi_vault, path);
 
-    if (strcmp(type, "837") == 0) {
+    if (strcmp(type, "270") == 0) {
+        rc = x12_map_270_document(&doc, &writer);
+    } else if (strcmp(type, "271") == 0) {
+        rc = x12_map_271_document(&doc, &writer);
+    } else if (strcmp(type, "834") == 0) {
+        rc = x12_map_834_document(&doc, &writer);
+    } else if (strcmp(type, "837") == 0) {
         rc = x12_map_837_document(&doc, &writer);
     } else if (strcmp(type, "835") == 0) {
         rc = x12_map_835_document(&doc, &writer);
@@ -468,6 +509,36 @@ int journal_builder_build(
             phi_vault_ptr
         );
     }
+    for (i = 0u; i < input->x834_count && rc == X12_OK; i++) {
+        rc = append_x12_file(
+            fp,
+            input->x834_paths[i],
+            "834",
+            input->include_phi,
+            run_id,
+            phi_vault_ptr
+        );
+    }
+    for (i = 0u; i < input->x270_count && rc == X12_OK; i++) {
+        rc = append_x12_file(
+            fp,
+            input->x270_paths[i],
+            "270",
+            input->include_phi,
+            run_id,
+            phi_vault_ptr
+        );
+    }
+    for (i = 0u; i < input->x271_count && rc == X12_OK; i++) {
+        rc = append_x12_file(
+            fp,
+            input->x271_paths[i],
+            "271",
+            input->include_phi,
+            run_id,
+            phi_vault_ptr
+        );
+    }
 
     if (phi_vault_ptr != NULL) {
         int close_rc = phi_vault_close(phi_vault_ptr);
@@ -504,6 +575,21 @@ int journal_builder_run_cli(int argc, char **argv)
                 journal_builder_input_add_charges(&input, argv[++i]) != X12_OK) {
                 return -1;
             }
+        } else if (strcmp(argv[i], "--270") == 0) {
+            if (i + 1 >= argc ||
+                journal_builder_input_add_270(&input, argv[++i]) != X12_OK) {
+                return -1;
+            }
+        } else if (strcmp(argv[i], "--271") == 0) {
+            if (i + 1 >= argc ||
+                journal_builder_input_add_271(&input, argv[++i]) != X12_OK) {
+                return -1;
+            }
+        } else if (strcmp(argv[i], "--834") == 0) {
+            if (i + 1 >= argc ||
+                journal_builder_input_add_834(&input, argv[++i]) != X12_OK) {
+                return -1;
+            }
         } else if (strcmp(argv[i], "--837") == 0) {
             if (i + 1 >= argc ||
                 journal_builder_input_add_837(&input, argv[++i]) != X12_OK) {
@@ -532,7 +618,12 @@ int journal_builder_run_cli(int argc, char **argv)
     }
 
     if (out_path == NULL ||
-        (input.charges_count == 0u && input.x837_count == 0u && input.x835_count == 0u)) {
+        (input.charges_count == 0u &&
+         input.x270_count == 0u &&
+         input.x271_count == 0u &&
+         input.x834_count == 0u &&
+         input.x837_count == 0u &&
+         input.x835_count == 0u)) {
         return -1;
     }
 
