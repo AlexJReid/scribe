@@ -1,7 +1,9 @@
 # scribe
 
-Proof of concept for stitching provider charge context, 837 claims, and 835
-remittances into versioned claim aggregates and ledger-style balance projections.
+`scribe` parses 837 claim submissions and 835 remittances into a tokenised,
+replayable claim ledger. It joins provider charge context with payer
+adjudication to produce versioned claim aggregates, balance projections, and
+auditable evidence trails.
 
 ## What
 
