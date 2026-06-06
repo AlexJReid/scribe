@@ -209,6 +209,29 @@ int scribe_store_init_schema(scribe_store_t *store)
         "  updated_by_event_id TEXT NOT NULL,"
         "  source_drop_id TEXT NOT NULL"
         ");"
+        "CREATE TABLE IF NOT EXISTS member_coverage_versions ("
+        "  aggregate_id TEXT NOT NULL,"
+        "  version INTEGER NOT NULL,"
+        "  state_json TEXT NOT NULL,"
+        "  updated_by_event_id TEXT NOT NULL,"
+        "  source_drop_id TEXT NOT NULL,"
+        "  PRIMARY KEY (aggregate_id, version)"
+        ");"
+        "CREATE TABLE IF NOT EXISTS member_coverage_latest ("
+        "  aggregate_id TEXT PRIMARY KEY,"
+        "  version INTEGER NOT NULL,"
+        "  state_json TEXT NOT NULL,"
+        "  updated_by_event_id TEXT NOT NULL,"
+        "  source_drop_id TEXT NOT NULL"
+        ");"
+        "CREATE TABLE IF NOT EXISTS member_coverage_keys ("
+        "  key_type TEXT NOT NULL,"
+        "  key_value TEXT NOT NULL,"
+        "  aggregate_id TEXT NOT NULL REFERENCES member_coverage_latest(aggregate_id),"
+        "  PRIMARY KEY (key_type, key_value, aggregate_id)"
+        ");"
+        "CREATE INDEX IF NOT EXISTS member_coverage_keys_lookup "
+        "ON member_coverage_keys(key_type, key_value);"
     );
 }
 
@@ -626,5 +649,254 @@ int scribe_store_get_latest_claim_aggregate(
         rc = X12_ERR_IO;
     }
 
+    return rc;
+}
+
+int scribe_store_put_member_coverage(
+    scribe_store_t *store,
+    const char *aggregate_id,
+    size_t version,
+    const char *state_json,
+    const char *updated_by_event_id,
+    const char *source_drop_id
+)
+{
+    sqlite3_stmt *stmt = NULL;
+    sqlite3 *db = store_db(store);
+    int rc;
+
+    if (db == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    rc = exec_sql(db, "BEGIN IMMEDIATE;");
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    rc = prepare(
+        db,
+        "INSERT INTO member_coverage_versions "
+        "(aggregate_id, version, state_json, updated_by_event_id, source_drop_id) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(aggregate_id, version) DO UPDATE SET "
+        "state_json = excluded.state_json, "
+        "updated_by_event_id = excluded.updated_by_event_id, "
+        "source_drop_id = excluded.source_drop_id;",
+        &stmt
+    );
+    if (rc == X12_OK) {
+        rc = bind_text(stmt, 1, aggregate_id);
+    }
+    if (rc == X12_OK &&
+        sqlite3_bind_int64(stmt, 2, (sqlite3_int64)version) != SQLITE_OK) {
+        rc = X12_ERR_IO;
+    }
+    if (rc == X12_OK) {
+        rc = bind_text(stmt, 3, state_json);
+    }
+    if (rc == X12_OK) {
+        rc = bind_text(stmt, 4, updated_by_event_id);
+    }
+    if (rc == X12_OK) {
+        rc = bind_text(stmt, 5, source_drop_id);
+    }
+    if (rc == X12_OK) {
+        rc = step_done(stmt);
+    }
+    if (stmt != NULL && sqlite3_finalize(stmt) != SQLITE_OK && rc == X12_OK) {
+        rc = X12_ERR_IO;
+    }
+    stmt = NULL;
+
+    if (rc == X12_OK) {
+        rc = prepare(
+            db,
+            "INSERT INTO member_coverage_latest "
+            "(aggregate_id, version, state_json, updated_by_event_id, source_drop_id) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(aggregate_id) DO UPDATE SET "
+            "version = excluded.version, "
+            "state_json = excluded.state_json, "
+            "updated_by_event_id = excluded.updated_by_event_id, "
+            "source_drop_id = excluded.source_drop_id "
+            "WHERE excluded.version >= member_coverage_latest.version;",
+            &stmt
+        );
+    }
+    if (rc == X12_OK) {
+        rc = bind_text(stmt, 1, aggregate_id);
+    }
+    if (rc == X12_OK &&
+        sqlite3_bind_int64(stmt, 2, (sqlite3_int64)version) != SQLITE_OK) {
+        rc = X12_ERR_IO;
+    }
+    if (rc == X12_OK) {
+        rc = bind_text(stmt, 3, state_json);
+    }
+    if (rc == X12_OK) {
+        rc = bind_text(stmt, 4, updated_by_event_id);
+    }
+    if (rc == X12_OK) {
+        rc = bind_text(stmt, 5, source_drop_id);
+    }
+    if (rc == X12_OK) {
+        rc = step_done(stmt);
+    }
+    if (stmt != NULL && sqlite3_finalize(stmt) != SQLITE_OK && rc == X12_OK) {
+        rc = X12_ERR_IO;
+    }
+
+    if (rc == X12_OK) {
+        rc = exec_sql(db, "COMMIT;");
+    } else {
+        (void)exec_sql(db, "ROLLBACK;");
+    }
+
+    return rc;
+}
+
+int scribe_store_get_latest_member_coverage(
+    scribe_store_t *store,
+    const char *aggregate_id,
+    size_t *out_version,
+    char *state_json,
+    size_t state_json_len
+)
+{
+    sqlite3_stmt *stmt;
+    sqlite3 *db = store_db(store);
+    int step_rc;
+    int rc;
+
+    if (out_version == NULL || state_json == NULL || state_json_len == 0u) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+    *out_version = 0u;
+    state_json[0] = '\0';
+
+    rc = prepare(
+        db,
+        "SELECT version, state_json FROM member_coverage_latest "
+        "WHERE aggregate_id = ?;",
+        &stmt
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    rc = bind_text(stmt, 1, aggregate_id);
+    step_rc = rc == X12_OK ? sqlite3_step(stmt) : SQLITE_DONE;
+    if (rc == X12_OK && step_rc == SQLITE_ROW) {
+        *out_version = (size_t)sqlite3_column_int64(stmt, 0);
+        rc = copy_column_text(stmt, 1, state_json, state_json_len);
+    } else if (rc == X12_OK && step_rc == SQLITE_DONE) {
+        rc = X12_ERR_NOT_FOUND;
+    } else if (rc == X12_OK) {
+        rc = sqlite_to_x12(step_rc);
+    }
+    if (sqlite3_finalize(stmt) != SQLITE_OK && rc == X12_OK) {
+        rc = X12_ERR_IO;
+    }
+
+    return rc;
+}
+
+int scribe_store_put_member_coverage_key(
+    scribe_store_t *store,
+    const char *key_type,
+    const char *key_value,
+    const char *aggregate_id
+)
+{
+    sqlite3_stmt *stmt;
+    sqlite3 *db = store_db(store);
+    int rc;
+
+    rc = prepare(
+        db,
+        "INSERT OR IGNORE INTO member_coverage_keys "
+        "(key_type, key_value, aggregate_id) "
+        "VALUES (?, ?, ?);",
+        &stmt
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    rc = bind_text(stmt, 1, key_type);
+    if (rc == X12_OK) {
+        rc = bind_text(stmt, 2, key_value);
+    }
+    if (rc == X12_OK) {
+        rc = bind_text(stmt, 3, aggregate_id);
+    }
+    if (rc == X12_OK) {
+        rc = step_done(stmt);
+    }
+    if (sqlite3_finalize(stmt) != SQLITE_OK && rc == X12_OK) {
+        rc = X12_ERR_IO;
+    }
+
+    return rc;
+}
+
+int scribe_store_find_member_coverage_ids_by_key(
+    scribe_store_t *store,
+    const char *key_type,
+    const char *key_value,
+    char aggregate_ids[][SCRIBE_STORE_ID_MAX],
+    size_t max_aggregate_ids,
+    size_t *out_count
+)
+{
+    sqlite3_stmt *stmt;
+    sqlite3 *db = store_db(store);
+    int step_rc;
+    int rc;
+    size_t count = 0u;
+
+    if (out_count == NULL || (aggregate_ids == NULL && max_aggregate_ids > 0u)) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+    *out_count = 0u;
+
+    rc = prepare(
+        db,
+        "SELECT aggregate_id "
+        "FROM member_coverage_keys "
+        "WHERE key_type = ? AND key_value = ? "
+        "ORDER BY aggregate_id "
+        "LIMIT ?;",
+        &stmt
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    rc = bind_text(stmt, 1, key_type);
+    if (rc == X12_OK) {
+        rc = bind_text(stmt, 2, key_value);
+    }
+    if (rc == X12_OK &&
+        sqlite3_bind_int64(stmt, 3, (sqlite3_int64)max_aggregate_ids) != SQLITE_OK) {
+        rc = X12_ERR_IO;
+    }
+
+    while (rc == X12_OK && (step_rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        rc = copy_column_text(stmt, 0, aggregate_ids[count], SCRIBE_STORE_ID_MAX);
+        if (rc != X12_OK) {
+            break;
+        }
+        count++;
+    }
+    if (rc == X12_OK && step_rc != SQLITE_DONE) {
+        rc = sqlite_to_x12(step_rc);
+    }
+    if (sqlite3_finalize(stmt) != SQLITE_OK && rc == X12_OK) {
+        rc = X12_ERR_IO;
+    }
+
+    *out_count = count;
     return rc;
 }

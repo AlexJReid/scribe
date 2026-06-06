@@ -16,7 +16,7 @@ arrive as separate files:
 
 The proof of concept turns those inputs into an immutable journal. The claim
 money trail reduces into versioned claim aggregates and balance projections;
-coverage/member events are journaled for a future `member_coverage` aggregate.
+coverage/member evidence reduces into temporal `member_coverage` aggregates.
 PHI-bearing values are tokenized before they enter the normal journal/read-store
 path, with raw values held separately in a PHI vault.
 
@@ -50,11 +50,11 @@ for this proof of concept and are not real PHI.
 More background on the 837/835 model, tokenisation, and PHI tradeoffs lives in
 [theory.md](theory.md).
 
-## Modeling backlog
+## Modeling
 
-- `member_coverage` aggregate: stitch 834 enrollment changes with 270
+- `member_coverage` aggregate: stitches 834 enrollment changes with 270
   eligibility inquiries and 271 eligibility responses into member-centric,
-  temporal coverage context. Keep this separate from claim aggregates; claim
+  temporal coverage context. It stays separate from claim aggregates; claim
   workflows can reference it by member token, payer token, service date, and
   service type.
 
@@ -77,6 +77,8 @@ ctest --test-dir build --output-on-failure
 - `demo/stroke_phi_vault.sqlite`
 - `demo/stroke_read_store.sqlite`
 - `demo/stroke_aggregates.ndjson`
+- `demo/stroke_member_coverage.ndjson`
+- `demo/stroke_phi_member_coverage.ndjson`
 - `demo/stroke_notifications.ndjson`
 
 Run the walked demo:
@@ -128,6 +130,16 @@ records for downstream delivery. Treat it as a derived JSON outbox/debug hook:
 a notifier can scan it from its last offset and use `(aggregate_id, version)`
 for idempotency. The binary journal remains the source evidence.
 
+Reduce coverage/member context:
+
+```sh
+build/scribe coverage \
+  --journal demo/stroke.journal \
+  --read-store demo/stroke_read_store.sqlite \
+  --run-id stroke-coverage-demo \
+  --out demo/stroke_member_coverage.ndjson
+```
+
 Create a PHI-containing read store only when needed:
 
 ```sh
@@ -138,6 +150,17 @@ build/scribe stitch \
   --phi-vault demo/stroke_phi_vault.sqlite \
   --include-phi \
   --out demo/stroke_phi_aggregates.ndjson
+```
+
+The coverage reducer follows the same PHI switch:
+
+```sh
+build/scribe coverage \
+  --journal demo/stroke.journal \
+  --read-store demo/stroke_phi_read_store.sqlite \
+  --phi-vault demo/stroke_phi_vault.sqlite \
+  --include-phi \
+  --out demo/stroke_phi_member_coverage.ndjson
 ```
 
 Project the ledger-style balance:
@@ -160,8 +183,9 @@ from claim_aggregate_latest
 order by aggregate_id;
 "
 ```
-The read store tables are `event_keys`, `events`, `claim_aggregate_versions`, and
-`claim_aggregate_latest`.
+The read store tables are `event_keys`, `events`, `claim_aggregate_versions`,
+`claim_aggregate_latest`, `member_coverage_versions`,
+`member_coverage_latest`, and `member_coverage_keys`.
 
 ## License
 

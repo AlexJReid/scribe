@@ -1,5 +1,6 @@
 #include "aggregate_stitcher.h"
 #include "balance_projector.h"
+#include "coverage_stitcher.h"
 #include "event_writer.h"
 #include "journal_builder.h"
 #include "phi_vault.h"
@@ -26,11 +27,12 @@ static void usage(FILE *fp)
         "  scribe journal --out journal.scribe [--charges charges.ndjson] [--270 inquiry.edi] [--271 response.edi] [--834 enroll.edi] [--837 claim.edi] [--835 remit.edi] [--phi-vault phi.sqlite] [--include-phi] [--run-id id]\n"
         "  scribe vault-resolve --phi-vault phi.sqlite --namespace ns --token token [--actor user] [--purpose reason]\n"
         "  scribe stitch --journal journal.scribe [--encounter-id id] [--read-store store.sqlite] [--phi-vault phi.sqlite] [--out aggregates.ndjson] [--notify-out notifications.ndjson] [--include-phi] [--run-id id]\n"
+        "  scribe coverage --journal journal.scribe [--read-store store.sqlite] [--phi-vault phi.sqlite] [--out coverage.ndjson] [--include-phi] [--run-id id]\n"
         "  scribe project --projection balance --journal journal.scribe [--encounter-id id] [--out balance.json] [--include-phi]\n"
         "  scribe project-balance --journal journal.scribe [--encounter-id id] [--out balance.json] [--include-phi]\n"
         "  scribe dump input.edi\n"
         "\n"
-        "For parse/stitch/project, --out may be '-' or omitted for stdout. journal requires a file path.\n",
+        "For parse/stitch/coverage/project, --out may be '-' or omitted for stdout. journal requires a file path.\n",
         fp
     );
     projection_write_usage(fp);
@@ -251,6 +253,17 @@ static int stitch_command(int argc, char **argv)
     return rc;
 }
 
+static int coverage_command(int argc, char **argv)
+{
+    int rc;
+
+    rc = coverage_stitcher_run_cli(argc, argv);
+    if (rc < 0 && rc != -1) {
+        fprintf(stderr, "coverage: %s\n", x12_error_message(rc));
+    }
+    return rc;
+}
+
 static int vault_resolve_command(int argc, char **argv)
 {
     const char *vault_path = NULL;
@@ -363,6 +376,15 @@ int main(int argc, char **argv)
 
     if (strcmp(argv[1], "stitch") == 0) {
         int rc = stitch_command(argc, argv);
+        if (rc < 0) {
+            usage(stderr);
+            return 1;
+        }
+        return 0;
+    }
+
+    if (strcmp(argv[1], "coverage") == 0) {
+        int rc = coverage_command(argc, argv);
         if (rc < 0) {
             usage(stderr);
             return 1;

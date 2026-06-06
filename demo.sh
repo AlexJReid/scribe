@@ -18,6 +18,8 @@ need_file demo/stroke_read_store.sqlite
 need_file demo/stroke_phi_read_store.sqlite
 need_file demo/stroke_aggregates.ndjson
 need_file demo/stroke_phi_aggregates.ndjson
+need_file demo/stroke_member_coverage.ndjson
+need_file demo/stroke_phi_member_coverage.ndjson
 need_file demo/stroke_notifications.ndjson
 need_file demo/stroke_balance.json
 
@@ -34,6 +36,8 @@ ls -lh \
   demo/stroke_phi_read_store.sqlite \
   demo/stroke_aggregates.ndjson \
   demo/stroke_phi_aggregates.ndjson \
+  demo/stroke_member_coverage.ndjson \
+  demo/stroke_phi_member_coverage.ndjson \
   demo/stroke_notifications.ndjson \
   demo/stroke_balance.json
 
@@ -73,6 +77,29 @@ order by aggregate_id;
 "
 
     echo
+    echo "Latest member coverage: tokenised read store"
+    sqlite3 -line demo/stroke_read_store.sqlite "
+select
+  aggregate_id,
+  version,
+  json_extract(state_json, '$.run_id') as run_id,
+  json_extract(state_json, '$.source_run_id') as source_run_id,
+  json_extract(state_json, '$.source_drop_id') as source_drop,
+  json_extract(state_json, '$.updated_by_event_type') as updated_by,
+  json_extract(state_json, '$.contains_phi') as contains_phi,
+  json_extract(state_json, '$.keys.member_id') as member_token,
+  json_extract(state_json, '$.keys.payer_id') as payer_token,
+  json_extract(state_json, '$.state.enrollment.coverage_effective_date') as coverage_effective,
+  json_extract(state_json, '$.state.service_request_count') as service_requests,
+  json_extract(state_json, '$.state.benefit_count') as benefits,
+  json_extract(state_json, '$.state.benefits[0].service_type_code') as first_service,
+  json_extract(state_json, '$.state.benefits[0].effective_date') as first_effective,
+  json_extract(state_json, '$.state.benefits[0].termination_date') as first_termination
+from member_coverage_latest
+order by aggregate_id;
+"
+
+    echo
     echo "Latest claim aggregates: PHI read store"
     sqlite3 -line demo/stroke_phi_read_store.sqlite "
 select
@@ -108,6 +135,35 @@ order by aggregate_id;
 "
 
     echo
+    echo "Latest member coverage: PHI read store"
+    sqlite3 -line demo/stroke_phi_read_store.sqlite "
+select
+  aggregate_id,
+  version,
+  json_extract(state_json, '$.run_id') as run_id,
+  json_extract(state_json, '$.source_run_id') as source_run_id,
+  json_extract(state_json, '$.source_drop_id') as source_drop,
+  json_extract(state_json, '$.updated_by_event_type') as updated_by,
+  json_extract(state_json, '$.contains_phi') as contains_phi,
+  json_extract(state_json, '$.keys.member_id') as member_id,
+  json_extract(state_json, '$.keys.member_id_token') as member_token,
+  json_extract(state_json, '$.keys.member_last_name_or_org') as last_name,
+  json_extract(state_json, '$.keys.member_first_name') as first_name,
+  json_extract(state_json, '$.keys.payer_id') as payer_id,
+  json_extract(state_json, '$.keys.payer_id_token') as payer_token,
+  json_extract(state_json, '$.state.demographics.date_of_birth') as dob,
+  json_extract(state_json, '$.state.demographics.date_of_birth_token') as dob_token,
+  json_extract(state_json, '$.state.enrollment.coverage_effective_date') as coverage_effective,
+  json_extract(state_json, '$.state.service_request_count') as service_requests,
+  json_extract(state_json, '$.state.benefit_count') as benefits,
+  json_extract(state_json, '$.state.benefits[0].service_type_code') as first_service,
+  json_extract(state_json, '$.state.benefits[0].effective_date') as first_effective,
+  json_extract(state_json, '$.state.benefits[0].termination_date') as first_termination
+from member_coverage_latest
+order by aggregate_id;
+"
+
+    echo
     echo "Why these differ"
     echo "  tokenised read store: contains_phi=0, so identifiers are stored as tokens in the normal key fields."
     echo "  PHI read store: contains_phi=1, so raw identifiers are resolved from the PHI vault and token companion fields are retained."
@@ -115,6 +171,14 @@ else
     echo
     echo "sqlite3 not found; skipping read-store summaries"
 fi
+
+echo
+echo "First member coverage snapshots"
+sed -n '1,3p' demo/stroke_member_coverage.ndjson
+
+echo
+echo "First PHI member coverage snapshots"
+sed -n '1,3p' demo/stroke_phi_member_coverage.ndjson
 
 echo
 echo "First notifications"

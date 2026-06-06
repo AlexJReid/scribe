@@ -86,4 +86,37 @@ int scribe_store_get_latest_claim_aggregate(
     size_t state_json_len
 );
 
+int scribe_store_put_member_coverage(
+    scribe_store_t *store,
+    const char *aggregate_id,
+    size_t version,
+    const char *state_json,
+    const char *updated_by_event_id,
+    const char *source_drop_id
+);
+
+int scribe_store_put_member_coverage_key(
+    scribe_store_t *store,
+    const char *key_type,
+    const char *key_value,
+    const char *aggregate_id
+);
+
+int scribe_store_find_member_coverage_ids_by_key(
+    scribe_store_t *store,
+    const char *key_type,
+    const char *key_value,
+    char aggregate_ids[][SCRIBE_STORE_ID_MAX],
+    size_t max_aggregate_ids,
+    size_t *out_count
+);
+
+int scribe_store_get_latest_member_coverage(
+    scribe_store_t *store,
+    const char *aggregate_id,
+    size_t *out_version,
+    char *state_json,
+    size_t state_json_len
+);
+
 #endif

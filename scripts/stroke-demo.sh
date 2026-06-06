@@ -20,6 +20,8 @@ rm -f \
   demo/stroke_aggregates.ndjson \
   demo/stroke_notifications.ndjson \
   demo/stroke_phi_aggregates.ndjson \
+  demo/stroke_member_coverage.ndjson \
+  demo/stroke_phi_member_coverage.ndjson \
   demo/stroke_balance.json
 
 echo "importing 270, 271, 837, 835s to journal, phi enabled"
@@ -48,6 +50,13 @@ build/scribe stitch \
   --run-id stroke-stitch-demo \
   --out demo/stroke_aggregates.ndjson
 
+echo "reducing coverage/member context"
+build/scribe coverage \
+  --journal demo/stroke.journal \
+  --read-store demo/stroke_read_store.sqlite \
+  --run-id stroke-coverage-demo \
+  --out demo/stroke_member_coverage.ndjson
+
 echo "stitching again for single encounter, with phi decoded" 
 build/scribe stitch \
   --journal demo/stroke.journal \
@@ -56,6 +65,15 @@ build/scribe stitch \
   --phi-vault demo/stroke_phi_vault.sqlite \
   --include-phi \
   --out demo/stroke_phi_aggregates.ndjson
+
+echo "reducing coverage/member context, with phi decoded"
+build/scribe coverage \
+  --journal demo/stroke.journal \
+  --read-store demo/stroke_phi_read_store.sqlite \
+  --phi-vault demo/stroke_phi_vault.sqlite \
+  --include-phi \
+  --run-id stroke-phi-coverage-demo \
+  --out demo/stroke_phi_member_coverage.ndjson
 
 echo "projecting balance"
 build/scribe project --projection balance \

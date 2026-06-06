@@ -1,5 +1,6 @@
 #include "aggregate_stitcher.h"
 #include "balance_projector.h"
+#include "coverage_stitcher.h"
 #include "event_writer.h"
 #include "journal.h"
 #include "journal_builder.h"
@@ -1203,6 +1204,221 @@ static int test_stroke_balance_projection_from_journal(void)
     return 0;
 }
 
+static int test_member_coverage_aggregate_from_journal(void)
+{
+    char coverage_834_path[512];
+    char eligibility_270_path[512];
+    char eligibility_271_path[512];
+    char journal_path[512];
+    char aggregate_path[512];
+    char phi_aggregate_path[512];
+    char read_store_path[512];
+    char read_store_wal_path[560];
+    char read_store_shm_path[560];
+    char phi_read_store_path[512];
+    char phi_read_store_wal_path[560];
+    char phi_read_store_shm_path[560];
+    char phi_vault_path[512];
+    char phi_vault_wal_path[560];
+    char phi_vault_shm_path[560];
+    char aggregates[128000];
+    char phi_aggregates[128000];
+    char latest_coverage[65536];
+    char aggregate_id[SCRIBE_STORE_ID_MAX];
+    char member_token[TOKENISE_MAX_TOKEN_LEN];
+    char payer_token[TOKENISE_MAX_TOKEN_LEN];
+    char dob_token[TOKENISE_MAX_TOKEN_LEN];
+    char aggregate_ids[4][SCRIBE_STORE_ID_MAX];
+    x12_str_t raw;
+    journal_builder_input_t journal_input;
+    coverage_stitcher_input_t coverage_input;
+    scribe_store_t store;
+    size_t latest_version = 0u;
+    size_t aggregate_count = 0u;
+
+    REQUIRE(make_path(coverage_834_path, sizeof(coverage_834_path), TEST_FIXTURE_DIR, "stroke_encounter/coverage_834.edi") == 0);
+    REQUIRE(make_path(eligibility_270_path, sizeof(eligibility_270_path), TEST_FIXTURE_DIR, "stroke_encounter/eligibility_270.edi") == 0);
+    REQUIRE(make_path(eligibility_271_path, sizeof(eligibility_271_path), TEST_FIXTURE_DIR, "stroke_encounter/eligibility_271.edi") == 0);
+    REQUIRE(make_path(journal_path, sizeof(journal_path), TEST_OUTPUT_DIR, "member_coverage.journal") == 0);
+    REQUIRE(make_path(aggregate_path, sizeof(aggregate_path), TEST_OUTPUT_DIR, "member_coverage.ndjson") == 0);
+    REQUIRE(make_path(phi_aggregate_path, sizeof(phi_aggregate_path), TEST_OUTPUT_DIR, "member_coverage_phi.ndjson") == 0);
+    REQUIRE(make_path(read_store_path, sizeof(read_store_path), TEST_OUTPUT_DIR, "member_coverage.sqlite") == 0);
+    REQUIRE(make_path(phi_read_store_path, sizeof(phi_read_store_path), TEST_OUTPUT_DIR, "member_coverage_phi.sqlite") == 0);
+    REQUIRE(make_path(phi_vault_path, sizeof(phi_vault_path), TEST_OUTPUT_DIR, "member_coverage_phi_vault.sqlite") == 0);
+    REQUIRE(snprintf(read_store_wal_path, sizeof(read_store_wal_path), "%s-wal", read_store_path) > 0);
+    REQUIRE(snprintf(read_store_shm_path, sizeof(read_store_shm_path), "%s-shm", read_store_path) > 0);
+    REQUIRE(snprintf(phi_read_store_wal_path, sizeof(phi_read_store_wal_path), "%s-wal", phi_read_store_path) > 0);
+    REQUIRE(snprintf(phi_read_store_shm_path, sizeof(phi_read_store_shm_path), "%s-shm", phi_read_store_path) > 0);
+    REQUIRE(snprintf(phi_vault_wal_path, sizeof(phi_vault_wal_path), "%s-wal", phi_vault_path) > 0);
+    REQUIRE(snprintf(phi_vault_shm_path, sizeof(phi_vault_shm_path), "%s-shm", phi_vault_path) > 0);
+
+    raw.ptr = "SUB-STROKE-001";
+    raw.len = strlen(raw.ptr);
+    REQUIRE(tokenise_value(TOK_MEMBER_ID, raw, member_token, sizeof(member_token)) == X12_OK);
+    raw.ptr = "PAYOR123";
+    raw.len = strlen(raw.ptr);
+    REQUIRE(tokenise_value(TOK_PAYER_ID, raw, payer_token, sizeof(payer_token)) == X12_OK);
+    raw.ptr = "19790314";
+    raw.len = strlen(raw.ptr);
+    REQUIRE(tokenise_value(TOK_MEMBER_DOB, raw, dob_token, sizeof(dob_token)) == X12_OK);
+    REQUIRE(snprintf(aggregate_id, sizeof(aggregate_id), "member_coverage:%s", member_token) > 0);
+
+    (void)remove(journal_path);
+    (void)remove(read_store_path);
+    (void)remove(read_store_wal_path);
+    (void)remove(read_store_shm_path);
+    (void)remove(phi_read_store_path);
+    (void)remove(phi_read_store_wal_path);
+    (void)remove(phi_read_store_shm_path);
+    (void)remove(phi_vault_path);
+    (void)remove(phi_vault_wal_path);
+    (void)remove(phi_vault_shm_path);
+
+    journal_builder_input_init(&journal_input);
+    journal_input.run_id = "coverage-ingest-test";
+    journal_input.phi_vault_path = phi_vault_path;
+    REQUIRE(journal_builder_input_add_834(&journal_input, coverage_834_path) == X12_OK);
+    REQUIRE(journal_builder_input_add_270(&journal_input, eligibility_270_path) == X12_OK);
+    REQUIRE(journal_builder_input_add_271(&journal_input, eligibility_271_path) == X12_OK);
+    REQUIRE(journal_builder_build(&journal_input, journal_path) == X12_OK);
+
+    coverage_stitcher_input_init(&coverage_input);
+    coverage_input.journal_path = journal_path;
+    coverage_input.out_path = aggregate_path;
+    coverage_input.read_store_path = read_store_path;
+    coverage_input.run_id = "coverage-stitch-test";
+    REQUIRE(coverage_stitcher_stitch(&coverage_input) == X12_OK);
+    REQUIRE(read_file_text(aggregate_path, aggregates, sizeof(aggregates)) == 0);
+
+    REQUIRE(strstr(aggregates, "\"event_type\":\"MemberCoverageUpdated\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"run_id\":\"coverage-stitch-test\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"source_run_id\":\"coverage-ingest-test\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"aggregate_type\":\"member_coverage\"") != NULL);
+    REQUIRE(strstr(aggregates, aggregate_id) != NULL);
+    REQUIRE(strstr(aggregates, "\"contains_phi\":false") != NULL);
+    REQUIRE(strstr(aggregates, "\"member_id\":\"") != NULL);
+    REQUIRE(strstr(aggregates, member_token) != NULL);
+    REQUIRE(strstr(aggregates, payer_token) != NULL);
+    REQUIRE(strstr(aggregates, dob_token) != NULL);
+    REQUIRE(strstr(aggregates, "\"coverage_effective_date\":\"20260601\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"effective_date\":\"20260601\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"termination_date\":\"20261231\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"service_type_code\":\"30\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"service_type_code\":\"47\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"service_type_code\":\"98\"") != NULL);
+    REQUIRE(strstr(aggregates, "SUB-STROKE-001") == NULL);
+    REQUIRE(strstr(aggregates, "PAYOR123") == NULL);
+    REQUIRE(strstr(aggregates, "19790314") == NULL);
+    REQUIRE(strstr(aggregates, "REID") == NULL);
+    REQUIRE(strstr(aggregates, "ALEX") == NULL);
+
+    scribe_store_init(&store);
+    REQUIRE(scribe_store_open(&store, read_store_path) == X12_OK);
+    REQUIRE(scribe_store_init_schema(&store) == X12_OK);
+    REQUIRE(scribe_store_get_latest_member_coverage(
+                &store,
+                aggregate_id,
+                &latest_version,
+                latest_coverage,
+                sizeof(latest_coverage)
+            ) == X12_OK);
+    REQUIRE(latest_version > 0u);
+    REQUIRE(strstr(latest_coverage, "\"contains_phi\":false") != NULL);
+    REQUIRE(strstr(latest_coverage, "\"benefit_count\":3") != NULL);
+    REQUIRE(scribe_store_find_member_coverage_ids_by_key(
+                &store,
+                "member_id",
+                member_token,
+                aggregate_ids,
+                4u,
+                &aggregate_count
+            ) == X12_OK);
+    REQUIRE(aggregate_count == 1u);
+    REQUIRE(strcmp(aggregate_ids[0], aggregate_id) == 0);
+    REQUIRE(scribe_store_find_member_coverage_ids_by_key(
+                &store,
+                "payer_id",
+                payer_token,
+                aggregate_ids,
+                4u,
+                &aggregate_count
+            ) == X12_OK);
+    REQUIRE(aggregate_count == 1u);
+    REQUIRE(strcmp(aggregate_ids[0], aggregate_id) == 0);
+    REQUIRE(scribe_store_find_member_coverage_ids_by_key(
+                &store,
+                "service_type_code",
+                "47",
+                aggregate_ids,
+                4u,
+                &aggregate_count
+            ) == X12_OK);
+    REQUIRE(aggregate_count == 1u);
+    REQUIRE(strcmp(aggregate_ids[0], aggregate_id) == 0);
+    REQUIRE(scribe_store_close(&store) == X12_OK);
+
+    coverage_stitcher_input_init(&coverage_input);
+    coverage_input.journal_path = journal_path;
+    coverage_input.out_path = phi_aggregate_path;
+    coverage_input.read_store_path = phi_read_store_path;
+    coverage_input.phi_vault_path = phi_vault_path;
+    coverage_input.include_phi = 1;
+    coverage_input.run_id = "coverage-phi-stitch-test";
+    REQUIRE(coverage_stitcher_stitch(&coverage_input) == X12_OK);
+    REQUIRE(read_file_text(phi_aggregate_path, phi_aggregates, sizeof(phi_aggregates)) == 0);
+
+    REQUIRE(strstr(phi_aggregates, "\"contains_phi\":true") != NULL);
+    REQUIRE(strstr(phi_aggregates, "\"member_id\":\"SUB-STROKE-001\"") != NULL);
+    REQUIRE(strstr(phi_aggregates, "\"member_id_token\":\"") != NULL);
+    REQUIRE(strstr(phi_aggregates, member_token) != NULL);
+    REQUIRE(strstr(phi_aggregates, "\"payer_id\":\"PAYOR123\"") != NULL);
+    REQUIRE(strstr(phi_aggregates, "\"payer_id_token\":\"") != NULL);
+    REQUIRE(strstr(phi_aggregates, payer_token) != NULL);
+    REQUIRE(strstr(phi_aggregates, "\"member_last_name_or_org\":\"REID\"") != NULL);
+    REQUIRE(strstr(phi_aggregates, "\"member_first_name\":\"ALEX\"") != NULL);
+    REQUIRE(strstr(phi_aggregates, "\"date_of_birth\":\"19790314\"") != NULL);
+    REQUIRE(strstr(phi_aggregates, "\"date_of_birth_token\":\"") != NULL);
+    REQUIRE(strstr(phi_aggregates, dob_token) != NULL);
+
+    scribe_store_init(&store);
+    REQUIRE(scribe_store_open(&store, phi_read_store_path) == X12_OK);
+    REQUIRE(scribe_store_init_schema(&store) == X12_OK);
+    REQUIRE(scribe_store_get_latest_member_coverage(
+                &store,
+                aggregate_id,
+                &latest_version,
+                latest_coverage,
+                sizeof(latest_coverage)
+            ) == X12_OK);
+    REQUIRE(latest_version > 0u);
+    REQUIRE(strstr(latest_coverage, "\"contains_phi\":true") != NULL);
+    REQUIRE(strstr(latest_coverage, "\"member_id\":\"SUB-STROKE-001\"") != NULL);
+    REQUIRE(scribe_store_find_member_coverage_ids_by_key(
+                &store,
+                "member_id_raw",
+                "SUB-STROKE-001",
+                aggregate_ids,
+                4u,
+                &aggregate_count
+            ) == X12_OK);
+    REQUIRE(aggregate_count == 1u);
+    REQUIRE(strcmp(aggregate_ids[0], aggregate_id) == 0);
+    REQUIRE(scribe_store_close(&store) == X12_OK);
+
+    (void)remove(journal_path);
+    (void)remove(read_store_path);
+    (void)remove(read_store_wal_path);
+    (void)remove(read_store_shm_path);
+    (void)remove(phi_read_store_path);
+    (void)remove(phi_read_store_wal_path);
+    (void)remove(phi_read_store_shm_path);
+    (void)remove(phi_vault_path);
+    (void)remove(phi_vault_wal_path);
+    (void)remove(phi_vault_shm_path);
+
+    return 0;
+}
+
 static int test_store_indexes_and_aggregates(void)
 {
     char db_path[512];
@@ -1370,6 +1586,7 @@ int main(void)
     REQUIRE(test_835_remittance_events() == 0);
     REQUIRE(test_stroke_encounter_fixture_set() == 0);
     REQUIRE(test_stroke_balance_projection_from_journal() == 0);
+    REQUIRE(test_member_coverage_aggregate_from_journal() == 0);
     REQUIRE(test_store_indexes_and_aggregates() == 0);
     REQUIRE(test_json_escaping() == 0);
     REQUIRE(test_json_scan_unescapes_strings() == 0);

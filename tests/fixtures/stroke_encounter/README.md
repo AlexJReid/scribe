@@ -37,7 +37,7 @@ Files:
 Current parser behaviour:
 
 - 834, 270, and 271 records should journal tokenised coverage/member context
-  evidence for future `member_coverage` reductions
+  evidence for `member_coverage` reductions
 - 837 `CLM01` and 835 `CLP01` should tokenise into the same `claim_id` value for
   each claim
 - 835 `CLP07` should tokenise under the `payer_claim_control_number` namespace

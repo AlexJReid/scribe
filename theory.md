@@ -11,7 +11,7 @@ arrive as separate files:
 
 The proof of concept turns those inputs into an immutable journal. The claim
 money trail reduces into versioned claim aggregates and balance projections;
-coverage/member events are journaled for a future `member_coverage` aggregate.
+coverage/member evidence reduces into temporal `member_coverage` aggregates.
 PHI-bearing values are [tokenised](#phi) before they enter the normal
 journal/read-store path, with raw values held separately in a PHI vault.
 
@@ -44,20 +44,20 @@ different identifier with a different matching role.
 
 ## Coverage/member context
 
-Coverage context is journaled as its own evidence stream and should be reduced
-as its own aggregate rather than being folded into the claim aggregate:
+Coverage context is journaled as its own evidence stream and reduced as its own
+aggregate rather than being folded into the claim aggregate:
 
 ```text
 834 enrollment + 270 eligibility inquiry + 271 eligibility response
     -> member_coverage aggregate versions
 ```
 
-The aggregate should be member-centric and temporal. 834 contributes enrollment
+The aggregate is member-centric and temporal. 834 contributes enrollment
 or roster truth over time. 270 records the eligibility question that was asked.
 271 records the payer answer at a point in time, including service type and
 benefit details when present.
 
-`member_coverage` should keep source locators and distinguish effective dates,
+`member_coverage` keeps source locators and distinguishes effective dates,
 termination dates, inquiry dates, and response/as-of dates. Claim workflows can
 consult it by member token, payer token, service date, and service type, while
 claim aggregates stay focused on charges, 837 submissions, and 835 remittances.
@@ -68,9 +68,10 @@ Current proof of concept:
 
 - Journal: immutable binary evidence stream
 - PHI vault: separate resolver for `namespace + token -> raw`
-- Coverage/member context events from 834 enrollment and 270/271 eligibility
+- Coverage/member aggregate snapshots from 834 enrollment and 270/271 eligibility
 - Indexes: claim, payer control, encounter, and event locator lookup
-- Aggregate snapshot store: versioned claim state plus latest claim state
+- Aggregate snapshot store: versioned claim and member coverage state plus latest
+  snapshots
 - Notification outbox: durable, non-PHI aggregate version facts for downstream
   systems
 

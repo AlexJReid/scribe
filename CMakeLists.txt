@@ -25,6 +25,7 @@ target_include_directories(yyjson PUBLIC third_party/yyjson)
 add_library(scribe_core
     src/aggregate_stitcher.c
     src/balance_projector.c
+    src/coverage_stitcher.c
     src/event_writer.c
     src/journal.c
     src/journal_builder.c

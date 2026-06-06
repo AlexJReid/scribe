@@ -34,6 +34,7 @@ running with `--include-phi` or when reading a PHI-resolved store.
 | `EncounterBalanceProjected` | Derived balance projection from `balance_projector.c` | Encounter-level ledger projection: claims, service lines, billed amounts, payer payments, contractual adjustments, patient responsibility, and current balance totals. |
 | `EncounterObserved` | Local charge NDJSON via `journal_builder.c` | Encounter seed/context: encounter id, tokenised patient id, and synthetic flag when present. |
 | `HealthCoverageObserved` | X12 834 `HD` via `x12_mapper_834.c` | Member health coverage detail: maintenance type, insurance line, plan coverage description, coverage level, and raw HD elements. |
+| `MemberCoverageUpdated` | Derived aggregate snapshot from `coverage_stitcher.c` | Versioned member coverage state: member keys, optional PHI-resolved identifiers, enrollment dates, health coverage, eligibility service requests, benefit responses, source lineage, and lookup keys for member, payer, service type, and coverage dates. |
 | `MemberEnrollmentChanged` | X12 834 `INS` via `x12_mapper_834.c` | Enrollment state/change facts: relationship code, maintenance type, benefit status, and raw INS elements. |
 | `MemberReferenced` | X12 834 `NM1*IL` via `x12_mapper_834.c` | Member identity reference: entity type, id qualifier, tokenised member id, and optional PHI name. |
 | `PatientPaymentObserved` | Local charge/payment NDJSON via `journal_builder.c` | Patient payment context consumed by balance projection: encounter/claim/line keys and amount. |
@@ -47,4 +48,3 @@ running with `--include-phi` or when reading a PHI-resolved store.
 | `RemittancePartyReferenced` | X12 835 `N1` via `x12_mapper_835.c` | Remittance payer/payee party: entity code, optional PHI name, id qualifier, and tokenised payer/provider id. |
 | `RemittanceServiceLinePaymentObserved` | X12 835 `SVC` via `x12_mapper_835.c` | Adjudicated service line: procedure qualifier/code, charge amount, paid amount, paid unit count, claim id, and line number. |
 | `WriteoffObserved` | Local adjustment NDJSON via `journal_builder.c` | Provider writeoff context consumed by balance projection: encounter/claim/line keys and amount. |
-
