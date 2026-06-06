@@ -538,6 +538,7 @@ static int test_stroke_balance_projection_from_journal(void)
     char aggregate_path[512];
     char nonphi_aggregate_path[512];
     char resolved_phi_aggregate_path[512];
+    char notification_path[512];
     char nonphi_read_store_path[512];
     char nonphi_read_store_wal_path[560];
     char nonphi_read_store_shm_path[560];
@@ -550,6 +551,7 @@ static int test_stroke_balance_projection_from_journal(void)
     char phi_vault_wal_path[560];
     char phi_vault_shm_path[560];
     char aggregates[320000];
+    char notifications[96000];
     char latest_aggregate[65536];
     char projection[96000];
     char resolved[256];
@@ -580,6 +582,7 @@ static int test_stroke_balance_projection_from_journal(void)
     REQUIRE(make_path(aggregate_path, sizeof(aggregate_path), TEST_OUTPUT_DIR, "stroke_claim_aggregates.ndjson") == 0);
     REQUIRE(make_path(nonphi_aggregate_path, sizeof(nonphi_aggregate_path), TEST_OUTPUT_DIR, "stroke_claim_aggregates_nonphi.ndjson") == 0);
     REQUIRE(make_path(resolved_phi_aggregate_path, sizeof(resolved_phi_aggregate_path), TEST_OUTPUT_DIR, "stroke_claim_aggregates_resolved_phi.ndjson") == 0);
+    REQUIRE(make_path(notification_path, sizeof(notification_path), TEST_OUTPUT_DIR, "stroke_notifications.ndjson") == 0);
     REQUIRE(make_path(nonphi_read_store_path, sizeof(nonphi_read_store_path), TEST_OUTPUT_DIR, "stroke_read_store_nonphi.sqlite") == 0);
     REQUIRE(make_path(resolved_phi_read_store_path, sizeof(resolved_phi_read_store_path), TEST_OUTPUT_DIR, "stroke_read_store_resolved_phi.sqlite") == 0);
     REQUIRE(make_path(projection_path, sizeof(projection_path), TEST_OUTPUT_DIR, "stroke_balance_projection.json") == 0);
@@ -594,6 +597,7 @@ static int test_stroke_balance_projection_from_journal(void)
 
     journal_builder_input_init(&journal_input);
     journal_input.include_phi = 1;
+    journal_input.run_id = "ingest-test-run";
     REQUIRE(journal_builder_input_add_charges(&journal_input, charges_path) == X12_OK);
     REQUIRE(journal_builder_input_add_837(&journal_input, facility_837_path) == X12_OK);
     REQUIRE(journal_builder_input_add_837(&journal_input, professional_837_path) == X12_OK);
@@ -608,13 +612,34 @@ static int test_stroke_balance_projection_from_journal(void)
     aggregate_stitcher_input_init(&stitch_input);
     stitch_input.journal_path = journal_path;
     stitch_input.out_path = aggregate_path;
+    stitch_input.notify_out_path = notification_path;
     stitch_input.encounter_id = "ENC-SYN-STROKE-001";
     stitch_input.include_phi = 1;
+    stitch_input.run_id = "stitch-test-run";
     REQUIRE(aggregate_stitcher_stitch(&stitch_input) == X12_OK);
     REQUIRE(read_file_text(aggregate_path, aggregates, sizeof(aggregates)) == 0);
+    REQUIRE(read_file_text(notification_path, notifications, sizeof(notifications)) == 0);
 
     REQUIRE(strstr(aggregates, "\"event_type\":\"ClaimAggregateUpdated\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"run_id\":\"stitch-test-run\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"source_run_id\":\"ingest-test-run\"") != NULL);
     REQUIRE(count_substring(aggregates, "\"event_type\":\"ClaimAggregateUpdated\"") == 12u);
+    REQUIRE(strstr(notifications, "\"event_type\":\"AggregateVersionRecorded\"") != NULL);
+    REQUIRE(strstr(notifications, "\"ok\":true") != NULL);
+    REQUIRE(count_substring(notifications, "\"event_type\":\"AggregateVersionRecorded\"") == 12u);
+    REQUIRE(strstr(notifications, "\"run_id\":\"stitch-test-run\"") != NULL);
+    REQUIRE(strstr(notifications, "\"source_run_id\":\"ingest-test-run\"") != NULL);
+    REQUIRE(strstr(notifications, "\"notification_id\":\"claim:8259c238232f9585e95fc8f45b0bb410:3\"") != NULL);
+    REQUIRE(strstr(notifications, "\"aggregate_id\":\"claim:8259c238232f9585e95fc8f45b0bb410\"") != NULL);
+    REQUIRE(strstr(notifications, "\"version\":3") != NULL);
+    REQUIRE(strstr(notifications, "\"updated_by_journal_offset\"") != NULL);
+    REQUIRE(strstr(notifications, "\"updated_by_journal_length\"") != NULL);
+    REQUIRE(strstr(notifications, "CLM-STROKE") == NULL);
+    REQUIRE(strstr(notifications, "PAYER-STROKE") == NULL);
+    REQUIRE(strstr(notifications, "PAT-STROKE") == NULL);
+    REQUIRE(strstr(notifications, "SUB-STROKE") == NULL);
+    REQUIRE(strstr(notifications, "REID") == NULL);
+    REQUIRE(strstr(notifications, "ALEX") == NULL);
     REQUIRE(strstr(aggregates, "\"aggregate_type\":\"claim\"") != NULL);
     REQUIRE(strstr(aggregates, "\"aggregate_id\":\"claim:8259c238232f9585e95fc8f45b0bb410\"") != NULL);
     REQUIRE(strstr(aggregates, "\"claim_id\":\"CLM-STROKE-RAD-FAC-001\"") != NULL);

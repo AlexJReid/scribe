@@ -93,7 +93,8 @@ static const journal_key_def_t journal_keys[] = {
     {"update_scope", 76u},
     {"source_drop_id", 77u},
     {"claim_id_raw", 78u},
-    {"payer_claim_control_number_raw", 79u}
+    {"payer_claim_control_number_raw", 79u},
+    {"run_id", 80u}
 };
 
 static unsigned short key_id_for_name(const char *name)

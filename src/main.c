@@ -4,6 +4,7 @@
 #include "journal_builder.h"
 #include "phi_vault.h"
 #include "projection.h"
+#include "run_id.h"
 #include "x12_mapper_834.h"
 #include "x12_mapper_835.h"
 #include "x12_mapper_837.h"
@@ -16,12 +17,12 @@ static void usage(FILE *fp)
 {
     fputs(
         "usage:\n"
-        "  scribe parse --type 837 input.edi [--out events.ndjson] [--include-phi]\n"
-        "  scribe parse --type 835 input.edi [--out events.ndjson] [--include-phi]\n"
-        "  scribe parse --type 834 input.edi [--out events.ndjson] [--include-phi]\n"
-        "  scribe journal --out journal.scribe [--charges charges.ndjson] [--837 claim.edi] [--835 remit.edi] [--phi-vault phi.sqlite] [--include-phi]\n"
+        "  scribe parse --type 837 input.edi [--out events.ndjson] [--include-phi] [--run-id id]\n"
+        "  scribe parse --type 835 input.edi [--out events.ndjson] [--include-phi] [--run-id id]\n"
+        "  scribe parse --type 834 input.edi [--out events.ndjson] [--include-phi] [--run-id id]\n"
+        "  scribe journal --out journal.scribe [--charges charges.ndjson] [--837 claim.edi] [--835 remit.edi] [--phi-vault phi.sqlite] [--include-phi] [--run-id id]\n"
         "  scribe vault-resolve --phi-vault phi.sqlite --namespace ns --token token [--actor user] [--purpose reason]\n"
-        "  scribe stitch --journal journal.scribe [--encounter-id id] [--read-store store.sqlite] [--phi-vault phi.sqlite] [--out aggregates.ndjson] [--include-phi]\n"
+        "  scribe stitch --journal journal.scribe [--encounter-id id] [--read-store store.sqlite] [--phi-vault phi.sqlite] [--out aggregates.ndjson] [--notify-out notifications.ndjson] [--include-phi] [--run-id id]\n"
         "  scribe project --projection balance --journal journal.scribe [--encounter-id id] [--out balance.json] [--include-phi]\n"
         "  scribe project-balance --journal journal.scribe [--encounter-id id] [--out balance.json] [--include-phi]\n"
         "  scribe dump input.edi\n"
@@ -73,13 +74,24 @@ static int run_parse(
     const char *type,
     const char *input_path,
     const char *out_path,
-    int include_phi
+    int include_phi,
+    const char *run_id
 )
 {
     x12_document_t doc;
     event_writer_t writer;
+    char generated_run_id[96];
     int rc;
     int close_rc;
+
+    if (run_id == NULL || run_id[0] == '\0') {
+        rc = scribe_run_id_generate(generated_run_id, sizeof(generated_run_id));
+        if (rc != X12_OK) {
+            fprintf(stderr, "run id: %s\n", x12_error_message(rc));
+            return 1;
+        }
+        run_id = generated_run_id;
+    }
 
     rc = x12_document_load(input_path, &doc);
     if (rc != X12_OK) {
@@ -94,6 +106,7 @@ static int run_parse(
         return 1;
     }
     event_writer_set_include_phi(&writer, include_phi);
+    event_writer_set_run_id(&writer, run_id);
 
     if (strcmp(type, "837") == 0) {
         rc = x12_map_837_document(&doc, &writer);
@@ -125,6 +138,7 @@ static int parse_command(int argc, char **argv)
     const char *type = NULL;
     const char *input_path = NULL;
     const char *out_path = "-";
+    const char *run_id = NULL;
     int include_phi = 0;
     int i;
 
@@ -141,6 +155,11 @@ static int parse_command(int argc, char **argv)
             out_path = argv[++i];
         } else if (strcmp(argv[i], "--include-phi") == 0) {
             include_phi = 1;
+        } else if (strcmp(argv[i], "--run-id") == 0) {
+            if (i + 1 >= argc) {
+                return -1;
+            }
+            run_id = argv[++i];
         } else if (input_path == NULL) {
             input_path = argv[i];
         } else {
@@ -152,7 +171,7 @@ static int parse_command(int argc, char **argv)
         return -1;
     }
 
-    return run_parse(type, input_path, out_path, include_phi);
+    return run_parse(type, input_path, out_path, include_phi, run_id);
 }
 
 static int journal_command(int argc, char **argv)

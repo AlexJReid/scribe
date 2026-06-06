@@ -52,6 +52,7 @@ int event_writer_open(
     memset(writer, 0, sizeof(*writer));
     writer->source_file = source_file;
     writer->source_transaction = source_transaction;
+    writer->run_id = NULL;
     writer->isa13 = empty_str();
     writer->gs06 = empty_str();
     writer->st02 = empty_str();
@@ -93,6 +94,7 @@ int event_writer_open_stream(
     writer->owns_file = 0;
     writer->source_file = source_file;
     writer->source_transaction = source_transaction;
+    writer->run_id = NULL;
     writer->isa13 = empty_str();
     writer->gs06 = empty_str();
     writer->st02 = empty_str();
@@ -122,6 +124,15 @@ int event_writer_include_phi(const event_writer_t *writer)
     }
 
     return writer->include_phi;
+}
+
+void event_writer_set_run_id(event_writer_t *writer, const char *run_id)
+{
+    if (writer == NULL) {
+        return;
+    }
+
+    writer->run_id = run_id;
 }
 
 int event_writer_set_binary_journal(event_writer_t *writer, int binary_journal)
@@ -439,6 +450,9 @@ int event_writer_begin_event(
                 writer->source_transaction
             );
         }
+        if (rc == X12_OK && writer->run_id != NULL && writer->run_id[0] != '\0') {
+            rc = journal_record_add_cstring(&writer->journal_record, "run_id", writer->run_id);
+        }
         if (rc == X12_OK) {
             rc = journal_record_add_u64(
                 &writer->journal_record,
@@ -503,6 +517,14 @@ int event_writer_begin_event(
     }
     if (event_writer_write_cstring(fp, writer->source_transaction) != X12_OK) {
         return X12_ERR_IO;
+    }
+    if (writer->run_id != NULL && writer->run_id[0] != '\0') {
+        if (fputs(",\"run_id\":", fp) == EOF) {
+            return X12_ERR_IO;
+        }
+        if (event_writer_write_cstring(fp, writer->run_id) != X12_OK) {
+            return X12_ERR_IO;
+        }
     }
     if (fprintf(
             fp,

@@ -32,6 +32,7 @@ add_library(scribe_core
     src/json_write.c
     src/phi_vault.c
     src/projection.c
+    src/run_id.c
     src/store.c
     src/tokenise_stub.c
     src/x12_mapper_834.c

@@ -4,6 +4,7 @@
 #include "journal.h"
 #include "json_scan.h"
 #include "phi_vault.h"
+#include "run_id.h"
 #include "tokenise.h"
 #include "x12_mapper_835.h"
 #include "x12_mapper_837.h"
@@ -276,6 +277,7 @@ static int append_charges_file(
     FILE *fp,
     const char *path,
     int include_phi,
+    const char *run_id,
     phi_vault_t *phi_vault
 )
 {
@@ -291,6 +293,7 @@ static int append_charges_file(
         return rc;
     }
     event_writer_set_include_phi(&writer, include_phi);
+    event_writer_set_run_id(&writer, run_id);
     rc = event_writer_set_binary_journal(&writer, 1);
     if (rc != X12_OK) {
         (void)event_writer_close(&writer);
@@ -337,6 +340,7 @@ static int append_x12_file(
     const char *path,
     const char *type,
     int include_phi,
+    const char *run_id,
     phi_vault_t *phi_vault
 )
 {
@@ -355,6 +359,7 @@ static int append_x12_file(
         return rc;
     }
     event_writer_set_include_phi(&writer, include_phi);
+    event_writer_set_run_id(&writer, run_id);
     rc = event_writer_set_binary_journal(&writer, 1);
     if (rc != X12_OK) {
         (void)event_writer_close(&writer);
@@ -389,12 +394,23 @@ int journal_builder_build(
     FILE *fp;
     phi_vault_t phi_vault;
     phi_vault_t *phi_vault_ptr = NULL;
+    char generated_run_id[96];
+    const char *run_id;
     size_t i;
     int rc = X12_OK;
     int owns_file = 0;
 
     if (input == NULL || out_path == NULL || strcmp(out_path, "-") == 0) {
         return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    run_id = input->run_id;
+    if (run_id == NULL || run_id[0] == '\0') {
+        rc = scribe_run_id_generate(generated_run_id, sizeof(generated_run_id));
+        if (rc != X12_OK) {
+            return rc;
+        }
+        run_id = generated_run_id;
     }
 
     fp = fopen(out_path, "wb");
@@ -428,14 +444,29 @@ int journal_builder_build(
             fp,
             input->charges_paths[i],
             input->include_phi,
+            run_id,
             phi_vault_ptr
         );
     }
     for (i = 0u; i < input->x837_count && rc == X12_OK; i++) {
-        rc = append_x12_file(fp, input->x837_paths[i], "837", input->include_phi, phi_vault_ptr);
+        rc = append_x12_file(
+            fp,
+            input->x837_paths[i],
+            "837",
+            input->include_phi,
+            run_id,
+            phi_vault_ptr
+        );
     }
     for (i = 0u; i < input->x835_count && rc == X12_OK; i++) {
-        rc = append_x12_file(fp, input->x835_paths[i], "835", input->include_phi, phi_vault_ptr);
+        rc = append_x12_file(
+            fp,
+            input->x835_paths[i],
+            "835",
+            input->include_phi,
+            run_id,
+            phi_vault_ptr
+        );
     }
 
     if (phi_vault_ptr != NULL) {
@@ -490,6 +521,11 @@ int journal_builder_run_cli(int argc, char **argv)
                 return -1;
             }
             input.phi_vault_path = argv[++i];
+        } else if (strcmp(argv[i], "--run-id") == 0) {
+            if (i + 1 >= argc) {
+                return -1;
+            }
+            input.run_id = argv[++i];
         } else {
             return -1;
         }

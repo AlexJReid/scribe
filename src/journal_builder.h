@@ -16,6 +16,7 @@ typedef struct {
     size_t x835_count;
     int include_phi;
     const char *phi_vault_path;
+    const char *run_id;
 } journal_builder_input_t;
 
 void journal_builder_input_init(journal_builder_input_t *input);

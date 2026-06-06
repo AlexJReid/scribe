@@ -14,8 +14,8 @@ path, with raw values held separately in a PHI vault.
 
 The stroke case study uses synthesized PHI-looking data. It is inspired by the
 broad shape of a stroke-related episode I had in the UK, outside the US
-healthcare system; the names, IDs, payer details, dates, amounts, and EDI
-content are invented.
+healthcare system; the encounter is mocked up, and the names, IDs, payer
+details, dates, amounts, and EDI content are invented.
 
 ## 837/835
 
@@ -47,6 +47,8 @@ Current proof of concept:
 - PHI vault: separate resolver for `namespace + token -> raw`
 - Indexes: claim, payer control, encounter, and event locator lookup
 - Aggregate snapshot store: versioned claim state plus latest claim state
+- Notification outbox: durable, non-PHI aggregate version facts for downstream
+  systems
 
 SQLite backs the vault, indexes, and snapshots in this proof of concept. It is
 standing in for a managed database or document store.
@@ -71,7 +73,8 @@ flowchart LR
     events["events<br/>locator only"]
     versions["claim_aggregate_versions"]
     latest["claim_aggregate_latest"]
-    notify["AggregateVersionRecorded<br/>topic / webhook / cursor"]
+    outbox["notification outbox<br/>AggregateVersionRecorded"]
+    notify["notifier<br/>topic / webhook / cursor"]
     subscribers["subscribed systems<br/>balance / timelines / work queues / analytics"]
 
     journal --> store
@@ -79,9 +82,49 @@ flowchart LR
     store --> events
     store --> versions
     versions --> latest
-    latest --> notify
+    versions --> outbox
+    outbox --> notify
     notify --> subscribers
 ```
+
+## Runs and notifications
+
+Each execution should have a `run_id`. The journal should carry it on every
+event produced by that run so later scans can tie a claim aggregate version back
+to the ingest/stitch execution that caused it. The run id is operational
+metadata, not a PHI field.
+
+Notification delivery is separate from aggregate construction. Stitching writes
+durable aggregate versions and may write a small JSON outbox fact such as
+`AggregateVersionRecorded`; a notifier process then scans from its last file
+offset, read-store cursor, or outbox row and sends downstream notifications.
+The JSON outbox is derived/replayable and non-PHI; the source evidence remains
+the binary journal.
+
+The notification payload should stay small and tokenised:
+
+```json
+{
+  "event_type": "AggregateVersionRecorded",
+  "ok": true,
+  "notification_id": "claim:8259c238232f9585e95fc8f45b0bb410:3",
+  "run_id": "stroke-stitch-demo",
+  "source_run_id": "stroke-ingest-demo",
+  "aggregate_type": "claim",
+  "aggregate_id": "claim:8259c238232f9585e95fc8f45b0bb410",
+  "version": 3,
+  "source_drop_id": "835:6",
+  "updated_by_event_id": 128,
+  "updated_by_event_type": "RemittanceDateRecorded",
+  "updated_by_journal_offset": 8172,
+  "updated_by_journal_length": 612
+}
+```
+
+Downstream systems should use `(aggregate_id, version)` as an idempotency key.
+Delivery retries, webhook failures, subscriber offsets, and dead-letter handling
+belong to the notifier, not the stitcher. The stitcher owns the fact that a new
+aggregate version exists; the notifier owns transport.
 
 ## Why
 
@@ -94,7 +137,8 @@ flowchart LR
   different matching inputs
 - Journal reductions can answer state as of T
 - Pre-calculated claim snapshots are one read for consuming apps
-- New versions can emit a small "new version exists" signal for subscribers
+- New versions create a durable "new version exists" signal for subscribers,
+  then a separate notifier delivers it from a cursor
 - SQLite stays a compact stand-in for read stores and vaults
 
 ## PHI
@@ -133,8 +177,8 @@ through the vault. Normal developer stores should stay tokenised.
 
 Synthetic PHI view. The care pattern is inspired by a UK, non-US healthcare
 episode I had, but the patient, identifiers, payer details, dates, amounts, and
-EDI content are invented. This is a balance projection over the journal, not a
-single `claim_aggregate_latest` row.
+EDI content are invented and the encounter is mocked up. This is a balance
+projection over the journal, not a single `claim_aggregate_latest` row.
 
 ```text
 Encounter: ENC-SYN-STROKE-001

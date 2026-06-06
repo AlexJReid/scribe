@@ -13,6 +13,7 @@ typedef struct {
     int owns_file;
     const char *source_file;
     const char *source_transaction;
+    const char *run_id;
     x12_str_t isa13;
     x12_str_t gs06;
     x12_str_t st02;
@@ -42,6 +43,7 @@ int event_writer_close(event_writer_t *writer);
 
 void event_writer_set_include_phi(event_writer_t *writer, int include_phi);
 int event_writer_include_phi(const event_writer_t *writer);
+void event_writer_set_run_id(event_writer_t *writer, const char *run_id);
 int event_writer_set_binary_journal(event_writer_t *writer, int binary_journal);
 void event_writer_set_phi_vault(
     event_writer_t *writer,

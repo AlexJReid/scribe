@@ -66,11 +66,13 @@ ctest --test-dir build --output-on-failure
 - `demo/stroke_phi_vault.sqlite`
 - `demo/stroke_read_store.sqlite`
 - `demo/stroke_aggregates.ndjson`
+- `demo/stroke_notifications.ndjson`
 
 Regenerate the journal and PHI vault:
 
 ```sh
 build/scribe journal --out demo/stroke.journal \
+  --run-id stroke-ingest-demo \
   --phi-vault demo/stroke_phi_vault.sqlite \
   --charges tests/fixtures/stroke_encounter/charge_transactions.ndjson \
   --837 tests/fixtures/stroke_encounter/facility_837.edi \
@@ -90,8 +92,15 @@ build/scribe stitch \
   --journal demo/stroke.journal \
   --encounter-id ENC-SYN-STROKE-001 \
   --read-store demo/stroke_read_store.sqlite \
+  --notify-out demo/stroke_notifications.ndjson \
+  --run-id stroke-stitch-demo \
   --out demo/stroke_aggregates.ndjson
 ```
+
+`stroke_notifications.ndjson` contains non-PHI `AggregateVersionRecorded`
+records for downstream delivery. Treat it as a derived JSON outbox/debug hook:
+a notifier can scan it from its last offset and use `(aggregate_id, version)`
+for idempotency. The binary journal remains the source evidence.
 
 Create a PHI-containing read store only when needed:
 

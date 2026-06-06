@@ -4,6 +4,7 @@
 #include "journal.h"
 #include "json_write.h"
 #include "phi_vault.h"
+#include "run_id.h"
 #include "store.h"
 #include "tokenise.h"
 
@@ -103,7 +104,10 @@ typedef struct {
     size_t first_source_event_index;
     size_t source_event_count;
     size_t updated_by_event_id;
+    long long updated_by_journal_offset;
+    long long updated_by_journal_length;
     char updated_by_event_type[96];
+    char source_run_id[STITCH_ID_MAX];
 } stitch_update_batch_t;
 
 typedef struct {
@@ -123,10 +127,13 @@ typedef struct {
     size_t encounter_context_count;
     char current_drop_key[STITCH_FINGERPRINT_MAX];
     char current_source_drop_id[STITCH_VALUE_MAX];
+    char current_source_run_id[STITCH_ID_MAX];
     size_t source_drop_count;
+    char run_id[STITCH_ID_MAX];
     char encounter_filter[STITCH_ID_MAX];
     int include_phi;
     FILE *out;
+    FILE *notify_out;
     scribe_store_t *read_store;
     phi_vault_t *phi_vault;
 } stitch_state_t;
@@ -1632,6 +1639,12 @@ static int build_snapshot_doc(
 
     root = json_writer_root(writer);
     rc = json_writer_add_string(writer, root, "event_type", "ClaimAggregateUpdated");
+    if (rc == X12_OK && state->run_id[0] != '\0') {
+        rc = json_writer_add_string(writer, root, "run_id", state->run_id);
+    }
+    if (rc == X12_OK && batch->source_run_id[0] != '\0') {
+        rc = json_writer_add_string(writer, root, "source_run_id", batch->source_run_id);
+    }
     if (rc == X12_OK) {
         rc = json_writer_add_string(writer, root, "aggregate_type", "claim");
     }
@@ -1970,6 +1983,103 @@ static int persist_snapshot_to_read_store(
     return rc;
 }
 
+static int write_notification(
+    stitch_state_t *state,
+    const stitch_update_batch_t *batch,
+    const char *aggregate_id
+)
+{
+    json_writer_t writer = {0};
+    yyjson_mut_val *root;
+    char notification_id[STITCH_ID_MAX + 64u];
+    int written;
+    int rc;
+
+    if (state == NULL || batch == NULL || batch->aggregate == NULL ||
+        aggregate_id == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+    if (state->notify_out == NULL) {
+        return X12_OK;
+    }
+
+    written = snprintf(
+        notification_id,
+        sizeof(notification_id),
+        "%s:%zu",
+        aggregate_id,
+        batch->aggregate->version
+    );
+    if (written < 0 || (size_t)written >= sizeof(notification_id)) {
+        return X12_ERR_BUFFER_TOO_SMALL;
+    }
+
+    rc = json_writer_init_object(&writer);
+    if (rc != X12_OK) {
+        return rc;
+    }
+    root = json_writer_root(&writer);
+
+    rc = json_writer_add_string(&writer, root, "event_type", "AggregateVersionRecorded");
+    if (rc == X12_OK) {
+        rc = json_writer_add_bool(&writer, root, "ok", 1);
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(&writer, root, "notification_id", notification_id);
+    }
+    if (rc == X12_OK && state->run_id[0] != '\0') {
+        rc = json_writer_add_string(&writer, root, "run_id", state->run_id);
+    }
+    if (rc == X12_OK && batch->source_run_id[0] != '\0') {
+        rc = json_writer_add_string(&writer, root, "source_run_id", batch->source_run_id);
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(&writer, root, "aggregate_type", "claim");
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(&writer, root, "aggregate_id", aggregate_id);
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_size(&writer, root, "version", batch->aggregate->version);
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(&writer, root, "source_drop_id", batch->source_drop_id);
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_size(&writer, root, "updated_by_event_id", batch->updated_by_event_id);
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(
+            &writer,
+            root,
+            "updated_by_event_type",
+            batch->updated_by_event_type
+        );
+    }
+    if (rc == X12_OK && batch->updated_by_journal_offset >= 0) {
+        rc = json_writer_add_size(
+            &writer,
+            root,
+            "updated_by_journal_offset",
+            (size_t)batch->updated_by_journal_offset
+        );
+    }
+    if (rc == X12_OK && batch->updated_by_journal_length >= 0) {
+        rc = json_writer_add_size(
+            &writer,
+            root,
+            "updated_by_journal_length",
+            (size_t)batch->updated_by_journal_length
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_write_fp(&writer, state->notify_out, 1);
+    }
+    json_writer_free(&writer);
+
+    return rc;
+}
+
 static int write_snapshot(
     stitch_state_t *state,
     const stitch_update_batch_t *batch
@@ -2011,7 +2121,30 @@ static int write_snapshot(
         return rc;
     }
 
-    return persist_snapshot_to_read_store(state, batch, aggregate_id);
+    rc = persist_snapshot_to_read_store(state, batch, aggregate_id);
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    return write_notification(state, batch, aggregate_id);
+}
+
+static void capture_current_source_run_id(
+    stitch_state_t *state,
+    const journal_event_t *journal_line
+)
+{
+    if (state == NULL || journal_line == NULL) {
+        return;
+    }
+
+    state->current_source_run_id[0] = '\0';
+    (void)json_get_string(
+        journal_line,
+        "run_id",
+        state->current_source_run_id,
+        sizeof(state->current_source_run_id)
+    );
 }
 
 static int record_batch_update(
@@ -2019,6 +2152,8 @@ static int record_batch_update(
     claim_aggregate_t *aggregate,
     const char *drop_key,
     size_t event_id,
+    long long journal_offset,
+    long long journal_length,
     const char *event_type,
     const char *fingerprint
 )
@@ -2052,6 +2187,7 @@ static int record_batch_update(
         batch->aggregate = aggregate;
         copy_cstr(batch->drop_key, sizeof(batch->drop_key), drop_key);
         copy_cstr(batch->source_drop_id, sizeof(batch->source_drop_id), state->current_source_drop_id);
+        copy_cstr(batch->source_run_id, sizeof(batch->source_run_id), state->current_source_run_id);
         batch->first_source_event_index = aggregate->source_event_count;
         aggregate->version++;
         is_new_batch = 1;
@@ -2068,7 +2204,12 @@ static int record_batch_update(
 
     batch->source_event_count++;
     batch->updated_by_event_id = event_id;
+    batch->updated_by_journal_offset = journal_offset;
+    batch->updated_by_journal_length = journal_length;
     copy_cstr(batch->updated_by_event_type, sizeof(batch->updated_by_event_type), event_type);
+    if (state->current_source_run_id[0] != '\0') {
+        copy_cstr(batch->source_run_id, sizeof(batch->source_run_id), state->current_source_run_id);
+    }
 
     return X12_OK;
 }
@@ -2316,6 +2457,8 @@ static int apply_claim_event(
     stitch_state_t *state,
     const journal_event_t *journal_line,
     size_t event_id,
+    long long journal_offset,
+    long long journal_length,
     const char *drop_key
 )
 {
@@ -2467,7 +2610,16 @@ static int apply_claim_event(
         return X12_OK;
     }
 
-    return record_batch_update(state, aggregate, drop_key, event_id, event_type, fingerprint);
+    return record_batch_update(
+        state,
+        aggregate,
+        drop_key,
+        event_id,
+        journal_offset,
+        journal_length,
+        event_type,
+        fingerprint
+    );
 }
 
 static int discover_encounter_claim(
@@ -2569,14 +2721,21 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
     journal_reader_t journal;
     journal_event_t record;
     FILE *out;
+    FILE *notify_out = NULL;
     char drop_key[STITCH_FINGERPRINT_MAX];
+    char generated_run_id[96];
     size_t event_id = 0u;
     int owns_out = 0;
+    int owns_notify_out = 0;
     int owns_read_store = 0;
     int owns_phi_vault = 0;
     int rc = X12_OK;
 
     if (input == NULL || input->journal_path == NULL || input->out_path == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+    if (input->notify_out_path != NULL &&
+        strcmp(input->out_path, input->notify_out_path) == 0) {
         return X12_ERR_INVALID_ARGUMENT;
     }
 
@@ -2597,17 +2756,54 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
         return X12_ERR_IO;
     }
 
+    if (input->notify_out_path != NULL) {
+        if (strcmp(input->notify_out_path, "-") == 0) {
+            notify_out = stdout;
+        } else {
+            notify_out = fopen(input->notify_out_path, "wb");
+            owns_notify_out = 1;
+        }
+        if (notify_out == NULL) {
+            (void)journal_reader_close(&journal);
+            if (owns_out) {
+                (void)fclose(out);
+            }
+            return X12_ERR_IO;
+        }
+    }
+
     state = (stitch_state_t *)calloc(1u, sizeof(*state));
     if (state == NULL) {
         (void)journal_reader_close(&journal);
         if (owns_out) {
             (void)fclose(out);
         }
+        if (owns_notify_out) {
+            (void)fclose(notify_out);
+        }
         return X12_ERR_NO_MEMORY;
     }
 
     state->out = out;
+    state->notify_out = notify_out;
     state->include_phi = input->include_phi;
+    if (input->run_id != NULL && input->run_id[0] != '\0') {
+        copy_cstr(state->run_id, sizeof(state->run_id), input->run_id);
+    } else {
+        rc = scribe_run_id_generate(generated_run_id, sizeof(generated_run_id));
+        if (rc != X12_OK) {
+            (void)journal_reader_close(&journal);
+            if (owns_out) {
+                (void)fclose(out);
+            }
+            if (owns_notify_out) {
+                (void)fclose(notify_out);
+            }
+            free(state);
+            return rc;
+        }
+        copy_cstr(state->run_id, sizeof(state->run_id), generated_run_id);
+    }
     if (input->phi_vault_path != NULL) {
         phi_vault_init(&phi_vault);
         rc = phi_vault_open(&phi_vault, input->phi_vault_path);
@@ -2619,6 +2815,9 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
             (void)journal_reader_close(&journal);
             if (owns_out) {
                 (void)fclose(out);
+            }
+            if (owns_notify_out) {
+                (void)fclose(notify_out);
             }
             free(state);
             return rc;
@@ -2641,6 +2840,9 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
             if (owns_out) {
                 (void)fclose(out);
             }
+            if (owns_notify_out) {
+                (void)fclose(notify_out);
+            }
             if (owns_phi_vault) {
                 (void)phi_vault_close(&phi_vault);
             }
@@ -2656,6 +2858,9 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
         (void)journal_reader_close(&journal);
         if (owns_out) {
             (void)fclose(out);
+        }
+        if (owns_notify_out) {
+            (void)fclose(notify_out);
         }
         if (owns_read_store) {
             (void)scribe_store_close(&read_store);
@@ -2686,6 +2891,7 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
             if (rc != X12_OK) {
                 break;
             }
+            capture_current_source_run_id(state, &record);
         }
 
         rc = index_journal_event(
@@ -2701,7 +2907,14 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
 
         rc = capture_encounter_context(state, &record);
         if (rc == X12_OK) {
-            rc = apply_claim_event(state, &record, event_id, drop_key);
+            rc = apply_claim_event(
+                state,
+                &record,
+                event_id,
+                record.offset,
+                record.stored_len,
+                drop_key
+            );
         }
         if (rc != X12_OK) {
             break;
@@ -2718,7 +2931,13 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
     if (fflush(out) != 0 && rc == X12_OK) {
         rc = X12_ERR_IO;
     }
+    if (notify_out != NULL && fflush(notify_out) != 0 && rc == X12_OK) {
+        rc = X12_ERR_IO;
+    }
     if (owns_out && fclose(out) != 0 && rc == X12_OK) {
+        rc = X12_ERR_IO;
+    }
+    if (owns_notify_out && fclose(notify_out) != 0 && rc == X12_OK) {
         rc = X12_ERR_IO;
     }
     if (owns_read_store && scribe_store_close(&read_store) != X12_OK && rc == X12_OK) {
@@ -2756,6 +2975,11 @@ int aggregate_stitcher_run_cli(int argc, char **argv)
                 return -1;
             }
             input.read_store_path = argv[++i];
+        } else if (strcmp(argv[i], "--notify-out") == 0) {
+            if (i + 1 >= argc) {
+                return -1;
+            }
+            input.notify_out_path = argv[++i];
         } else if (strcmp(argv[i], "--phi-vault") == 0) {
             if (i + 1 >= argc) {
                 return -1;
@@ -2768,6 +2992,11 @@ int aggregate_stitcher_run_cli(int argc, char **argv)
             input.encounter_id = argv[++i];
         } else if (strcmp(argv[i], "--include-phi") == 0) {
             input.include_phi = 1;
+        } else if (strcmp(argv[i], "--run-id") == 0) {
+            if (i + 1 >= argc) {
+                return -1;
+            }
+            input.run_id = argv[++i];
         } else {
             return -1;
         }
