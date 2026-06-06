@@ -24,7 +24,18 @@ charges, submissions, and remittances.
 PHI-bearing values are tokenized before they enter the normal journal/read-store
 path, with raw values held separately in a PHI vault.
 
-[Read more](./theory.md)
+## Architecture Decisions
+
+- Use an immutable binary journal as the evidence stream, derived from .edi
+- Split PHI early: tokenised events are the default path; raw values stay in a
+  separate PHI vault
+- Store event locators, not payloads, in the read-store event index
+- Materialise versioned claim aggregates plus a latest snapshot for consumers
+- Emit lightweight notifications (no PHI payload) when an new snapshot is generated for downstream to consume
+- Use SQLite as a stand-in for the PHI vault, index, and snapshot store: a managed document DB would replace this
+
+More background on the 837/835 model, tokenisation, and PHI tradeoffs lives in
+[theory.md](theory.md).
 
 ## Case study
 
@@ -40,19 +51,6 @@ All PHI-looking values are synthesized. The case study is inspired by the broad
 shape of a stroke-related episode I had in the UK, outside the US healthcare
 system. Names, IDs, payer details, dates, amounts, and EDI content are invented
 for this proof of concept and are not real PHI.
-
-## Architecture Decisions
-
-- Use an immutable binary journal as the evidence stream, derived from .edi
-- Split PHI early: tokenised events are the default path; raw values stay in a
-  separate PHI vault
-- Store event locators, not payloads, in the read-store event index
-- Materialise versioned claim aggregates plus a latest snapshot for consumers
-- Emit lightweight notifications (no PHI payload) when an new snapshot is generated for downstream to consume
-- Use SQLite as a stand-in for the PHI vault, index, and snapshot store: a managed document DB would replace this
-
-More background on the 837/835 model, tokenisation, and PHI tradeoffs lives in
-[theory.md](theory.md).
 
 ## Stroke Demo
 
