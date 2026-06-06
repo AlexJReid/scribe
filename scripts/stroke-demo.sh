@@ -22,6 +22,7 @@ rm -f \
   demo/stroke_phi_aggregates.ndjson \
   demo/stroke_balance.json
 
+echo "importing 270, 271, 837, 835s to journal, phi enabled"
 build/scribe journal --out demo/stroke.journal \
   --run-id stroke-ingest-demo \
   --phi-vault demo/stroke_phi_vault.sqlite \
@@ -38,6 +39,7 @@ build/scribe journal --out demo/stroke.journal \
   --270 tests/fixtures/stroke_encounter/eligibility_270.edi \
   --271 tests/fixtures/stroke_encounter/eligibility_271.edi
 
+echo "stitching for single encounter"
 build/scribe stitch \
   --journal demo/stroke.journal \
   --encounter-id ENC-SYN-STROKE-001 \
@@ -46,6 +48,7 @@ build/scribe stitch \
   --run-id stroke-stitch-demo \
   --out demo/stroke_aggregates.ndjson
 
+echo "stitching again for single encounter, with phi decoded" 
 build/scribe stitch \
   --journal demo/stroke.journal \
   --encounter-id ENC-SYN-STROKE-001 \
@@ -54,7 +57,10 @@ build/scribe stitch \
   --include-phi \
   --out demo/stroke_phi_aggregates.ndjson
 
+echo "projecting balance"
 build/scribe project --projection balance \
   --journal demo/stroke.journal \
   --encounter-id ENC-SYN-STROKE-001 \
   --out demo/stroke_balance.json
+
+echo "done, see demo/ for output"
