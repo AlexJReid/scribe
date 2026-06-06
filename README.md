@@ -17,6 +17,8 @@ the journal into versioned claim aggregates and balance projections. PHI-bearing
 values are tokenized before they enter the normal journal/read-store
 path, with raw values held separately in a PHI vault.
 
+[Read more](./theory.md)
+
 ## Case study
 
 The main case study is a semi-synthetic stroke recovery encounter:
