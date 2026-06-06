@@ -54,25 +54,6 @@ for this proof of concept and are not real PHI.
 More background on the 837/835 model, tokenisation, and PHI tradeoffs lives in
 [theory.md](theory.md).
 
-## Modeling
-
-- `member_coverage` aggregate: stitches 834 enrollment changes with 270
-  eligibility inquiries and 271 eligibility responses into member-centric,
-  temporal coverage context. It stays separate from claim aggregates; claim
-  workflows can reference it by member token, payer token, service date, and
-  service type.
-
-## Build
-
-Tested on macOS; Linux should be fine. MSVC should be possible with project-file
-work.
-
-```sh
-cmake -S . -B build
-cmake --build build
-ctest --test-dir build --output-on-failure
-```
-
 ## Stroke Demo
 
 `demo/` contains generated output from the walked stroke case study:
@@ -190,6 +171,22 @@ order by aggregate_id;
 The read store tables are `event_keys`, `events`, `claim_aggregate_versions`,
 `claim_aggregate_latest`, `member_coverage_versions`,
 `member_coverage_latest`, and `member_coverage_keys`.
+
+## Build
+
+Tested on macOS; Linux should be fine. MSVC should be possible with project-file
+work.
+
+```sh
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+```sh
+./scripts/stroke-demo.sh
+```
+will also create a build if none is present.
+
 
 ## License
 
