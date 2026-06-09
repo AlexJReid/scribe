@@ -1,6 +1,6 @@
 # scribe
 
-`scribe` is a C proof of concept for parsing synthetic healthcare EDI into a
+`scribe` is a proof of concept for parsing synthetic healthcare EDI into a
 tokenised, replayable money trail.
 
 It ingests charge rows plus 834, 835, 837, and 270/271 files; writes an
@@ -21,18 +21,18 @@ Run focused checks with `build/scribe ...`.
 ## Shape
 
 - Inputs: charge NDJSON, 834 enrollment, 837 claims, 835 remits, 270/271
-  eligibility.
-- Journal: immutable binary evidence stream.
-- PHI vault: raw PHI resolver, separate from normal stores.
-- Read store: indexes, versioned aggregate snapshots, and latest rows.
-- Outputs: claim aggregates, member coverage, balances, and outbox facts.
+  eligibility
+- Journal: immutable binary evidence stream
+- PHI vault: raw PHI resolver, separate from normal stores
+- Read store: indexes, versioned aggregate snapshots, and latest rows
+- Outputs: claim aggregates, member coverage, balances, and outbox facts
 
-SQLite backs the vault and read stores in this proof of concept.
+SQLite is used as a stand-in for a managed database to back the vault and read stores in this proof of concept.
 
 ## Demo
 
-The walked synthetic stroke case lives in `tests/fixtures/stroke_encounter/`;
-generated reference output lives in `demo/`.
+The walked synthetic stroke case lives in [tests/fixtures/stroke_encounter/](./tests/fixtures/stroke_encounter/);
+generated reference output lives in [demo/](./demo).
 
 ```sh
 ./scripts/stroke-demo.sh
@@ -65,9 +65,9 @@ amounts, and EDI content are invented.
 
 ## More
 
-- `theory.md`: compact model notes.
-- `EVENTS.md`: event names.
-- `tests/fixtures/stroke_encounter/README.md`: fixture map.
+- [theory.md](./theory.md): compact model notes
+- [EVENTS.md](./EVENTS.md): event names
+- [tests/fixtures/stroke_encounter/README.md](./tests/fixtures/stroke_encounter/README.md): fixture map.
 
 ## License
 
