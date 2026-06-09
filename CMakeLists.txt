@@ -23,7 +23,6 @@ add_library(yyjson third_party/yyjson/yyjson.c)
 target_include_directories(yyjson PUBLIC third_party/yyjson)
 
 add_library(scribe_core
-    src/aggregate_stitcher.c
     src/balance_projector.c
     src/coverage_stitcher.c
     src/event_writer.c
@@ -34,6 +33,8 @@ add_library(scribe_core
     src/phi_vault.c
     src/projection.c
     src/run_id.c
+    src/stitch/claims/aggregate_stitcher.c
+    src/stitch/claims/snapshot.c
     src/store.c
     src/tokenise_stub.c
     src/x12_mapper_270_271.c
