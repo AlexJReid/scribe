@@ -23,29 +23,41 @@ add_library(yyjson third_party/yyjson/yyjson.c)
 target_include_directories(yyjson PUBLIC third_party/yyjson)
 
 add_library(scribe_core
-    src/coverage_stitcher.c
-    src/event_writer.c
-    src/journal.c
-    src/journal_builder.c
-    src/json_scan.c
-    src/json_write.c
+    src/journal/event_writer.c
+    src/journal/journal.c
+    src/journal/journal_builder.c
+    src/json/json_scan.c
+    src/json/json_write.c
     src/phi/phi_vault.c
     src/phi/tokenise.c
     src/projection/balance_projector.c
     src/projection/projection.c
     src/read_store/sqlite_store.c
-    src/run_id.c
+    src/util/run_id.c
+    src/stitch/coverage/coverage_stitcher.c
     src/stitch/claims/aggregate_stitcher.c
     src/stitch/claims/snapshot.c
-    src/x12_mapper_270_271.c
-    src/x12_mapper_834.c
-    src/x12_mapper_835.c
-    src/x12_mapper_837.c
-    src/x12_parser.c
-    src/x12_reader.c
+    src/x12/mappers/x12_mapper_270_271.c
+    src/x12/mappers/x12_mapper_834.c
+    src/x12/mappers/x12_mapper_835.c
+    src/x12/mappers/x12_mapper_837.c
+    src/x12/x12_parser.c
+    src/x12/x12_reader.c
 )
 
-target_include_directories(scribe_core PUBLIC src src/phi src/projection src/read_store)
+target_include_directories(scribe_core PUBLIC
+    src
+    src/journal
+    src/json
+    src/phi
+    src/projection
+    src/read_store
+    src/stitch/claims
+    src/stitch/coverage
+    src/util
+    src/x12
+    src/x12/mappers
+)
 target_link_libraries(scribe_core PUBLIC SQLite::SQLite3 yyjson)
 scribe_enable_warnings(scribe_core)
 
