@@ -31,7 +31,7 @@ SQLite is used as a stand-in for a managed database to back the vault and read s
 
 ## Demo
 
-The walked synthetic stroke case lives in [tests/fixtures/stroke_encounter/](./tests/fixtures/stroke_encounter/);
+The walked synthetic stroke case lives in [tests/fixtures/stroke_encounter/](./tests/fixtures/stroke_encounter/) - 
 generated reference output lives in [demo/](./demo).
 
 ```sh
@@ -61,7 +61,7 @@ controlled PHI read stores.
 
 All PHI-looking fixture values are synthesized. The stroke case study is only
 inspired by a UK, non-US healthcare episode; names, IDs, payer details, dates,
-amounts, and EDI content are invented.
+amounts, and EDI content are made up.
 
 ## More
 
