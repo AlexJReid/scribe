@@ -1,52 +1,35 @@
 # Synthetic stroke encounter fixture
 
-This directory models a synthetic encounter with multiple claims. It is not real
+Synthetic encounter `ENC-SYN-STROKE-001` models stroke evaluation and recovery:
+CT imaging, MRI, outpatient rehab, and neurology follow-up. It is not real
 patient data.
 
-Encounter:
+## Files
 
-- `encounter_id`: `ENC-SYN-STROKE-001`
-- Clinical story: stroke evaluation with CT without contrast, CT with contrast,
-  MRI brain imaging, outpatient rehab, and neurology follow-up during recovery
+- `charge_transactions.ndjson`: encounter, charge, payment, writeoff, and refund
+  rows that seed the local side of the ledger.
+- `coverage_834.edi`: synthetic member enrollment context.
+- `eligibility_270.edi`: eligibility inquiry for the service window.
+- `eligibility_271.edi`: payer eligibility response with benefit context.
+- `facility_837.edi` / `facility_835.edi`: facility imaging claim and remit.
+- `professional_837.edi` / `professional_835.edi`: radiologist claim and remit.
+- `rehab_837.edi` / `rehab_835.edi`: outpatient rehab claim and remit.
+- `neurology_837.edi` / `neurology_835.edi`: follow-up claim and remit.
+- `expected_balance_projection.json`: compact reference balance shape.
 
-Files:
+## Expectations
 
-- Coverage/member context
-  - `coverage_834.edi`: enrollment context for the synthetic member
-  - `eligibility_270.edi`: eligibility inquiry for the encounter service window
-  - `eligibility_271.edi`: payer eligibility response with benefit context
-- Facility imaging claim
-  - `facility_837.edi`: submission for the three imaging services
-  - `facility_835.edi`: payer remittance
-- Professional imaging claim
-  - `professional_837.edi`: radiologist interpretation submission
-  - `professional_835.edi`: payer remittance
-- Rehab claim
-  - `rehab_837.edi`: outpatient rehab submission
-  - `rehab_835.edi`: payer remittance
-- Neurology claim
-  - `neurology_837.edi`: follow-up submission during recovery
-  - `neurology_835.edi`: payer remittance
-- `charge_transactions.ndjson`: example upstream charge/encounter rows that a
-  future charge transaction importer could map into ledger entries. This file
-  seeds `ENC-SYN-STROKE-001` and links each synthetic claim back to that
-  encounter before the 837 and 835 files are stitched in
-- `expected_balance_projection.json`: compact reference projection shape. The
-  generated `balance` projection also includes per-line ledger entries
+- 834, 270, and 271 records journal tokenised coverage/member evidence.
+- 837 `CLM01` and 835 `CLP01` tokenise into the same `claim_id` for each claim.
+- 835 `CLP07` tokenises under `payer_claim_control_number`.
+- Service lines can match by claim ID, line number, procedure code, charge
+  amount, service date, and line order.
 
-Current parser behaviour:
+Expected encounter balance:
 
-- 834, 270, and 271 records should journal tokenised coverage/member context
-  evidence for `member_coverage` reductions
-- 837 `CLM01` and 835 `CLP01` should tokenise into the same `claim_id` value for
-  each claim
-- 835 `CLP07` should tokenise under the `payer_claim_control_number` namespace
-- Service lines can be matched by claim ID, service line number, procedure code,
-  charge amount, date, and line order
-
-Expected encounter-level balance from the 835 files:
-
-- Total billed: `3720.00`
-- Payer paid: `2340.00`
-- Contractual adjustments: `830.00`
-- Patient responsibility: `550.00`
+```text
+billed:                 3720.00
+payer paid:             2340.00
+contractual adjustment:  830.00
+patient responsibility:  550.00
+```

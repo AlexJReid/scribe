@@ -1,163 +1,47 @@
 # scribe
 
-`scribe` parses 837 claim submissions and 835 remittances into a tokenised,
-replayable claim ledger. It joins provider charge context with payer
-adjudication to produce versioned claim aggregates, balance projections, and
-auditable evidence trails.
+`scribe` is a C proof of concept for parsing synthetic healthcare EDI into a
+tokenised, replayable money trail.
 
-## What
+It ingests charge rows plus 834, 835, 837, and 270/271 files; writes an
+immutable binary journal; keeps raw PHI in a separate vault; and reduces the
+journal into claim aggregates, coverage snapshots, balance projections, and
+non-PHI notification facts.
 
-`scribe` is about joining the parts of a healthcare money trail that usually
-arrive as separate files:
-
-- provider charges: local context about work performed
-- 837 claims: provider-to-payer claim submissions
-- 835 remittances: payer-to-provider adjudication and payment detail
-
-The proof of concept turns those inputs into an immutable journal. The claim
-money trail reduces into versioned claim aggregates and balance projections.
-
-Coverage context from 834 enrollment and 270/271 eligibility files is modeled
-separately in the deeper design notes, so claim aggregates stay focused on
-charges, submissions, and remittances.
-
-PHI-bearing values are tokenized before they enter the normal journal/read-store
-path, with raw values held separately in a PHI vault.
-
-## Architecture Decisions
-
-- Use an immutable binary journal as the evidence stream, derived from .edi
-- Split PHI early: tokenised events are the default path; raw values stay in a
-  separate PHI vault
-- Store event locators, not payloads, in the read-store event index
-- Materialise versioned claim aggregates plus a latest snapshot for consumers
-- Emit lightweight notifications (no PHI payload) when an new snapshot is generated for downstream to consume
-- Use SQLite as a stand-in for the PHI vault, index, and snapshot store: a managed document DB would replace this
-
-More background on the 837/835 model, tokenisation, and PHI tradeoffs lives in
-[theory.md](theory.md).
-
-## Case study
-
-The main case study is a semi-synthetic stroke recovery encounter:
-
-- Encounter: `ENC-SYN-STROKE-001`
-- Patient: synthetic `ALEX REID`
-- Story: CT without contrast, CT with contrast, MRI, rehab, neurology follow-up
-- Fixtures: `tests/fixtures/stroke_encounter/`
-- Walked output: `demo/`
-
-All PHI-looking values are synthesized. The case study is inspired by the broad
-shape of a stroke-related episode I had in the UK, outside the US healthcare
-system. Names, IDs, payer details, dates, amounts, and EDI content are invented
-for this proof of concept and are not real PHI.
-
-## Stroke Demo
-
-`demo/` contains generated output from the walked stroke case study:
-
-- `demo/stroke.journal`
-- `demo/stroke_phi_vault.sqlite`
-- `demo/stroke_read_store.sqlite`
-- `demo/stroke_aggregates.ndjson`
-- `demo/stroke_member_coverage.ndjson`
-- `demo/stroke_phi_member_coverage.ndjson`
-- `demo/stroke_notifications.ndjson`
-
-Run the walked demo:
+## Build
 
 ```sh
-./demo.sh
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build --output-on-failure
 ```
 
-If `demo/` is missing or stale, regenerate it first:
+Run focused checks with `build/scribe ...`.
+
+## Shape
+
+- Inputs: charge NDJSON, 834 enrollment, 837 claims, 835 remits, 270/271
+  eligibility.
+- Journal: immutable binary evidence stream.
+- PHI vault: raw PHI resolver, separate from normal stores.
+- Read store: indexes, versioned aggregate snapshots, and latest rows.
+- Outputs: claim aggregates, member coverage, balances, and outbox facts.
+
+SQLite backs the vault and read stores in this proof of concept.
+
+## Demo
+
+The walked synthetic stroke case lives in `tests/fixtures/stroke_encounter/`;
+generated reference output lives in `demo/`.
 
 ```sh
 ./scripts/stroke-demo.sh
+./demo.sh
 ```
 
-Or regenerate the journal and PHI vault directly:
+Expected current encounter balance: `550.00`.
 
-```sh
-build/scribe ingest --out demo/stroke.journal \
-  --run-id stroke-ingest-demo \
-  --phi-vault demo/stroke_phi_vault.sqlite \
-  --charges tests/fixtures/stroke_encounter/charge_transactions.ndjson \
-  --837 tests/fixtures/stroke_encounter/facility_837.edi \
-  --837 tests/fixtures/stroke_encounter/professional_837.edi \
-  --837 tests/fixtures/stroke_encounter/rehab_837.edi \
-  --837 tests/fixtures/stroke_encounter/neurology_837.edi \
-  --835 tests/fixtures/stroke_encounter/facility_835.edi \
-  --835 tests/fixtures/stroke_encounter/professional_835.edi \
-  --835 tests/fixtures/stroke_encounter/rehab_835.edi \
-  --835 tests/fixtures/stroke_encounter/neurology_835.edi \
-  --834 tests/fixtures/stroke_encounter/coverage_834.edi \
-  --270 tests/fixtures/stroke_encounter/eligibility_270.edi \
-  --271 tests/fixtures/stroke_encounter/eligibility_271.edi
-```
-
-Stitch into the tokenised read store:
-
-```sh
-build/scribe stitch claims \
-  --journal demo/stroke.journal \
-  --encounter-id ENC-SYN-STROKE-001 \
-  --read-store demo/stroke_read_store.sqlite \
-  --notify-out demo/stroke_notifications.ndjson \
-  --run-id stroke-stitch-demo \
-  --out demo/stroke_aggregates.ndjson
-```
-
-`stroke_notifications.ndjson` contains non-PHI `AggregateVersionRecorded`
-records for downstream delivery. Treat it as a derived JSON outbox/debug hook:
-a notifier can scan it from its last offset and use `(aggregate_id, version)`
-for idempotency. The binary journal remains the source evidence.
-
-Reduce coverage/member context:
-
-```sh
-build/scribe stitch coverage \
-  --journal demo/stroke.journal \
-  --read-store demo/stroke_read_store.sqlite \
-  --run-id stroke-coverage-demo \
-  --out demo/stroke_member_coverage.ndjson
-```
-
-Create a PHI-containing read store only when needed:
-
-```sh
-build/scribe stitch claims \
-  --journal demo/stroke.journal \
-  --encounter-id ENC-SYN-STROKE-001 \
-  --read-store demo/stroke_phi_read_store.sqlite \
-  --phi-vault demo/stroke_phi_vault.sqlite \
-  --include-phi \
-  --out demo/stroke_phi_aggregates.ndjson
-```
-
-The coverage reducer follows the same PHI switch:
-
-```sh
-build/scribe stitch coverage \
-  --journal demo/stroke.journal \
-  --read-store demo/stroke_phi_read_store.sqlite \
-  --phi-vault demo/stroke_phi_vault.sqlite \
-  --include-phi \
-  --out demo/stroke_phi_member_coverage.ndjson
-```
-
-Project the ledger-style balance:
-
-```sh
-build/scribe project balance \
-  --journal demo/stroke.journal \
-  --encounter-id ENC-SYN-STROKE-001 \
-  --out demo/stroke_balance.json
-```
-
-Expected current balance: `550.00`.
-
-## Inspect
+Inspect the claim latest table:
 
 ```sh
 sqlite3 -header -column demo/stroke_read_store.sqlite "
@@ -166,25 +50,24 @@ from claim_aggregate_latest
 order by aggregate_id;
 "
 ```
-The read store tables are `event_keys`, `events`, `claim_aggregate_versions`,
-`claim_aggregate_latest`, `member_coverage_versions`,
-`member_coverage_latest`, and `member_coverage_keys`.
 
-## Build
+See `scripts/stroke-demo.sh` for the full ingest, stitch, coverage, PHI, and
+balance command lines.
 
-Tested on macOS; Linux should be fine. MSVC should be possible with project-file
-work.
+## Safety
 
-```sh
-cmake -S . -B build
-cmake --build build
-ctest --test-dir build --output-on-failure
-```
-```sh
-./scripts/stroke-demo.sh
-```
-will also create a build if none is present.
+Default flows stay tokenised. Use `--include-phi --phi-vault ...` only for
+controlled PHI read stores.
 
+All PHI-looking fixture values are synthesized. The stroke case study is only
+inspired by a UK, non-US healthcare episode; names, IDs, payer details, dates,
+amounts, and EDI content are invented.
+
+## More
+
+- `theory.md`: compact model notes.
+- `EVENTS.md`: event names.
+- `tests/fixtures/stroke_encounter/README.md`: fixture map.
 
 ## License
 

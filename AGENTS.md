@@ -1,12 +1,15 @@
 # Agent notes
 
-Hello agent. This project is thus:
-
-- C proof of concept for parsing 834/835/837 data into journals, PHI vaults, read stores, aggregates, and balance projections.
+- C proof of concept for parsing synthetic healthcare EDI into journals, PHI
+  vaults, read stores, aggregates, and balance projections.
 - Core code is in `src/`; tests and synthetic fixtures are in `tests/`.
-- Start with `README.md` for architecture decisions and run commands; use `theory.md` for 837/835, tokenisation, and PHI background.
-- Keep changes small and C-style: explicit ownership, simple structs/functions, no broad refactors unless required.
-- Treat PHI carefully. Existing PHI-looking fixture values are synthesized; the case study is only inspired by a UK, non-US healthcare episode I had. Default paths should stay tokenised/non-PHI unless explicitly working on PHI flows.
+- Start with `README.md`; use `theory.md` for EDI, tokenisation, PHI, and run
+  metadata notes.
+- Keep changes small and C-style: explicit ownership, simple structs/functions,
+  no broad refactors unless required.
+- Treat PHI carefully. Existing PHI-looking fixture values are synthesized.
+  Default paths should stay tokenised/non-PHI unless explicitly working on PHI
+  flows.
 
 ## Commands
 
@@ -16,20 +19,15 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-Run focused CLI checks with `build/scribe ...`; see `README.md` for stroke demo commands.
+Run focused CLI checks with `build/scribe ...`.
 
 ## Editing
 
 - Preserve warning-clean builds: `-Wall -Wextra -Wpedantic -Werror`.
-- Add/adjust tests in `tests/test_parser.c` or fixtures when parser, mapper, journal, store, or projection behavior changes.
-- `demo/` intentionally contains walked case study outputs. Do not add other generated local outputs such as `*.journal`, `*.sqlite`, or `*_aggregates.ndjson`.
-- C style should be simple and inspired Redis-manifesto C style. SIMPLE. https://oldblog.antirez.com/post/redis-manifesto.html if you don't know it already here it is below. I've snipped any irrelevant stuff
-
-Redis Manifesto
-1 - A DSL for Abstract Data Types. Redis is a DSL (Domain Specific Language) that manipulates abstract data types and implemented as a TCP daemon. Commands manipulate a key space where keys are binary-safe strings and values are different kinds of abstract data types. Every data type represents an abstract version of a fundamental data structure. For instance Redis Lists are an abstract representation of linked lists. In Redis, the essence of a data type isn't just the kind of operations that the data types support, but also the space and time complexity of the data type and the operations performed upon it.
-2 - Memory storage is #1. The Redis data set, composed of defined key-value pairs, is primarily stored in the computer's memory. The amount of memory in all kinds of computers, including entry-level servers, is increasing significantly each year. Memory is fast, and allows Redis to have very predictable performance. Datasets composed of 10k or 40 millions keys will perform similarly. Complex data types like Redis Sorted Sets are easy to implement and manipulate in memory with good performance, making Redis very simple. Redis will continue to explore alternative options (where data can be optionally stored on disk, say) but the main goal of the project remains the development of an in-memory database.
-3 - Fundamental data structures for a fundamental API. The Redis API is a direct consequence of fundamental data structures. APIs can often be arbitrary but not an API that resembles the nature of fundamental data structures. If we ever meet intelligent life forms from another part of the universe, they'll likely know, understand and recognize the same basic data structures we have in our computer science books. Redis will avoid intermediate layers in API, so that the complexity is obvious and more complex operations can be performed as the sum of the basic operations.
-4 - Code is like a poem; it's not just something we write to reach some practical result. Sometimes people that are far from the Redis philosophy suggest using other code written by other authors (frequently in other languages) in order to implement something Redis currently lacks. But to us this is like if Shakespeare decided to end Enrico IV using the Paradiso from the Divina Commedia. Is using any external code a bad idea? Not at all. Like in "One Thousand and One Nights" smaller self contained stories are embedded in a bigger story, we'll be happy to use beautiful self contained libraries when needed. At the same time, when writing the Redis story we're trying to write smaller stories that will fit in to other code.
-5 - We're against complexity. We believe designing systems is a fight against complexity. We'll accept to fight the complexity when it's worthwhile but we'll try hard to recognize when a small feature is not worth 1000s of lines of code. Most of the time the best way to fight complexity is by not creating it at all.
-6 - Two levels of API. The Redis API has two levels: 1) a subset of the API fits naturally into a distributed version of Redis and 2) a more complex API that supports multi-key operations. Both are useful if used judiciously but there's no way to make the more complex multi-keys API distributed in an opaque way without violating our other principles. We don't want to provide the illusion of something that will work magically when actually it can't in all cases. Instead we'll provide commands to quickly migrate keys from one instance to another to perform multi-key operations and expose the tradeoffs to the user.
-7 - We optimize for joy. We believe writing code is a lot of hard work, and the only way it can be worth is by enjoying it. When there is no longer joy in writing code, the best thing to do is stop. To prevent this, we'll avoid taking paths that will make Redis less of a joy to develop.
+- Add or adjust tests in `tests/test_parser.c` or fixtures when parser, mapper,
+  journal, store, or projection behavior changes.
+- `demo/` intentionally contains walked case study outputs. Do not add other
+  generated local outputs such as `*.journal`, `*.sqlite`, or
+  `*_aggregates.ndjson`.
+- Prefer simple Redis-style C: direct data structures, obvious ownership, small
+  functions, and no avoidable abstraction.
