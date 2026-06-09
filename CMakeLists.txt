@@ -23,20 +23,20 @@ add_library(yyjson third_party/yyjson/yyjson.c)
 target_include_directories(yyjson PUBLIC third_party/yyjson)
 
 add_library(scribe_core
-    src/balance_projector.c
     src/coverage_stitcher.c
     src/event_writer.c
     src/journal.c
     src/journal_builder.c
     src/json_scan.c
     src/json_write.c
-    src/phi_vault.c
-    src/projection.c
+    src/phi/phi_vault.c
+    src/phi/tokenise.c
+    src/projection/balance_projector.c
+    src/projection/projection.c
+    src/read_store/sqlite_store.c
     src/run_id.c
     src/stitch/claims/aggregate_stitcher.c
     src/stitch/claims/snapshot.c
-    src/store.c
-    src/tokenise_stub.c
     src/x12_mapper_270_271.c
     src/x12_mapper_834.c
     src/x12_mapper_835.c
@@ -45,7 +45,7 @@ add_library(scribe_core
     src/x12_reader.c
 )
 
-target_include_directories(scribe_core PUBLIC src)
+target_include_directories(scribe_core PUBLIC src src/phi src/projection src/read_store)
 target_link_libraries(scribe_core PUBLIC SQLite::SQLite3 yyjson)
 scribe_enable_warnings(scribe_core)
 
