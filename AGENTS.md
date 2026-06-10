@@ -25,7 +25,7 @@ Run focused CLI checks with `build/scribe ...`.
 
 - Preserve warning-clean builds: `-Wall -Wextra -Wpedantic -Werror`.
 - Add or adjust tests in `tests/test_parser.c` or fixtures when parser, mapper,
-  journal, store, or projection behavior changes.
+  journal, store, stitcher, aggregate, coverage, or projection behavior changes.
 - `demo/` intentionally contains walked case study outputs. Do not add other
   generated local outputs such as `*.journal`, `*.sqlite`, or
   `*_aggregates.ndjson`.
