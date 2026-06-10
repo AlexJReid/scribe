@@ -54,7 +54,7 @@ For more advanced usage see [scripts/stroke-demo.sh](./scripts/stroke-demo.sh),
 
 No releases yet, but binaries are attached to each Action run.
 
-The case study will build if not needed. On Linux and Windows you'll need sqlite3. See [CI](./github/workflows) for exact packages. macOS has it already.
+The case study will build if needed. On Linux and Windows you'll need sqlite3. See [CI](./github/workflows) for exact packages. macOS has it already.
 
 ```sh
 ./scripts/stroke-demo.sh
