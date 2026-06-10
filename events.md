@@ -3,11 +3,6 @@
 Payloads are tokenised by default. PHI fields appear only with `--include-phi`
 or when reading a PHI-resolved store.
 
-## Local Input
-
-`EncounterObserved`, `ChargeTransactionObserved`, `PatientPaymentObserved`,
-`RefundObserved`, `WriteoffObserved`.
-
 ## X12 Input
 
 834: `MemberReferenced`, `MemberEnrollmentChanged`, `HealthCoverageObserved`,
@@ -33,5 +28,5 @@ or when reading a PHI-resolved store.
 
 ## Derived
 
-`ClaimAggregateUpdated`, `MemberCoverageUpdated`, `EncounterBalanceProjected`,
+`ClaimAggregateUpdated`, `MemberCoverageUpdated`, `ClaimBalanceProjected`,
 `AggregateVersionRecorded`.

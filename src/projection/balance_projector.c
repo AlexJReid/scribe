@@ -8,7 +8,6 @@
 #include <string.h>
 
 #define json_get_string journal_event_get_string
-#define json_get_bool journal_event_get_bool
 #define json_get_array_string_at journal_event_get_array_string_at
 
 #define BALANCE_LINE_MAX 8192u
@@ -28,9 +27,6 @@ typedef struct {
     long long payer_paid;
     long long contractual_adjustments;
     long long patient_responsibility;
-    long long patient_payments;
-    long long writeoffs;
-    long long refunds;
 } balance_service_line_t;
 
 typedef struct {
@@ -49,9 +45,6 @@ typedef struct {
 } balance_claim_t;
 
 typedef struct {
-    char encounter_id[BALANCE_ID_MAX];
-    char encounter_filter[BALANCE_ID_MAX];
-    int synthetic;
     int include_phi;
     balance_claim_t claims[BALANCE_MAX_CLAIMS];
     size_t claim_count;
@@ -267,130 +260,6 @@ static void event_claim_key(const journal_event_t *journal_line, char *claim_id,
     (void)json_get_string(journal_line, "claim_id_token", claim_token, token_len);
 }
 
-static int event_matches_filter(const balance_state_t *state, const journal_event_t *journal_line)
-{
-    char encounter_id[BALANCE_ID_MAX];
-
-    if (state->encounter_filter[0] == '\0') {
-        return 1;
-    }
-
-    encounter_id[0] = '\0';
-    if (!json_get_string(journal_line, "encounter_id", encounter_id, sizeof(encounter_id))) {
-        return 1;
-    }
-
-    return strcmp(encounter_id, state->encounter_filter) == 0;
-}
-
-static int discover_charge_claim(balance_state_t *state, const journal_event_t *journal_line)
-{
-    char encounter_id[BALANCE_ID_MAX];
-    char claim_id[BALANCE_ID_MAX];
-    char claim_token[TOKENISE_MAX_TOKEN_LEN];
-    char claim_type[64];
-    balance_claim_t *claim;
-
-    if (!event_matches_filter(state, journal_line)) {
-        return X12_OK;
-    }
-
-    encounter_id[0] = '\0';
-    (void)json_get_string(journal_line, "encounter_id", encounter_id, sizeof(encounter_id));
-    if (state->encounter_id[0] == '\0' && encounter_id[0] != '\0') {
-        copy_cstr(state->encounter_id, sizeof(state->encounter_id), encounter_id);
-    }
-
-    event_claim_key(journal_line, claim_id, sizeof(claim_id), claim_token, sizeof(claim_token));
-    if (claim_id[0] == '\0') {
-        return X12_OK;
-    }
-
-    claim = find_or_add_claim(state, claim_id, claim_token);
-    if (claim == NULL) {
-        return X12_ERR_NO_MEMORY;
-    }
-    if (json_get_string(journal_line, "claim_type", claim_type, sizeof(claim_type))) {
-        copy_cstr(claim->claim_type, sizeof(claim->claim_type), claim_type);
-    }
-
-    return X12_OK;
-}
-
-static int apply_encounter(balance_state_t *state, const journal_event_t *journal_line)
-{
-    char encounter_id[BALANCE_ID_MAX];
-    int synthetic;
-
-    if (!event_matches_filter(state, journal_line)) {
-        return X12_OK;
-    }
-
-    if (json_get_string(journal_line, "encounter_id", encounter_id, sizeof(encounter_id))) {
-        copy_cstr(state->encounter_id, sizeof(state->encounter_id), encounter_id);
-    }
-    if (json_get_bool(journal_line, "synthetic", &synthetic)) {
-        state->synthetic = synthetic;
-    }
-
-    return X12_OK;
-}
-
-static int apply_charge(balance_state_t *state, const journal_event_t *journal_line)
-{
-    char claim_id[BALANCE_ID_MAX];
-    char claim_token[TOKENISE_MAX_TOKEN_LEN];
-    char claim_type[64];
-    char line_no[32];
-    char procedure_code[32];
-    char description[BALANCE_DESC_MAX];
-    char service_date[32];
-    char amount_text[64];
-    long long amount = 0;
-    balance_claim_t *claim;
-    balance_service_line_t *line;
-
-    if (!event_matches_filter(state, journal_line)) {
-        return X12_OK;
-    }
-
-    event_claim_key(journal_line, claim_id, sizeof(claim_id), claim_token, sizeof(claim_token));
-    if (claim_id[0] == '\0') {
-        return X12_OK;
-    }
-    claim = find_or_add_claim(state, claim_id, claim_token);
-    if (claim == NULL) {
-        return X12_ERR_NO_MEMORY;
-    }
-
-    if (json_get_string(journal_line, "claim_type", claim_type, sizeof(claim_type))) {
-        copy_cstr(claim->claim_type, sizeof(claim->claim_type), claim_type);
-    }
-    (void)json_get_string(journal_line, "service_line_number", line_no, sizeof(line_no));
-    line = find_or_add_line_by_number(claim, line_no);
-    if (line == NULL) {
-        return X12_ERR_NO_MEMORY;
-    }
-
-    if (json_get_string(journal_line, "procedure_code", procedure_code, sizeof(procedure_code))) {
-        copy_cstr(line->procedure_code, sizeof(line->procedure_code), procedure_code);
-    }
-    if (json_get_string(journal_line, "description", description, sizeof(description))) {
-        copy_cstr(line->description, sizeof(line->description), description);
-    }
-    if (json_get_string(journal_line, "service_date", service_date, sizeof(service_date))) {
-        copy_cstr(line->service_date, sizeof(line->service_date), service_date);
-    }
-    if (json_get_string(journal_line, "amount", amount_text, sizeof(amount_text))) {
-        if (parse_money(amount_text, &amount) != X12_OK) {
-            return X12_ERR_INVALID_ARGUMENT;
-        }
-        line->billed = amount;
-    }
-
-    return X12_OK;
-}
-
 static int apply_claim_observed(balance_state_t *state, const journal_event_t *journal_line)
 {
     char claim_id[BALANCE_ID_MAX];
@@ -403,9 +272,6 @@ static int apply_claim_observed(balance_state_t *state, const journal_event_t *j
         return X12_OK;
     }
     claim = find_claim(state, claim_token[0] != '\0' ? claim_token : claim_id);
-    if (claim == NULL && state->encounter_filter[0] != '\0') {
-        return X12_OK;
-    }
     if (claim == NULL) {
         claim = find_or_add_claim(state, claim_id, claim_token);
     }
@@ -434,9 +300,6 @@ static int apply_claim_service_line(balance_state_t *state, const journal_event_
 
     event_claim_key(journal_line, claim_id, sizeof(claim_id), claim_token, sizeof(claim_token));
     claim = find_claim(state, claim_token[0] != '\0' ? claim_token : claim_id);
-    if (claim == NULL && state->encounter_filter[0] != '\0') {
-        return X12_OK;
-    }
     if (claim == NULL) {
         claim = find_or_add_claim(state, claim_id, claim_token);
     }
@@ -503,9 +366,6 @@ static int apply_remittance_claim(balance_state_t *state, const journal_event_t 
 
     event_claim_key(journal_line, claim_id, sizeof(claim_id), claim_token, sizeof(claim_token));
     claim = find_claim(state, claim_token[0] != '\0' ? claim_token : claim_id);
-    if (claim == NULL && state->encounter_filter[0] != '\0') {
-        return X12_OK;
-    }
     if (claim == NULL) {
         claim = find_or_add_claim(state, claim_id, claim_token);
     }
@@ -556,9 +416,6 @@ static int apply_remittance_service_line(balance_state_t *state, const journal_e
 
     event_claim_key(journal_line, claim_id, sizeof(claim_id), claim_token, sizeof(claim_token));
     claim = find_claim(state, claim_token[0] != '\0' ? claim_token : claim_id);
-    if (claim == NULL && state->encounter_filter[0] != '\0') {
-        return X12_OK;
-    }
     if (claim == NULL) {
         claim = find_or_add_claim(state, claim_id, claim_token);
     }
@@ -681,47 +538,7 @@ static int apply_adjustment(balance_state_t *state, const journal_event_t *journ
     return X12_OK;
 }
 
-static int apply_patient_cash_event(balance_state_t *state, const journal_event_t *journal_line, const char *event_type)
-{
-    char claim_id[BALANCE_ID_MAX];
-    char claim_token[TOKENISE_MAX_TOKEN_LEN];
-    char line_no[32];
-    char amount_text[64];
-    long long amount = 0;
-    balance_claim_t *claim;
-    balance_service_line_t *line;
-
-    event_claim_key(journal_line, claim_id, sizeof(claim_id), claim_token, sizeof(claim_token));
-    claim = find_claim(state, claim_token[0] != '\0' ? claim_token : claim_id);
-    if (claim == NULL) {
-        return X12_OK;
-    }
-    if (!json_get_string(journal_line, "amount", amount_text, sizeof(amount_text)) ||
-        parse_money(amount_text, &amount) != X12_OK) {
-        return X12_ERR_INVALID_ARGUMENT;
-    }
-    (void)json_get_string(journal_line, "service_line_number", line_no, sizeof(line_no));
-    line = find_line_by_number(claim, line_no);
-    if (line == NULL) {
-        line = add_line(claim);
-        if (line == NULL) {
-            return X12_ERR_NO_MEMORY;
-        }
-        copy_cstr(line->service_line_number, sizeof(line->service_line_number), line_no);
-    }
-
-    if (strcmp(event_type, "PatientPaymentObserved") == 0) {
-        line->patient_payments += amount;
-    } else if (strcmp(event_type, "WriteoffObserved") == 0) {
-        line->writeoffs += amount;
-    } else if (strcmp(event_type, "RefundObserved") == 0) {
-        line->refunds += amount;
-    }
-
-    return X12_OK;
-}
-
-static int apply_event(balance_state_t *state, const journal_event_t *journal_line, int discovery_only)
+static int apply_event(balance_state_t *state, const journal_event_t *journal_line)
 {
     char event_type[96];
 
@@ -729,22 +546,6 @@ static int apply_event(balance_state_t *state, const journal_event_t *journal_li
         return X12_OK;
     }
 
-    if (discovery_only) {
-        if (strcmp(event_type, "EncounterObserved") == 0) {
-            return apply_encounter(state, journal_line);
-        }
-        if (strcmp(event_type, "ChargeTransactionObserved") == 0) {
-            return discover_charge_claim(state, journal_line);
-        }
-        return X12_OK;
-    }
-
-    if (strcmp(event_type, "EncounterObserved") == 0) {
-        return apply_encounter(state, journal_line);
-    }
-    if (strcmp(event_type, "ChargeTransactionObserved") == 0) {
-        return apply_charge(state, journal_line);
-    }
     if (strcmp(event_type, "ClaimObserved") == 0) {
         return apply_claim_observed(state, journal_line);
     }
@@ -766,16 +567,11 @@ static int apply_event(balance_state_t *state, const journal_event_t *journal_li
     if (strcmp(event_type, "RemittanceAdjustmentObserved") == 0) {
         return apply_adjustment(state, journal_line);
     }
-    if (strcmp(event_type, "PatientPaymentObserved") == 0 ||
-        strcmp(event_type, "WriteoffObserved") == 0 ||
-        strcmp(event_type, "RefundObserved") == 0) {
-        return apply_patient_cash_event(state, journal_line, event_type);
-    }
 
     return X12_OK;
 }
 
-static int read_journal_pass(balance_state_t *state, const char *path, int discovery_only)
+static int read_journal_pass(balance_state_t *state, const char *path)
 {
     journal_reader_t reader;
     journal_event_t record;
@@ -792,7 +588,7 @@ static int read_journal_pass(balance_state_t *state, const char *path, int disco
         if (rc != X12_OK || record.record_len == 0u) {
             break;
         }
-        rc = apply_event(state, &record, discovery_only);
+        rc = apply_event(state, &record);
     }
 
     if (journal_reader_close(&reader) != X12_OK && rc == X12_OK) {
@@ -806,10 +602,7 @@ static long long line_current_balance(const balance_service_line_t *line)
 {
     return line->billed -
            line->payer_paid -
-           line->contractual_adjustments -
-           line->patient_payments -
-           line->writeoffs +
-           line->refunds;
+           line->contractual_adjustments;
 }
 
 static void claim_totals(
@@ -817,10 +610,7 @@ static void claim_totals(
     long long *billed,
     long long *paid,
     long long *contractual,
-    long long *patient_resp,
-    long long *patient_payments,
-    long long *writeoffs,
-    long long *refunds
+    long long *patient_resp
 )
 {
     size_t i;
@@ -829,18 +619,12 @@ static void claim_totals(
     *paid = 0;
     *contractual = 0;
     *patient_resp = 0;
-    *patient_payments = 0;
-    *writeoffs = 0;
-    *refunds = 0;
 
     for (i = 0u; i < claim->line_count; i++) {
         *billed += claim->lines[i].billed;
         *paid += claim->lines[i].payer_paid;
         *contractual += claim->lines[i].contractual_adjustments;
         *patient_resp += claim->lines[i].patient_responsibility;
-        *patient_payments += claim->lines[i].patient_payments;
-        *writeoffs += claim->lines[i].writeoffs;
-        *refunds += claim->lines[i].refunds;
     }
 
     if (*billed == 0) {
@@ -897,7 +681,7 @@ static int write_line_ledger_entries(FILE *fp, const balance_service_line_t *lin
         return X12_ERR_IO;
     }
     if (line->billed != 0) {
-        if (write_ledger_entry(fp, "billed_charge", "charge_or_837", line->billed, line->billed, wrote) != X12_OK) {
+        if (write_ledger_entry(fp, "billed_charge", "837", line->billed, line->billed, wrote) != X12_OK) {
             return X12_ERR_IO;
         }
         wrote = 1;
@@ -933,29 +717,6 @@ static int write_line_ledger_entries(FILE *fp, const balance_service_line_t *lin
             return X12_ERR_IO;
         }
         wrote = 1;
-    }
-    if (line->patient_payments != 0) {
-        if (write_ledger_entry(
-                fp,
-                "patient_payment",
-                "patient_payment",
-                line->patient_payments,
-                -line->patient_payments,
-                wrote
-            ) != X12_OK) {
-            return X12_ERR_IO;
-        }
-        wrote = 1;
-    }
-    if (line->writeoffs != 0) {
-        if (write_ledger_entry(fp, "writeoff", "writeoff", line->writeoffs, -line->writeoffs, wrote) != X12_OK) {
-            return X12_ERR_IO;
-        }
-        wrote = 1;
-    }
-    if (line->refunds != 0 &&
-        write_ledger_entry(fp, "refund", "refund", line->refunds, line->refunds, wrote) != X12_OK) {
-        return X12_ERR_IO;
     }
 
     if (fputc(']', fp) == EOF) {
@@ -1029,9 +790,6 @@ static int write_service_line(FILE *fp, const balance_service_line_t *line, int 
         write_money_field(fp, "payer_paid", line->payer_paid, 1) != X12_OK ||
         write_money_field(fp, "contractual_adjustments", line->contractual_adjustments, 1) != X12_OK ||
         write_money_field(fp, "patient_responsibility", line->patient_responsibility, 1) != X12_OK ||
-        write_money_field(fp, "patient_payments", line->patient_payments, 1) != X12_OK ||
-        write_money_field(fp, "writeoffs", line->writeoffs, 1) != X12_OK ||
-        write_money_field(fp, "refunds", line->refunds, 1) != X12_OK ||
         write_money_field(fp, "current_balance", current_balance, 1) != X12_OK ||
         write_line_ledger_entries(fp, line) != X12_OK) {
         return X12_ERR_IO;
@@ -1048,19 +806,15 @@ static int write_projection(FILE *fp, const balance_state_t *state)
     long long total_paid = 0;
     long long total_contractual = 0;
     long long total_patient_resp = 0;
-    long long total_patient_payments = 0;
-    long long total_writeoffs = 0;
-    long long total_refunds = 0;
     size_t i;
 
     if (fputc('{', fp) == EOF) {
         return X12_ERR_IO;
     }
-    if (event_writer_write_cstring_field(fp, "event_type", "EncounterBalanceProjected", 0) != X12_OK ||
-        event_writer_write_cstring_field(fp, "encounter_id", state->encounter_id, 1) != X12_OK) {
+    if (event_writer_write_cstring_field(fp, "event_type", "ClaimBalanceProjected", 0) != X12_OK) {
         return X12_ERR_IO;
     }
-    if (fprintf(fp, ",\"synthetic\":%s,\"claims\":[", state->synthetic ? "true" : "false") < 0) {
+    if (fputs(",\"claims\":[", fp) == EOF) {
         return X12_ERR_IO;
     }
 
@@ -1070,21 +824,15 @@ static int write_projection(FILE *fp, const balance_state_t *state)
         long long paid;
         long long contractual;
         long long patient_resp;
-        long long patient_payments;
-        long long writeoffs;
-        long long refunds;
         long long current_balance;
         size_t j;
 
-        claim_totals(claim, &billed, &paid, &contractual, &patient_resp, &patient_payments, &writeoffs, &refunds);
-        current_balance = billed - paid - contractual - patient_payments - writeoffs + refunds;
+        claim_totals(claim, &billed, &paid, &contractual, &patient_resp);
+        current_balance = billed - paid - contractual;
         total_billed += billed;
         total_paid += paid;
         total_contractual += contractual;
         total_patient_resp += patient_resp;
-        total_patient_payments += patient_payments;
-        total_writeoffs += writeoffs;
-        total_refunds += refunds;
 
         if (i > 0u && fputc(',', fp) == EOF) {
             return X12_ERR_IO;
@@ -1100,9 +848,6 @@ static int write_projection(FILE *fp, const balance_state_t *state)
             write_money_field(fp, "payer_paid", paid, 1) != X12_OK ||
             write_money_field(fp, "contractual_adjustments", contractual, 1) != X12_OK ||
             write_money_field(fp, "patient_responsibility", patient_resp, 1) != X12_OK ||
-            write_money_field(fp, "patient_payments", patient_payments, 1) != X12_OK ||
-            write_money_field(fp, "writeoffs", writeoffs, 1) != X12_OK ||
-            write_money_field(fp, "refunds", refunds, 1) != X12_OK ||
             write_money_field(fp, "current_balance", current_balance, 1) != X12_OK) {
             return X12_ERR_IO;
         }
@@ -1126,13 +871,10 @@ static int write_projection(FILE *fp, const balance_state_t *state)
         write_money_field(fp, "payer_paid", total_paid, 1) != X12_OK ||
         write_money_field(fp, "contractual_adjustments", total_contractual, 1) != X12_OK ||
         write_money_field(fp, "patient_responsibility", total_patient_resp, 1) != X12_OK ||
-        write_money_field(fp, "patient_payments", total_patient_payments, 1) != X12_OK ||
-        write_money_field(fp, "writeoffs", total_writeoffs, 1) != X12_OK ||
-        write_money_field(fp, "refunds", total_refunds, 1) != X12_OK ||
         write_money_field(
             fp,
             "current_balance",
-            total_billed - total_paid - total_contractual - total_patient_payments - total_writeoffs + total_refunds,
+            total_billed - total_paid - total_contractual,
             1
         ) != X12_OK) {
         return X12_ERR_IO;
@@ -1167,15 +909,8 @@ int balance_projector_project(
 
     memset(&state, 0, sizeof(state));
     state.include_phi = input->include_phi;
-    if (input->encounter_id != NULL) {
-        copy_cstr(state.encounter_filter, sizeof(state.encounter_filter), input->encounter_id);
-    }
 
-    rc = read_journal_pass(&state, input->journal_path, 1);
-    if (rc != X12_OK) {
-        return rc;
-    }
-    rc = read_journal_pass(&state, input->journal_path, 0);
+    rc = read_journal_pass(&state, input->journal_path);
     if (rc != X12_OK) {
         return rc;
     }
@@ -1220,11 +955,6 @@ int balance_projector_run_cli(int argc, char **argv)
                 return -1;
             }
             input.journal_path = argv[++i];
-        } else if (strcmp(argv[i], "--encounter-id") == 0) {
-            if (i + 1 >= argc) {
-                return -1;
-            }
-            input.encounter_id = argv[++i];
         } else if (strcmp(argv[i], "--out") == 0) {
             if (i + 1 >= argc) {
                 return -1;

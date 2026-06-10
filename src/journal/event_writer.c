@@ -1,8 +1,11 @@
 #include "event_writer.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#define SOURCE_DROP_ID_MAX 256u
 
 static event_writer_t *active_binary_writer = NULL;
 
@@ -18,6 +21,50 @@ static x12_str_t empty_str(void)
 static int check_file(FILE *fp)
 {
     return ferror(fp) ? X12_ERR_IO : X12_OK;
+}
+
+static int build_source_drop_id(
+    const event_writer_t *writer,
+    char *out,
+    size_t out_len
+)
+{
+    int written;
+
+    if (writer == NULL || out == NULL || out_len == 0u) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    out[0] = '\0';
+    if (writer->isa13.len == 0u ||
+        writer->gs06.len == 0u ||
+        writer->st02.len == 0u) {
+        return X12_OK;
+    }
+    if (writer->isa13.len > INT_MAX ||
+        writer->gs06.len > INT_MAX ||
+        writer->st02.len > INT_MAX) {
+        return X12_ERR_BUFFER_TOO_SMALL;
+    }
+
+    written = snprintf(
+        out,
+        out_len,
+        "%s:%.*s:%.*s:%.*s",
+        writer->source_transaction,
+        (int)writer->isa13.len,
+        writer->isa13.ptr,
+        (int)writer->gs06.len,
+        writer->gs06.ptr,
+        (int)writer->st02.len,
+        writer->st02.ptr
+    );
+    if (written < 0 || (size_t)written >= out_len) {
+        out[0] = '\0';
+        return X12_ERR_BUFFER_TOO_SMALL;
+    }
+
+    return X12_OK;
 }
 
 static int write_char(FILE *fp, char value)
@@ -424,11 +471,17 @@ int event_writer_begin_event(
     const x12_segment_t *seg
 )
 {
+    char source_drop_id[SOURCE_DROP_ID_MAX];
     FILE *fp;
     int rc;
 
     if (writer == NULL || writer->fp == NULL || event_type == NULL || seg == NULL) {
         return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    rc = build_source_drop_id(writer, source_drop_id, sizeof(source_drop_id));
+    if (rc != X12_OK) {
+        return rc;
     }
 
     if (writer->binary_journal) {
@@ -448,6 +501,13 @@ int event_writer_begin_event(
                 &writer->journal_record,
                 "source_transaction",
                 writer->source_transaction
+            );
+        }
+        if (rc == X12_OK && source_drop_id[0] != '\0') {
+            rc = journal_record_add_cstring(
+                &writer->journal_record,
+                "source_drop_id",
+                source_drop_id
             );
         }
         if (rc == X12_OK && writer->run_id != NULL && writer->run_id[0] != '\0') {
@@ -517,6 +577,14 @@ int event_writer_begin_event(
     }
     if (event_writer_write_cstring(fp, writer->source_transaction) != X12_OK) {
         return X12_ERR_IO;
+    }
+    if (source_drop_id[0] != '\0') {
+        if (fputs(",\"source_drop_id\":", fp) == EOF) {
+            return X12_ERR_IO;
+        }
+        if (event_writer_write_cstring(fp, source_drop_id) != X12_OK) {
+            return X12_ERR_IO;
+        }
     }
     if (writer->run_id != NULL && writer->run_id[0] != '\0') {
         if (fputs(",\"run_id\":", fp) == EOF) {

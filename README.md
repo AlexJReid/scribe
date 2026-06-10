@@ -10,7 +10,7 @@ string parsers.
 Use it in three layers:
 
 1. **Parse** EDI into NDJSON events.
-2. **Ingest** charge rows and X12 files into an immutable journal.
+2. **Ingest** X12 files into an immutable journal.
 3. **Project** the journal into claim, coverage, balance, and notification read models.
 
 The parser handles 834 enrollment, 837 claims, 835 remits, and 270/271 eligibility
@@ -31,16 +31,14 @@ Ingest multiple inputs into a replayable evidence stream:
 ```bash
 scribe ingest --out journal.scribe \
   --837 claims.edi \
-  --835 remit.edi \
-  --charges charges.ndjson
+  --835 remit.edi
 ```
 
 Project a balance from the journal:
 
 ```bash
 scribe project balance \
-  --journal journal.scribe \
-  --encounter-id demo
+  --journal journal.scribe
 ```
 
 `scribe` is a small C binary. Run it interactively, in shell pipelines, as a
@@ -69,8 +67,7 @@ cmake --build build
 
 ## Shape
 
-- Inputs: charge NDJSON, 834 enrollment, 837 claims, 835 remits, 270/271
-  eligibility
+- Inputs: 834 enrollment, 837 claims, 835 remits, 270/271 eligibility
 - Events: small auditable facts with source transaction, control numbers,
   segment index, byte offset, and optional run ID
 - Journal: immutable binary evidence stream
@@ -83,7 +80,7 @@ stores, but this can be swapped out in the future.
 
 ## Demo
 
-The synthetic _stroke encounter_ case study lives in
+The synthetic _stroke_ case study lives in
 [tests/fixtures/stroke_encounter/](./tests/fixtures/stroke_encounter/). Generated
 reference output lives in [demo/](./demo).
 
@@ -92,7 +89,7 @@ reference output lives in [demo/](./demo).
 ./demo.sh
 ```
 
-Expected current encounter balance: `550.00`.
+Expected current balance: `550.00`.
 
 Inspect the claim latest table:
 

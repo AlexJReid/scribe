@@ -9,7 +9,6 @@ typedef struct {
     const char *read_store_path;
     const char *phi_vault_path;
     const char *notify_out_path;
-    const char *encounter_id;
     const char *run_id;
     int include_phi;
 } aggregate_stitcher_input_t;

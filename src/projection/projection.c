@@ -8,7 +8,7 @@
 static const projection_plugin_t projection_plugins[] = {
     {
         "balance",
-        "encounter -> claim -> service line ledger balance",
+        "claim -> service line ledger balance",
         balance_projector_run_cli
     }
 };

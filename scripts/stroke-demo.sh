@@ -28,7 +28,6 @@ echo "ingesting 270, 271, 837, 835s to journal, phi enabled"
 build/scribe ingest --out demo/stroke.journal \
   --run-id stroke-ingest-demo \
   --phi-vault demo/stroke_phi_vault.sqlite \
-  --charges tests/fixtures/stroke_encounter/charge_transactions.ndjson \
   --837 tests/fixtures/stroke_encounter/facility_837.edi \
   --837 tests/fixtures/stroke_encounter/professional_837.edi \
   --837 tests/fixtures/stroke_encounter/rehab_837.edi \
@@ -41,10 +40,9 @@ build/scribe ingest --out demo/stroke.journal \
   --270 tests/fixtures/stroke_encounter/eligibility_270.edi \
   --271 tests/fixtures/stroke_encounter/eligibility_271.edi
 
-echo "stitching for single encounter"
+echo "stitching claims"
 build/scribe stitch claims \
   --journal demo/stroke.journal \
-  --encounter-id ENC-SYN-STROKE-001 \
   --read-store demo/stroke_read_store.sqlite \
   --notify-out demo/stroke_notifications.ndjson \
   --run-id stroke-stitch-demo \
@@ -57,10 +55,9 @@ build/scribe stitch coverage \
   --run-id stroke-coverage-demo \
   --out demo/stroke_member_coverage.ndjson
 
-echo "stitching again for single encounter, with phi decoded" 
+echo "stitching claims again, with phi decoded"
 build/scribe stitch claims \
   --journal demo/stroke.journal \
-  --encounter-id ENC-SYN-STROKE-001 \
   --read-store demo/stroke_phi_read_store.sqlite \
   --phi-vault demo/stroke_phi_vault.sqlite \
   --include-phi \
@@ -78,7 +75,6 @@ build/scribe stitch coverage \
 echo "projecting balance"
 build/scribe project balance \
   --journal demo/stroke.journal \
-  --encounter-id ENC-SYN-STROKE-001 \
   --out demo/stroke_balance.json
 
 echo "done, see demo/ for output"

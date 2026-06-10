@@ -20,7 +20,6 @@
 #define STITCH_MAX_AGGREGATES 128u
 #define STITCH_MAX_SOURCE_EVENTS 512u
 #define STITCH_MAX_UPDATE_BATCHES 128u
-#define STITCH_MAX_ENCOUNTERS 64u
 #define STITCH_MAX_LINES_PER_CLAIM 64u
 #define STITCH_MAX_ADJUSTMENTS_PER_LINE 8u
 #define STITCH_MAX_ADJUSTMENT_VALUES 8u
@@ -41,9 +40,6 @@ typedef struct {
     char description[STITCH_VALUE_MAX];
     char service_date[32];
     char match_method[48];
-    int has_charge_context;
-    char charge_amount[32];
-    char charge_service_date[32];
     int has_submitted;
     char submitted_line_type[16];
     char submitted_procedure_code_qualifier[16];
@@ -74,7 +70,6 @@ typedef struct {
     char claim_id_token[TOKENISE_MAX_TOKEN_LEN];
     char payer_claim_control_number[STITCH_ID_MAX];
     char payer_claim_control_number_token[TOKENISE_MAX_TOKEN_LEN];
-    char encounter_id[STITCH_ID_MAX];
     char patient_id[STITCH_ID_MAX];
     char patient_id_token[TOKENISE_MAX_TOKEN_LEN];
     char patient_name[STITCH_VALUE_MAX];
@@ -82,7 +77,6 @@ typedef struct {
     char claim_type[64];
     char claim_status_code[32];
     size_t version;
-    int has_charge_context;
     int has_837;
     int has_835;
     size_t submitted_service_line_count;
@@ -108,26 +102,15 @@ typedef struct {
 } stitch_update_batch_t;
 
 typedef struct {
-    char encounter_id[STITCH_ID_MAX];
-    char patient_id[STITCH_ID_MAX];
-    char patient_id_token[TOKENISE_MAX_TOKEN_LEN];
-    char patient_name[STITCH_VALUE_MAX];
-    char patient_name_token[TOKENISE_MAX_TOKEN_LEN];
-} stitch_encounter_context_t;
-
-typedef struct {
     claim_aggregate_t aggregates[STITCH_MAX_AGGREGATES];
     size_t aggregate_count;
     stitch_update_batch_t update_batches[STITCH_MAX_UPDATE_BATCHES];
     size_t update_batch_count;
-    stitch_encounter_context_t encounter_contexts[STITCH_MAX_ENCOUNTERS];
-    size_t encounter_context_count;
     char current_drop_key[STITCH_FINGERPRINT_MAX];
     char current_source_drop_id[STITCH_VALUE_MAX];
     char current_source_run_id[STITCH_ID_MAX];
     size_t source_drop_count;
     char run_id[STITCH_ID_MAX];
-    char encounter_filter[STITCH_ID_MAX];
     int include_phi;
     FILE *out;
     FILE *notify_out;

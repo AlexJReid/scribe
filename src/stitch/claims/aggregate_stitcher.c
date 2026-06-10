@@ -280,50 +280,6 @@ static int set_patient_id(
     return X12_OK;
 }
 
-static stitch_encounter_context_t *find_or_add_encounter_context(
-    stitch_state_t *state,
-    const char *encounter_id
-)
-{
-    stitch_encounter_context_t *context;
-    size_t i;
-
-    if (state == NULL || encounter_id == NULL || encounter_id[0] == '\0') {
-        return NULL;
-    }
-    for (i = 0u; i < state->encounter_context_count; i++) {
-        if (strcmp(state->encounter_contexts[i].encounter_id, encounter_id) == 0) {
-            return &state->encounter_contexts[i];
-        }
-    }
-    if (state->encounter_context_count >= STITCH_MAX_ENCOUNTERS) {
-        return NULL;
-    }
-
-    context = &state->encounter_contexts[state->encounter_context_count++];
-    memset(context, 0, sizeof(*context));
-    copy_cstr(context->encounter_id, sizeof(context->encounter_id), encounter_id);
-    return context;
-}
-
-static stitch_encounter_context_t *find_encounter_context(
-    stitch_state_t *state,
-    const char *encounter_id
-)
-{
-    size_t i;
-
-    if (state == NULL || encounter_id == NULL || encounter_id[0] == '\0') {
-        return NULL;
-    }
-    for (i = 0u; i < state->encounter_context_count; i++) {
-        if (strcmp(state->encounter_contexts[i].encounter_id, encounter_id) == 0) {
-            return &state->encounter_contexts[i];
-        }
-    }
-    return NULL;
-}
-
 static int resolve_patient_name_by_id(
     const stitch_state_t *state,
     const char *id_name_namespace,
@@ -353,111 +309,6 @@ static int resolve_patient_name_by_id(
         patient_name_token_len,
         raw_name,
         overwrite
-    );
-}
-
-static int capture_encounter_context(
-    stitch_state_t *state,
-    const journal_event_t *journal_line
-)
-{
-    char event_type[96];
-    char encounter_id[STITCH_ID_MAX];
-    char patient_id[STITCH_ID_MAX];
-    char patient_id_token[TOKENISE_MAX_TOKEN_LEN];
-    stitch_encounter_context_t *context;
-    int rc;
-
-    if (state == NULL || journal_line == NULL) {
-        return X12_ERR_INVALID_ARGUMENT;
-    }
-    if (!json_get_string(journal_line, "event_type", event_type, sizeof(event_type)) ||
-        strcmp(event_type, "EncounterObserved") != 0 ||
-        !json_get_string(journal_line, "encounter_id", encounter_id, sizeof(encounter_id))) {
-        return X12_OK;
-    }
-
-    context = find_or_add_encounter_context(state, encounter_id);
-    if (context == NULL) {
-        return X12_ERR_NO_MEMORY;
-    }
-
-    rc = extract_value_token_pair(
-        state,
-        journal_line,
-        "patient_id",
-        "patient_id_token",
-        "patient_id",
-        patient_id,
-        sizeof(patient_id),
-        patient_id_token,
-        sizeof(patient_id_token)
-    );
-    if (rc != X12_OK) {
-        return rc;
-    }
-    rc = set_patient_id(
-        state,
-        context->patient_id,
-        sizeof(context->patient_id),
-        context->patient_id_token,
-        sizeof(context->patient_id_token),
-        patient_id,
-        patient_id_token,
-        1
-    );
-    if (rc != X12_OK) {
-        return rc;
-    }
-    return resolve_patient_name_by_id(
-        state,
-        "patient_id_name",
-        context->patient_id_token,
-        context->patient_name,
-        sizeof(context->patient_name),
-        context->patient_name_token,
-        sizeof(context->patient_name_token),
-        1
-    );
-}
-
-static int apply_encounter_context_to_aggregate(
-    stitch_state_t *state,
-    claim_aggregate_t *aggregate
-)
-{
-    stitch_encounter_context_t *context;
-    int rc;
-
-    if (state == NULL || aggregate == NULL || aggregate->encounter_id[0] == '\0') {
-        return X12_OK;
-    }
-    context = find_encounter_context(state, aggregate->encounter_id);
-    if (context == NULL) {
-        return X12_OK;
-    }
-
-    rc = set_patient_id(
-        state,
-        aggregate->patient_id,
-        sizeof(aggregate->patient_id),
-        aggregate->patient_id_token,
-        sizeof(aggregate->patient_id_token),
-        context->patient_id,
-        context->patient_id_token,
-        0
-    );
-    if (rc != X12_OK) {
-        return rc;
-    }
-    return set_patient_name(
-        state,
-        aggregate->patient_name,
-        sizeof(aggregate->patient_name),
-        aggregate->patient_name_token,
-        sizeof(aggregate->patient_name_token),
-        context->patient_name,
-        0
     );
 }
 
@@ -758,9 +609,6 @@ static const char *service_line_effective_charge(const stitched_service_line_t *
     if (line == NULL) {
         return "";
     }
-    if (line->charge_amount[0] != '\0') {
-        return line->charge_amount;
-    }
     return line->submitted_charge_amount;
 }
 
@@ -806,9 +654,7 @@ static void update_service_line_date(stitched_service_line_t *line)
     if (line == NULL) {
         return;
     }
-    if (line->charge_service_date[0] != '\0') {
-        submitted_date = line->charge_service_date;
-    } else if (line->submitted_service_date[0] != '\0') {
+    if (line->submitted_service_date[0] != '\0') {
         submitted_date = line->submitted_service_date;
     }
 
@@ -825,36 +671,6 @@ static void update_service_line_date(stitched_service_line_t *line)
         strcmp(line->match_method, "procedure_charge") == 0) {
         copy_cstr(line->match_method, sizeof(line->match_method), "procedure_charge_date");
     }
-}
-
-static int apply_charge_service_line(claim_aggregate_t *aggregate, const journal_event_t *journal_line)
-{
-    char line_no[32];
-    char value[STITCH_VALUE_MAX];
-    stitched_service_line_t *line;
-
-    (void)json_get_string(journal_line, "service_line_number", line_no, sizeof(line_no));
-    line = find_or_add_service_line_by_number(aggregate, line_no);
-    if (line == NULL) {
-        return X12_ERR_NO_MEMORY;
-    }
-
-    line->has_charge_context = 1;
-    if (json_get_string(journal_line, "procedure_code", value, sizeof(value))) {
-        copy_cstr(line->procedure_code, sizeof(line->procedure_code), value);
-    }
-    if (json_get_string(journal_line, "description", value, sizeof(value))) {
-        copy_cstr(line->description, sizeof(line->description), value);
-    }
-    if (json_get_string(journal_line, "service_date", value, sizeof(value))) {
-        copy_cstr(line->charge_service_date, sizeof(line->charge_service_date), value);
-        update_service_line_date(line);
-    }
-    if (json_get_string(journal_line, "amount", value, sizeof(value))) {
-        copy_cstr(line->charge_amount, sizeof(line->charge_amount), value);
-    }
-
-    return X12_OK;
 }
 
 static int apply_submitted_service_line(claim_aggregate_t *aggregate, const journal_event_t *journal_line)
@@ -1065,6 +881,7 @@ static int make_drop_key(
     size_t out_len
 )
 {
+    char source_drop_id[STITCH_VALUE_MAX] = "";
     char source_file[STITCH_VALUE_MAX] = "";
     char source_transaction[32] = "";
     int written;
@@ -1074,6 +891,11 @@ static int make_drop_key(
     }
 
     out[0] = '\0';
+    if (json_get_string(journal_line, "source_drop_id", source_drop_id, sizeof(source_drop_id))) {
+        copy_cstr(out, out_len, source_drop_id);
+        return X12_OK;
+    }
+
     (void)json_get_string(journal_line, "source_file", source_file, sizeof(source_file));
     (void)json_get_string(
         journal_line,
@@ -1131,28 +953,6 @@ static int make_fingerprint(
     }
 
     return X12_OK;
-}
-
-static int event_matches_filter(const stitch_state_t *state, const journal_event_t *journal_line)
-{
-    char encounter_id[STITCH_ID_MAX];
-
-    if (state->encounter_filter[0] == '\0') {
-        return 1;
-    }
-
-    if (!json_get_string(journal_line, "encounter_id", encounter_id, sizeof(encounter_id))) {
-        return 1;
-    }
-
-    return strcmp(encounter_id, state->encounter_filter) == 0;
-}
-
-static int event_has_encounter_id(const journal_event_t *journal_line)
-{
-    char encounter_id[STITCH_ID_MAX];
-
-    return json_get_string(journal_line, "encounter_id", encounter_id, sizeof(encounter_id));
 }
 
 static void capture_current_source_run_id(
@@ -1256,34 +1056,55 @@ static int set_current_source_drop(stitch_state_t *state, const char *drop_key)
     state->source_drop_count++;
 
     separator = strchr(drop_key, '|');
-    drop_type_len = separator == NULL ? strlen(drop_key) : (size_t)(separator - drop_key);
+    if (separator == NULL && strchr(drop_key, ':') != NULL) {
+        const char *type_end = strchr(drop_key, ':');
+
+        copy_cstr(state->current_source_drop_id, sizeof(state->current_source_drop_id), drop_key);
+        drop_type_len = (size_t)(type_end - drop_key);
+    } else {
+        drop_type_len = separator == NULL ? strlen(drop_key) : (size_t)(separator - drop_key);
+        if (drop_type_len == 0u) {
+            written = snprintf(
+                state->current_source_drop_id,
+                sizeof(state->current_source_drop_id),
+                "source:%zu",
+                state->source_drop_count
+            );
+        } else {
+            written = snprintf(
+                state->current_source_drop_id,
+                sizeof(state->current_source_drop_id),
+                "%.*s:%zu",
+                (int)drop_type_len,
+                drop_key,
+                state->source_drop_count
+            );
+        }
+        if (written < 0 || (size_t)written >= sizeof(state->current_source_drop_id)) {
+            return X12_ERR_BUFFER_TOO_SMALL;
+        }
+    }
+
     if (drop_type_len == 0u) {
         written = snprintf(
-            state->current_source_drop_id,
-            sizeof(state->current_source_drop_id),
-            "source:%zu",
-            state->source_drop_count
+            source_type,
+            sizeof(source_type),
+            "source"
         );
     } else {
         written = snprintf(
-            state->current_source_drop_id,
-            sizeof(state->current_source_drop_id),
-            "%.*s:%zu",
+            source_type,
+            sizeof(source_type),
+            "%.*s",
             (int)drop_type_len,
-            drop_key,
-            state->source_drop_count
+            drop_key
         );
     }
-    if (written < 0 || (size_t)written >= sizeof(state->current_source_drop_id)) {
+    if (written < 0 || (size_t)written >= sizeof(source_type)) {
         return X12_ERR_BUFFER_TOO_SMALL;
     }
 
     if (state->read_store != NULL) {
-        if (drop_type_len >= sizeof(source_type)) {
-            return X12_ERR_BUFFER_TOO_SMALL;
-        }
-        memcpy(source_type, drop_key, drop_type_len);
-        source_type[drop_type_len] = '\0';
         rc = scribe_store_put_source_drop(
             state->read_store,
             state->current_source_drop_id,
@@ -1331,7 +1152,6 @@ static int index_journal_event(
     char payer_control_token[TOKENISE_MAX_TOKEN_LEN];
     char payer_control_raw[STITCH_ID_MAX];
     char payer_control_index_token[TOKENISE_MAX_TOKEN_LEN];
-    char encounter_id[STITCH_ID_MAX];
     const char *claim_index_key;
     const char *payer_index_key;
     int written;
@@ -1451,9 +1271,7 @@ static int index_journal_event(
         }
     }
 
-    encounter_id[0] = '\0';
-    (void)json_get_string(journal_line, "encounter_id", encounter_id, sizeof(encounter_id));
-    return put_event_key_if_present(state->read_store, "encounter_id", encounter_id, event_id);
+    return X12_OK;
 }
 
 static int apply_claim_event(
@@ -1472,20 +1290,11 @@ static int apply_claim_event(
     char value[STITCH_VALUE_MAX];
     const char *key;
     claim_aggregate_t *aggregate;
-    int has_encounter_id;
     int rc;
 
     if (!json_get_string(journal_line, "event_type", event_type, sizeof(event_type))) {
         return X12_OK;
     }
-    if (strcmp(event_type, "EncounterObserved") == 0) {
-        return X12_OK;
-    }
-    has_encounter_id = event_has_encounter_id(journal_line);
-    if (!event_matches_filter(state, journal_line)) {
-        return X12_OK;
-    }
-
     extract_claim_keys(
         journal_line,
         claim_id,
@@ -1499,9 +1308,6 @@ static int apply_claim_event(
     }
 
     aggregate = find_aggregate(state, key);
-    if (aggregate == NULL && state->encounter_filter[0] != '\0' && !has_encounter_id) {
-        return X12_OK;
-    }
     if (aggregate == NULL) {
         aggregate = find_or_add_aggregate(state, claim_id, claim_id_token);
     }
@@ -1517,31 +1323,15 @@ static int apply_claim_event(
         return X12_OK;
     }
 
-    if (strcmp(event_type, "ChargeTransactionObserved") == 0) {
-        aggregate->has_charge_context = 1;
-        if (json_get_string(journal_line, "encounter_id", value, sizeof(value))) {
-            copy_cstr(aggregate->encounter_id, sizeof(aggregate->encounter_id), value);
-            rc = apply_encounter_context_to_aggregate(state, aggregate);
-            if (rc != X12_OK) {
-                return rc;
-            }
-        }
-        if (json_get_string(journal_line, "claim_type", value, sizeof(value))) {
-            copy_cstr(aggregate->claim_type, sizeof(aggregate->claim_type), value);
-        }
-        rc = apply_charge_service_line(aggregate, journal_line);
-        if (rc != X12_OK) {
-            return rc;
-        }
-    } else if (strcmp(event_type, "ClaimObserved") == 0 ||
-               strcmp(event_type, "ClaimReferencedBillingProvider") == 0 ||
-               strcmp(event_type, "ClaimReferencedSubscriber") == 0 ||
-               strcmp(event_type, "ClaimReferencedPatient") == 0 ||
-               strcmp(event_type, "ClaimReferencedRenderingProvider") == 0 ||
-               strcmp(event_type, "ClaimDateRecorded") == 0 ||
-               strcmp(event_type, "ClaimLineDateRecorded") == 0 ||
-               strcmp(event_type, "ClaimDiagnosesRecorded") == 0 ||
-               strcmp(event_type, "ClaimServiceLineRecorded") == 0) {
+    if (strcmp(event_type, "ClaimObserved") == 0 ||
+        strcmp(event_type, "ClaimReferencedBillingProvider") == 0 ||
+        strcmp(event_type, "ClaimReferencedSubscriber") == 0 ||
+        strcmp(event_type, "ClaimReferencedPatient") == 0 ||
+        strcmp(event_type, "ClaimReferencedRenderingProvider") == 0 ||
+        strcmp(event_type, "ClaimDateRecorded") == 0 ||
+        strcmp(event_type, "ClaimLineDateRecorded") == 0 ||
+        strcmp(event_type, "ClaimDiagnosesRecorded") == 0 ||
+        strcmp(event_type, "ClaimServiceLineRecorded") == 0) {
         aggregate->has_837 = 1;
         rc = capture_reference_patient_context(state, aggregate, journal_line, event_type);
         if (rc != X12_OK) {
@@ -1605,10 +1395,6 @@ static int apply_claim_event(
                 return rc;
             }
         }
-    } else if (strcmp(event_type, "PatientPaymentObserved") == 0 ||
-               strcmp(event_type, "WriteoffObserved") == 0 ||
-               strcmp(event_type, "RefundObserved") == 0) {
-        aggregate->has_charge_context = 1;
     } else {
         return X12_OK;
     }
@@ -1623,90 +1409,6 @@ static int apply_claim_event(
         event_type,
         fingerprint
     );
-}
-
-static int discover_encounter_claim(
-    stitch_state_t *state,
-    const journal_event_t *journal_line
-)
-{
-    char event_type[96];
-    char claim_id[STITCH_ID_MAX];
-    char claim_id_token[TOKENISE_MAX_TOKEN_LEN];
-    char value[STITCH_VALUE_MAX];
-    claim_aggregate_t *aggregate;
-    int rc;
-
-    if (state->encounter_filter[0] == '\0') {
-        return X12_OK;
-    }
-    if (!json_get_string(journal_line, "event_type", event_type, sizeof(event_type)) ||
-        strcmp(event_type, "ChargeTransactionObserved") != 0 ||
-        !event_matches_filter(state, journal_line)) {
-        return X12_OK;
-    }
-
-    extract_claim_keys(
-        journal_line,
-        claim_id,
-        sizeof(claim_id),
-        claim_id_token,
-        sizeof(claim_id_token)
-    );
-    if (claim_key(claim_id, claim_id_token)[0] == '\0') {
-        return X12_OK;
-    }
-
-    aggregate = find_or_add_aggregate(state, claim_id, claim_id_token);
-    if (aggregate == NULL) {
-        return X12_ERR_NO_MEMORY;
-    }
-    if (json_get_string(journal_line, "encounter_id", value, sizeof(value))) {
-        copy_cstr(aggregate->encounter_id, sizeof(aggregate->encounter_id), value);
-        rc = apply_encounter_context_to_aggregate(state, aggregate);
-        if (rc != X12_OK) {
-            return rc;
-        }
-    }
-    if (json_get_string(journal_line, "claim_type", value, sizeof(value))) {
-        copy_cstr(aggregate->claim_type, sizeof(aggregate->claim_type), value);
-    }
-
-    return X12_OK;
-}
-
-static int read_journal_for_discovery(stitch_state_t *state, const char *path)
-{
-    journal_reader_t journal;
-    journal_event_t record;
-    int rc = X12_OK;
-
-    if (state->encounter_filter[0] == '\0') {
-        return X12_OK;
-    }
-
-    journal_reader_init(&journal);
-    rc = journal_reader_open(&journal, path);
-    if (rc != X12_OK) {
-        return rc;
-    }
-
-    while (rc == X12_OK) {
-        rc = journal_reader_next(&journal, &record);
-        if (rc != X12_OK || record.record_len == 0u) {
-            break;
-        }
-        rc = capture_encounter_context(state, &record);
-        if (rc == X12_OK) {
-            rc = discover_encounter_claim(state, &record);
-        }
-    }
-
-    if (journal_reader_close(&journal) != X12_OK && rc == X12_OK) {
-        rc = X12_ERR_IO;
-    }
-
-    return rc;
 }
 
 void aggregate_stitcher_input_init(aggregate_stitcher_input_t *input)
@@ -1828,9 +1530,6 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
         state->phi_vault = &phi_vault;
         owns_phi_vault = 1;
     }
-    if (input->encounter_id != NULL) {
-        copy_cstr(state->encounter_filter, sizeof(state->encounter_filter), input->encounter_id);
-    }
     if (input->read_store_path != NULL) {
         scribe_store_init(&read_store);
         rc = scribe_store_open(&read_store, input->read_store_path);
@@ -1854,25 +1553,6 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
         }
         state->read_store = &read_store;
         owns_read_store = 1;
-    }
-
-    rc = read_journal_for_discovery(state, input->journal_path);
-    if (rc != X12_OK) {
-        (void)journal_reader_close(&journal);
-        if (owns_out) {
-            (void)fclose(out);
-        }
-        if (owns_notify_out) {
-            (void)fclose(notify_out);
-        }
-        if (owns_read_store) {
-            (void)scribe_store_close(&read_store);
-        }
-        if (owns_phi_vault) {
-            (void)phi_vault_close(&phi_vault);
-        }
-        free(state);
-        return rc;
     }
 
     while (rc == X12_OK) {
@@ -1908,17 +1588,14 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
             break;
         }
 
-        rc = capture_encounter_context(state, &record);
-        if (rc == X12_OK) {
-            rc = apply_claim_event(
-                state,
-                &record,
-                event_id,
-                record.offset,
-                record.stored_len,
-                drop_key
-            );
-        }
+        rc = apply_claim_event(
+            state,
+            &record,
+            event_id,
+            record.offset,
+            record.stored_len,
+            drop_key
+        );
         if (rc != X12_OK) {
             break;
         }
@@ -1988,11 +1665,6 @@ int aggregate_stitcher_run_cli(int argc, char **argv)
                 return -1;
             }
             input.phi_vault_path = argv[++i];
-        } else if (strcmp(argv[i], "--encounter-id") == 0) {
-            if (i + 1 >= argc) {
-                return -1;
-            }
-            input.encounter_id = argv[++i];
         } else if (strcmp(argv[i], "--include-phi") == 0) {
             input.include_phi = 1;
         } else if (strcmp(argv[i], "--run-id") == 0) {

@@ -33,6 +33,38 @@
     } \
 } while (0)
 
+static int require_str_equal(
+    const char *actual,
+    const char *expected,
+    const char *actual_expr,
+    const char *expected_expr,
+    const char *file,
+    int line
+)
+{
+    if (actual != NULL && expected != NULL && strcmp(actual, expected) == 0) {
+        return 0;
+    }
+
+    fprintf(
+        stderr,
+        "%s:%d: requirement failed: %s == %s (actual \"%s\", expected \"%s\")\n",
+        file,
+        line,
+        actual_expr,
+        expected_expr,
+        actual == NULL ? "(null)" : actual,
+        expected == NULL ? "(null)" : expected
+    );
+    return 1;
+}
+
+#define REQUIRE_STR(actual, expected) do { \
+    if (require_str_equal((actual), (expected), #actual, #expected, __FILE__, __LINE__)) { \
+        return 1; \
+    } \
+} while (0)
+
 typedef struct {
     size_t count;
     int saw_isa;
@@ -557,7 +589,7 @@ static int test_270_271_eligibility_events(void)
         if (strcmp(source_transaction, "271") == 0 &&
             strcmp(event_type, "EligibilityBenefitObserved") == 0) {
             REQUIRE(journal_event_get_string(&event, "member_id", member_value, sizeof(member_value)) == 1);
-            REQUIRE(strcmp(member_value, member_token) == 0);
+            REQUIRE_STR(member_value, member_token);
             saw_271 = 1;
         }
     }
@@ -750,7 +782,6 @@ static int test_stroke_encounter_fixture_set(void)
 
 static int test_stroke_balance_projection_from_journal(void)
 {
-    char charges_path[512];
     char coverage_834_path[512];
     char eligibility_270_path[512];
     char eligibility_271_path[512];
@@ -805,7 +836,6 @@ static int test_stroke_balance_projection_from_journal(void)
     int saw_stroke_271 = 0;
     int rc;
 
-    REQUIRE(make_path(charges_path, sizeof(charges_path), TEST_FIXTURE_DIR, "stroke_encounter/charge_transactions.ndjson") == 0);
     REQUIRE(make_path(coverage_834_path, sizeof(coverage_834_path), TEST_FIXTURE_DIR, "stroke_encounter/coverage_834.edi") == 0);
     REQUIRE(make_path(eligibility_270_path, sizeof(eligibility_270_path), TEST_FIXTURE_DIR, "stroke_encounter/eligibility_270.edi") == 0);
     REQUIRE(make_path(eligibility_271_path, sizeof(eligibility_271_path), TEST_FIXTURE_DIR, "stroke_encounter/eligibility_271.edi") == 0);
@@ -838,7 +868,6 @@ static int test_stroke_balance_projection_from_journal(void)
     journal_builder_input_init(&journal_input);
     journal_input.include_phi = 1;
     journal_input.run_id = "ingest-test-run";
-    REQUIRE(journal_builder_input_add_charges(&journal_input, charges_path) == X12_OK);
     REQUIRE(journal_builder_input_add_834(&journal_input, coverage_834_path) == X12_OK);
     REQUIRE(journal_builder_input_add_270(&journal_input, eligibility_270_path) == X12_OK);
     REQUIRE(journal_builder_input_add_271(&journal_input, eligibility_271_path) == X12_OK);
@@ -891,7 +920,6 @@ static int test_stroke_balance_projection_from_journal(void)
     stitch_input.journal_path = journal_path;
     stitch_input.out_path = aggregate_path;
     stitch_input.notify_out_path = notification_path;
-    stitch_input.encounter_id = "ENC-SYN-STROKE-001";
     stitch_input.include_phi = 1;
     stitch_input.run_id = "stitch-test-run";
     REQUIRE(aggregate_stitcher_stitch(&stitch_input) == X12_OK);
@@ -901,15 +929,15 @@ static int test_stroke_balance_projection_from_journal(void)
     REQUIRE(strstr(aggregates, "\"event_type\":\"ClaimAggregateUpdated\"") != NULL);
     REQUIRE(strstr(aggregates, "\"run_id\":\"stitch-test-run\"") != NULL);
     REQUIRE(strstr(aggregates, "\"source_run_id\":\"ingest-test-run\"") != NULL);
-    REQUIRE(count_substring(aggregates, "\"event_type\":\"ClaimAggregateUpdated\"") == 12u);
+    REQUIRE(count_substring(aggregates, "\"event_type\":\"ClaimAggregateUpdated\"") == 8u);
     REQUIRE(strstr(notifications, "\"event_type\":\"AggregateVersionRecorded\"") != NULL);
     REQUIRE(strstr(notifications, "\"ok\":true") != NULL);
-    REQUIRE(count_substring(notifications, "\"event_type\":\"AggregateVersionRecorded\"") == 12u);
+    REQUIRE(count_substring(notifications, "\"event_type\":\"AggregateVersionRecorded\"") == 8u);
     REQUIRE(strstr(notifications, "\"run_id\":\"stitch-test-run\"") != NULL);
     REQUIRE(strstr(notifications, "\"source_run_id\":\"ingest-test-run\"") != NULL);
-    REQUIRE(strstr(notifications, "\"notification_id\":\"claim:8259c238232f9585e95fc8f45b0bb410:3\"") != NULL);
+    REQUIRE(strstr(notifications, "\"notification_id\":\"claim:8259c238232f9585e95fc8f45b0bb410:2\"") != NULL);
     REQUIRE(strstr(notifications, "\"aggregate_id\":\"claim:8259c238232f9585e95fc8f45b0bb410\"") != NULL);
-    REQUIRE(strstr(notifications, "\"version\":3") != NULL);
+    REQUIRE(strstr(notifications, "\"version\":2") != NULL);
     REQUIRE(strstr(notifications, "\"updated_by_journal_offset\"") != NULL);
     REQUIRE(strstr(notifications, "\"updated_by_journal_length\"") != NULL);
     REQUIRE(strstr(notifications, "CLM-STROKE") == NULL);
@@ -930,27 +958,24 @@ static int test_stroke_balance_projection_from_journal(void)
     REQUIRE(strstr(aggregates, "\"patient_first_name\":\"ALEX\"") != NULL);
     REQUIRE(strstr(aggregates, "\"patient_name_token\":\"4b108ab4544b581362f5809685352233\"") != NULL);
     REQUIRE(strstr(aggregates, "\"version\":1") != NULL);
-    REQUIRE(strstr(aggregates, "\"version\":3") != NULL);
-    REQUIRE(strstr(aggregates, "\"version\":4") == NULL);
+    REQUIRE(strstr(aggregates, "\"version\":2") != NULL);
+    REQUIRE(strstr(aggregates, "\"version\":3") == NULL);
     REQUIRE(strstr(aggregates, "\"updated_by_event_id\"") != NULL);
     REQUIRE(strstr(aggregates, "\"update_scope\":\"source_drop\"") != NULL);
-    REQUIRE(strstr(aggregates, "\"source_drop_id\":\"charge:1\"") != NULL);
-    REQUIRE(strstr(aggregates, "\"source_drop_id\":\"837:2\"") != NULL);
-    REQUIRE(strstr(aggregates, "\"source_drop_id\":\"835:6\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"source_drop_id\":\"837:000000101:101:0001\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"source_drop_id\":\"835:000000102:102:0001\"") != NULL);
     REQUIRE(strstr(aggregates, "\"compacted_source_event_count\":12") != NULL);
     REQUIRE(strstr(aggregates, "\"compacted_source_event_count\":14") != NULL);
     REQUIRE(strstr(aggregates, "\"applied_event_ids\":[") != NULL);
     REQUIRE(strstr(aggregates, "\"update_event_ids\":[") != NULL);
     REQUIRE(strstr(aggregates, "\"source_event_ids\":[") == NULL);
     REQUIRE(strstr(aggregates, "\"updated_source_event_ids\":[") == NULL);
-    REQUIRE(strstr(aggregates, "\"has_charge_context\":true") != NULL);
     REQUIRE(strstr(aggregates, "\"has_837\":true") != NULL);
     REQUIRE(strstr(aggregates, "\"has_835\":true") != NULL);
     REQUIRE(strstr(aggregates, "\"submitted_service_line_count\":3") != NULL);
     REQUIRE(strstr(aggregates, "\"remittance_service_line_count\":3") != NULL);
     REQUIRE(strstr(aggregates, "\"adjustment_count\":6") != NULL);
     REQUIRE(strstr(aggregates, "\"service_lines\":[") != NULL);
-    REQUIRE(strstr(aggregates, "\"charge_context\":{\"amount\":\"180.00\"") != NULL);
     REQUIRE(strstr(aggregates, "\"submitted\":{\"line_type\":\"SV1\",\"procedure_code_qualifier\":\"HC\",\"procedure_code_set\":\"CPT/HCPCS\",\"charge_amount\":\"300.00\",\"unit_measure_code\":\"UN\",\"unit_count\":\"3\",\"service_date\":\"20260617\"}") != NULL);
     REQUIRE(strstr(aggregates, "\"remittance\":{\"procedure_code_qualifier\":\"HC\",\"procedure_code_set\":\"CPT/HCPCS\",\"line_charge_amount\":\"300.00\",\"line_paid_amount\":\"180.00\",\"paid_service_unit_count\":\"3\",\"service_date\":\"20260617\"}") != NULL);
     REQUIRE(strstr(aggregates, "\"match_method\":\"procedure_charge_date\"") != NULL);
@@ -959,26 +984,15 @@ static int test_stroke_balance_projection_from_journal(void)
 
     balance_projector_input_init(&projection_input);
     projection_input.journal_path = journal_path;
-    projection_input.encounter_id = "ENC-SYN-STROKE-001";
     projection_input.include_phi = 1;
     REQUIRE(balance_projector_project(&projection_input, projection_path) == X12_OK);
     REQUIRE(read_file_text(projection_path, projection, sizeof(projection)) == 0);
 
-    REQUIRE(strstr(projection, "\"event_type\":\"EncounterBalanceProjected\"") != NULL);
-    REQUIRE(strstr(projection, "\"encounter_id\":\"ENC-SYN-STROKE-001\"") != NULL);
+    REQUIRE(strstr(projection, "\"event_type\":\"ClaimBalanceProjected\"") != NULL);
     REQUIRE(strstr(projection, "\"claim_id\":\"CLM-STROKE-RAD-FAC-001\"") != NULL);
-    REQUIRE(strstr(projection, "\"claim_type\":\"radiology_facility\"") != NULL);
     REQUIRE(strstr(projection, "\"claim_id\":\"CLM-STROKE-RAD-PRO-001\"") != NULL);
-    REQUIRE(strstr(projection, "\"claim_type\":\"radiology_professional\"") != NULL);
     REQUIRE(strstr(projection, "\"claim_id\":\"CLM-STROKE-REHAB-001\"") != NULL);
-    REQUIRE(strstr(projection, "\"claim_type\":\"outpatient_rehab\"") != NULL);
     REQUIRE(strstr(projection, "\"claim_id\":\"CLM-STROKE-NEURO-001\"") != NULL);
-    REQUIRE(strstr(projection, "\"claim_type\":\"neurology_followup\"") != NULL);
-    REQUIRE(strstr(projection, "\"description\":\"CT head without contrast facility charge\"") != NULL);
-    REQUIRE(strstr(projection, "\"description\":\"CT head with contrast facility charge\"") != NULL);
-    REQUIRE(strstr(projection, "\"description\":\"MRI brain professional interpretation\"") != NULL);
-    REQUIRE(strstr(projection, "\"description\":\"Therapeutic exercise for stroke recovery\"") != NULL);
-    REQUIRE(strstr(projection, "\"description\":\"Neurology follow-up for stroke recovery\"") != NULL);
     REQUIRE(strstr(projection, "\"match_method\":\"procedure_charge_date\"") != NULL);
     REQUIRE(strstr(projection, "\"entry_type\":\"billed_charge\"") != NULL);
     REQUIRE(strstr(projection, "\"entry_type\":\"payer_payment\"") != NULL);
@@ -988,7 +1002,6 @@ static int test_stroke_balance_projection_from_journal(void)
     REQUIRE(strstr(projection, "\"payer_paid\":\"2340.00\"") != NULL);
     REQUIRE(strstr(projection, "\"contractual_adjustments\":\"830.00\"") != NULL);
     REQUIRE(strstr(projection, "\"patient_responsibility\":\"550.00\"") != NULL);
-    REQUIRE(strstr(projection, "\"patient_payments\":\"0.00\"") != NULL);
     REQUIRE(strstr(projection, "\"current_balance\":\"550.00\"") != NULL);
 
     (void)remove(phi_vault_path);
@@ -1011,7 +1024,7 @@ static int test_stroke_balance_projection_from_journal(void)
                 resolved,
                 sizeof(resolved)
             ) == X12_OK);
-    REQUIRE(strcmp(resolved, "CLM-STROKE-RAD-FAC-001") == 0);
+    REQUIRE_STR(resolved, "CLM-STROKE-RAD-FAC-001");
     REQUIRE(phi_vault_resolve(
                 &phi_vault,
                 "payer_claim_control_number",
@@ -1021,7 +1034,7 @@ static int test_stroke_balance_projection_from_journal(void)
                 resolved,
                 sizeof(resolved)
             ) == X12_OK);
-    REQUIRE(strcmp(resolved, "PAYER-STROKE-FAC-001") == 0);
+    REQUIRE_STR(resolved, "PAYER-STROKE-FAC-001");
     REQUIRE(phi_vault_resolve(
                 &phi_vault,
                 "patient_id_name",
@@ -1031,7 +1044,7 @@ static int test_stroke_balance_projection_from_journal(void)
                 resolved,
                 sizeof(resolved)
             ) == X12_OK);
-    REQUIRE(strcmp(resolved, "REID|ALEX") == 0);
+    REQUIRE_STR(resolved, "REID|ALEX");
     patient_name_raw.ptr = "REID|ALEX";
     patient_name_raw.len = strlen(patient_name_raw.ptr);
     REQUIRE(tokenise_value(
@@ -1049,7 +1062,7 @@ static int test_stroke_balance_projection_from_journal(void)
                 resolved,
                 sizeof(resolved)
             ) == X12_OK);
-    REQUIRE(strcmp(resolved, "REID|ALEX") == 0);
+    REQUIRE_STR(resolved, "REID|ALEX");
     conflicting_raw.ptr = "DIFFERENT-RAW-CLAIM";
     conflicting_raw.len = strlen(conflicting_raw.ptr);
     REQUIRE(phi_vault_put_mapping(
@@ -1079,7 +1092,7 @@ static int test_stroke_balance_projection_from_journal(void)
                 latest_aggregate,
                 sizeof(latest_aggregate)
             ) == X12_OK);
-    REQUIRE(latest_version == 3u);
+    REQUIRE(latest_version == 2u);
     REQUIRE(strstr(latest_aggregate, "\"contains_phi\":true") != NULL);
     REQUIRE(strstr(latest_aggregate, "\"claim_id\":\"CLM-STROKE-RAD-FAC-001\"") != NULL);
     REQUIRE(strstr(latest_aggregate, "\"claim_id_token\":\"8259c238232f9585e95fc8f45b0bb410\"") != NULL);
@@ -1108,7 +1121,7 @@ static int test_stroke_balance_projection_from_journal(void)
     REQUIRE(aggregate_stitcher_stitch(&stitch_input) == X12_OK);
     REQUIRE(read_file_text(nonphi_aggregate_path, aggregates, sizeof(aggregates)) == 0);
 
-    REQUIRE(count_substring(aggregates, "\"event_type\":\"ClaimAggregateUpdated\"") == 12u);
+    REQUIRE(count_substring(aggregates, "\"event_type\":\"ClaimAggregateUpdated\"") == 8u);
     REQUIRE(strstr(aggregates, "\"claim_id\":\"8259c238232f9585e95fc8f45b0bb410\"") != NULL);
     REQUIRE(strstr(aggregates, "\"payer_claim_control_number\":\"edf29f09740ab104da309e2b036e14d1\"") != NULL);
     REQUIRE(strstr(aggregates, "\"service_lines\":[") != NULL);
@@ -1131,7 +1144,7 @@ static int test_stroke_balance_projection_from_journal(void)
                 latest_aggregate,
                 sizeof(latest_aggregate)
             ) == X12_OK);
-    REQUIRE(latest_version == 3u);
+    REQUIRE(latest_version == 2u);
     REQUIRE(strstr(latest_aggregate, "\"contains_phi\":false") != NULL);
     REQUIRE(strstr(latest_aggregate, "\"has_835\":true") != NULL);
     REQUIRE(strstr(latest_aggregate, "\"claim_id\":\"8259c238232f9585e95fc8f45b0bb410\"") != NULL);
@@ -1169,16 +1182,7 @@ static int test_stroke_balance_projection_from_journal(void)
                 indexed_event_ids[0],
                 &indexed_locator
             ) == X12_OK);
-    REQUIRE(strcmp(indexed_locator.source_drop_id, "835:6") == 0);
-    REQUIRE(scribe_store_find_event_ids_by_key(
-                &read_store,
-                "encounter_id",
-                "ENC-SYN-STROKE-001",
-                indexed_event_ids,
-                16u,
-                &indexed_event_count
-            ) == X12_OK);
-    REQUIRE(indexed_event_count > 0u);
+    REQUIRE_STR(indexed_locator.source_drop_id, "835:000000102:102:0001");
     REQUIRE(scribe_store_close(&read_store) == X12_OK);
 
     projection_input.journal_path = nonphi_journal_path;
@@ -1334,7 +1338,7 @@ static int test_member_coverage_aggregate_from_journal(void)
                 &aggregate_count
             ) == X12_OK);
     REQUIRE(aggregate_count == 1u);
-    REQUIRE(strcmp(aggregate_ids[0], aggregate_id) == 0);
+    REQUIRE_STR(aggregate_ids[0], aggregate_id);
     REQUIRE(scribe_store_find_member_coverage_ids_by_key(
                 &store,
                 "payer_id",
@@ -1344,7 +1348,7 @@ static int test_member_coverage_aggregate_from_journal(void)
                 &aggregate_count
             ) == X12_OK);
     REQUIRE(aggregate_count == 1u);
-    REQUIRE(strcmp(aggregate_ids[0], aggregate_id) == 0);
+    REQUIRE_STR(aggregate_ids[0], aggregate_id);
     REQUIRE(scribe_store_find_member_coverage_ids_by_key(
                 &store,
                 "service_type_code",
@@ -1354,7 +1358,7 @@ static int test_member_coverage_aggregate_from_journal(void)
                 &aggregate_count
             ) == X12_OK);
     REQUIRE(aggregate_count == 1u);
-    REQUIRE(strcmp(aggregate_ids[0], aggregate_id) == 0);
+    REQUIRE_STR(aggregate_ids[0], aggregate_id);
     REQUIRE(scribe_store_close(&store) == X12_OK);
 
     coverage_stitcher_input_init(&coverage_input);
@@ -1402,7 +1406,7 @@ static int test_member_coverage_aggregate_from_journal(void)
                 &aggregate_count
             ) == X12_OK);
     REQUIRE(aggregate_count == 1u);
-    REQUIRE(strcmp(aggregate_ids[0], aggregate_id) == 0);
+    REQUIRE_STR(aggregate_ids[0], aggregate_id);
     REQUIRE(scribe_store_close(&store) == X12_OK);
 
     (void)remove(journal_path);
@@ -1443,7 +1447,7 @@ static int test_store_indexes_and_aggregates(void)
     REQUIRE(scribe_store_init_schema(&store) == X12_OK);
     REQUIRE(scribe_store_put_source_drop(
                 &store,
-                "835:6",
+                "835:000000102:102:0001",
                 "835",
                 "2026-09-14T00:00:00Z",
                 "sha256:file"
@@ -1451,7 +1455,7 @@ static int test_store_indexes_and_aggregates(void)
     REQUIRE(scribe_store_put_event(
                 &store,
                 "evt_000128",
-                "835:6",
+                "835:000000102:102:0001",
                 "RemittanceAdjustmentObserved",
                 "20260603-000001",
                 8172,
@@ -1480,15 +1484,15 @@ static int test_store_indexes_and_aggregates(void)
                 &count
             ) == X12_OK);
     REQUIRE(count == 1u);
-    REQUIRE(strcmp(event_ids[0], "evt_000128") == 0);
+    REQUIRE_STR(event_ids[0], "evt_000128");
 
     REQUIRE(scribe_store_get_event_locator(&store, "evt_000128", &locator) == X12_OK);
-    REQUIRE(strcmp(locator.source_drop_id, "835:6") == 0);
-    REQUIRE(strcmp(locator.event_type, "RemittanceAdjustmentObserved") == 0);
-    REQUIRE(strcmp(locator.segment_id, "20260603-000001") == 0);
+    REQUIRE_STR(locator.source_drop_id, "835:000000102:102:0001");
+    REQUIRE_STR(locator.event_type, "RemittanceAdjustmentObserved");
+    REQUIRE_STR(locator.segment_id, "20260603-000001");
     REQUIRE(locator.offset == 8172);
     REQUIRE(locator.length == 612);
-    REQUIRE(strcmp(locator.checksum, "sha256:event") == 0);
+    REQUIRE_STR(locator.checksum, "sha256:event");
 
     REQUIRE(scribe_store_put_claim_aggregate(
                 &store,
@@ -1496,7 +1500,7 @@ static int test_store_indexes_and_aggregates(void)
                 3u,
                 "{\"version\":3,\"has_835\":true}",
                 "evt_000128",
-                "835:6"
+                "835:000000102:102:0001"
             ) == X12_OK);
     REQUIRE(scribe_store_put_claim_aggregate(
                 &store,
@@ -1504,7 +1508,7 @@ static int test_store_indexes_and_aggregates(void)
                 2u,
                 "{\"version\":2}",
                 "evt_000024",
-                "837:2"
+                "837:000000101:101:0001"
             ) == X12_OK);
     REQUIRE(scribe_store_get_latest_claim_aggregate(
                 &store,
@@ -1537,7 +1541,7 @@ static int test_json_escaping(void)
     REQUIRE(fflush(fp) == 0);
     REQUIRE(fseek(fp, 0, SEEK_SET) == 0);
     REQUIRE(fgets(output, sizeof(output), fp) != NULL);
-    REQUIRE(strcmp(output, "\"a\\\"b\\\\c\\n\"") == 0);
+    REQUIRE_STR(output, "\"a\\\"b\\\\c\\n\"");
     REQUIRE(fclose(fp) == 0);
 
     return 0;
@@ -1553,11 +1557,11 @@ static int test_json_scan_unescapes_strings(void)
         "\"raw_elements\":[\"x\",\"y\\tz\"]}";
 
     REQUIRE(json_get_string(line, "description", value, sizeof(value)) == 1);
-    REQUIRE(strcmp(value, "a\"b\\c\n") == 0);
+    REQUIRE_STR(value, "a\"b\\c\n");
     REQUIRE(json_get_bool(line, "synthetic", &synthetic) == 1);
     REQUIRE(synthetic == 1);
     REQUIRE(json_get_array_string_at(line, "raw_elements", 1u, value, sizeof(value)) == 1);
-    REQUIRE(strcmp(value, "y\tz") == 0);
+    REQUIRE_STR(value, "y\tz");
 
     return 0;
 }
@@ -1571,7 +1575,7 @@ static int test_tokenise_format(void)
     raw.len = strlen(raw.ptr);
 
     REQUIRE(tokenise_value(TOK_CLAIM_ID, raw, token, sizeof(token)) == X12_OK);
-    REQUIRE(strcmp(token, "f58260c3ffcdfaff81c42473f162e481") == 0);
+    REQUIRE_STR(token, "f58260c3ffcdfaff81c42473f162e481");
 
     return 0;
 }

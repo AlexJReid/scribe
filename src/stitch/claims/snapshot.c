@@ -96,35 +96,6 @@ static int snapshot_add_adjustments(
     return X12_OK;
 }
 
-static int snapshot_add_charge_context(
-    json_writer_t *writer,
-    yyjson_mut_val *line_obj,
-    const stitched_service_line_t *line
-)
-{
-    yyjson_mut_val *obj;
-    int rc;
-
-    if (!line->has_charge_context) {
-        return X12_OK;
-    }
-
-    obj = json_writer_add_object(writer, line_obj, "charge_context");
-    if (obj == NULL) {
-        return X12_ERR_NO_MEMORY;
-    }
-
-    rc = json_writer_add_string(writer, obj, "amount", line->charge_amount);
-    if (rc == X12_OK) {
-        rc = json_writer_add_string(writer, obj, "description", line->description);
-    }
-    if (rc == X12_OK) {
-        rc = json_writer_add_string(writer, obj, "service_date", line->charge_service_date);
-    }
-
-    return rc;
-}
-
 static int snapshot_add_submitted_line(
     json_writer_t *writer,
     yyjson_mut_val *line_obj,
@@ -288,9 +259,6 @@ static int snapshot_add_service_lines(
         }
         if (rc == X12_OK) {
             rc = json_writer_add_string(writer, line_obj, "match_method", line->match_method);
-        }
-        if (rc == X12_OK) {
-            rc = snapshot_add_charge_context(writer, line_obj, line);
         }
         if (rc == X12_OK) {
             rc = snapshot_add_submitted_line(writer, line_obj, line);
@@ -520,12 +488,6 @@ static int build_snapshot_doc(
             return rc;
         }
     }
-    if (aggregate->encounter_id[0] != '\0') {
-        rc = json_writer_add_string(writer, keys, "encounter_id", aggregate->encounter_id);
-        if (rc != X12_OK) {
-            return rc;
-        }
-    }
     if (include_phi && aggregate->patient_id[0] != '\0') {
         rc = json_writer_add_string(writer, keys, "patient_id", aggregate->patient_id);
         if (rc == X12_OK && aggregate->patient_id_token[0] != '\0') {
@@ -582,15 +544,7 @@ static int build_snapshot_doc(
         return X12_ERR_NO_MEMORY;
     }
 
-    rc = json_writer_add_bool(
-        writer,
-        snapshot_state,
-        "has_charge_context",
-        aggregate->has_charge_context
-    );
-    if (rc == X12_OK) {
-        rc = json_writer_add_bool(writer, snapshot_state, "has_837", aggregate->has_837);
-    }
+    rc = json_writer_add_bool(writer, snapshot_state, "has_837", aggregate->has_837);
     if (rc == X12_OK) {
         rc = json_writer_add_bool(writer, snapshot_state, "has_835", aggregate->has_835);
     }

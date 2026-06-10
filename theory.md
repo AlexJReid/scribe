@@ -1,8 +1,7 @@
 # scribe notes
 
-`scribe` joins files that normally arrive apart:
+`scribe` joins X12 files that normally arrive apart:
 
-- charge rows from a local provider system
 - 834 enrollment context
 - 270/271 eligibility inquiry and response
 - 837 claim submissions
@@ -14,7 +13,7 @@ be resolved for controlled PHI workflows.
 ## Claims
 
 ```text
-charges + 837 claim + 835 remittance
+837 claim + 835 remittance
     -> journal events
     -> claim aggregate versions
 ```
@@ -44,14 +43,32 @@ service date, and service type.
 
 ## Storage
 
-- Journal: immutable binary evidence stream.
+- Journal: immutable binary evidence stream, normally stored in arrival-date/run
+  segments.
 - PHI vault: `namespace + token -> raw`.
-- Event indexes: claim, payer control, encounter, member, payer, service type,
+- Event indexes: claim, payer control, member, payer, service type,
   and journal locator lookup.
 - Snapshot store: versioned claim/member coverage states plus latest rows.
 - Outbox: non-PHI `AggregateVersionRecorded` facts.
 
 SQLite backs these stores in the proof of concept.
+
+## Stable IDs
+
+Treat the binary journal as the evidence store and keep durable identity out of
+arrival order or local filenames.
+
+- Journal segment: arrival date plus ingest run file.
+- Source drop: stable inbound X12 transaction identity, `type:isa13:gs06:st02`
+  when ISA/GS/ST controls are present.
+- Event locator: journal segment plus byte offset and stored length.
+- Aggregate partition: domain key, normally claim token for claims and member
+  token plus payer/service context for coverage.
+
+Source drop IDs identify the file/interchange/transaction batch that should
+collapse into one aggregate version. Event locators identify the exact bytes that
+produced a fact, so renamed files or reordered ingest do not change evidence
+references.
 
 ## Runs
 
@@ -60,7 +77,8 @@ Each execution should have a `run_id`.
 - Journal event `run_id`: ingest execution.
 - Aggregate/notification `run_id`: stitch execution.
 - `source_run_id`: ingest run copied from reduced journal events.
-- `source_drop_id`: source file or transaction group reduced as one batch.
+- `source_drop_id`: stable inbound X12 transaction identity when controls are
+  available, formatted as `type:isa13:gs06:st02`.
 - `updated_by_*`: last journal event and locator that changed the batch.
 
 The stitcher records new aggregate versions. A notifier owns delivery retries,

@@ -7,7 +7,6 @@
 
 typedef struct {
     const char *journal_path;
-    const char *encounter_id;
     int include_phi;
 } balance_projector_input_t;
 

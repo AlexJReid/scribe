@@ -1217,6 +1217,7 @@ static int make_drop_key(
     size_t out_len
 )
 {
+    char source_drop_id[COVERAGE_VALUE_MAX] = "";
     char source_file[COVERAGE_VALUE_MAX] = "";
     char source_transaction[32] = "";
     int written;
@@ -1225,6 +1226,11 @@ static int make_drop_key(
         return X12_ERR_INVALID_ARGUMENT;
     }
     out[0] = '\0';
+
+    if (json_get_string(event, "source_drop_id", source_drop_id, sizeof(source_drop_id))) {
+        copy_cstr(out, out_len, source_drop_id);
+        return X12_OK;
+    }
 
     (void)json_get_string(event, "source_file", source_file, sizeof(source_file));
     (void)json_get_string(event, "source_transaction", source_transaction, sizeof(source_transaction));
@@ -1256,25 +1262,51 @@ static int set_current_source_drop(coverage_state_t *state, const char *drop_key
     state->source_drop_count++;
 
     separator = strchr(drop_key, '|');
-    drop_type_len = separator == NULL ? strlen(drop_key) : (size_t)(separator - drop_key);
+    if (separator == NULL && strchr(drop_key, ':') != NULL) {
+        const char *type_end = strchr(drop_key, ':');
+
+        copy_cstr(state->current_source_drop_id, sizeof(state->current_source_drop_id), drop_key);
+        drop_type_len = (size_t)(type_end - drop_key);
+    } else {
+        drop_type_len = separator == NULL ? strlen(drop_key) : (size_t)(separator - drop_key);
+        if (drop_type_len == 0u) {
+            written = snprintf(
+                state->current_source_drop_id,
+                sizeof(state->current_source_drop_id),
+                "source:%zu",
+                state->source_drop_count
+            );
+        } else {
+            written = snprintf(
+                state->current_source_drop_id,
+                sizeof(state->current_source_drop_id),
+                "%.*s:%zu",
+                (int)drop_type_len,
+                drop_key,
+                state->source_drop_count
+            );
+        }
+        if (written < 0 || (size_t)written >= sizeof(state->current_source_drop_id)) {
+            return X12_ERR_BUFFER_TOO_SMALL;
+        }
+    }
+
     if (drop_type_len == 0u) {
         written = snprintf(
-            state->current_source_drop_id,
-            sizeof(state->current_source_drop_id),
-            "source:%zu",
-            state->source_drop_count
+            source_type,
+            sizeof(source_type),
+            "source"
         );
     } else {
         written = snprintf(
-            state->current_source_drop_id,
-            sizeof(state->current_source_drop_id),
-            "%.*s:%zu",
+            source_type,
+            sizeof(source_type),
+            "%.*s",
             (int)drop_type_len,
-            drop_key,
-            state->source_drop_count
+            drop_key
         );
     }
-    if (written < 0 || (size_t)written >= sizeof(state->current_source_drop_id)) {
+    if (written < 0 || (size_t)written >= sizeof(source_type)) {
         return X12_ERR_BUFFER_TOO_SMALL;
     }
 
@@ -1282,11 +1314,6 @@ static int set_current_source_drop(coverage_state_t *state, const char *drop_key
         return X12_OK;
     }
 
-    if (drop_type_len >= sizeof(source_type)) {
-        return X12_ERR_BUFFER_TOO_SMALL;
-    }
-    memcpy(source_type, drop_key, drop_type_len);
-    source_type[drop_type_len] = '\0';
     rc = scribe_store_put_source_drop(
         state->read_store,
         state->current_source_drop_id,
