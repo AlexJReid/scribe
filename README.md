@@ -69,13 +69,13 @@ order by aggregate_id;
 
 See [scripts/stroke-demo.sh](./scripts/stroke-demo.sh) and [demo.sh](./demo.sh) for the full ingest, stitch, coverage, PHI, and balance command lines.
 
-## Safety
+## PHI
 
 Default flows stay tokenised. Use `--include-phi --phi-vault ...` only for
 controlled PHI read stores.
 
-All PHI-looking fixture values are synthesized. The stroke case study is only
-inspired by a UK, non-US healthcare episode; names, IDs, payer details, dates,
+All PHI-looking fixture values are made up. The stroke case study is only
+inspired by a UK, non-US healthcare episode that I personally had. IDs, payer details, dates,
 amounts, and EDI content are made up.
 
 ## More
