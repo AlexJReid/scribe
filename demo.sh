@@ -1,6 +1,9 @@
 #!/bin/sh
 set -eu
 
+# Sequence of commands to build up a journal, PHI vault and read stores
+# from .edi files and then demo their use.
+
 cd "$(dirname "$0")"
 
 missing=0
@@ -27,19 +30,6 @@ if [ "$missing" -ne 0 ]; then
     echo "Run ./scripts/stroke-demo.sh first to populate demo/." >&2
     exit 1
 fi
-
-echo "Stroke demo artifacts"
-ls -lh \
-  demo/stroke.journal \
-  demo/stroke_phi_vault.sqlite \
-  demo/stroke_read_store.sqlite \
-  demo/stroke_phi_read_store.sqlite \
-  demo/stroke_aggregates.ndjson \
-  demo/stroke_phi_aggregates.ndjson \
-  demo/stroke_member_coverage.ndjson \
-  demo/stroke_phi_member_coverage.ndjson \
-  demo/stroke_notifications.ndjson \
-  demo/stroke_balance.json
 
 echo
 echo "Balance totals"

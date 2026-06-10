@@ -1,12 +1,27 @@
 # scribe
 
-`scribe` is a proof of concept for parsing synthetic healthcare EDI into a
+`scribe` is a tiny toolkit for parsing synthetic healthcare EDI into a
 tokenised, replayable money trail.
 
 It ingests charge rows plus 834, 835, 837, and 270/271 files; writes an
 immutable binary journal; keeps raw PHI in a separate vault; and reduces the
 journal into claim aggregates, coverage snapshots, balance projections, and
 non-PHI notification facts.
+
+scribe turns X12 healthcare EDI into auditable events.
+
+Instead of giving you a huge opaque parse tree, it emits small domain events with control numbers, segment positions, and byte offsets so pipelines can validate, load, and debug claims/remits without hand-rolling brittle string parsers.
+
+It is a small, versatile binary that runs on any platform. Use the CLI interactively, in a command pipeline:
+
+```bash
+scribe parse --type 837 claims.edi \
+  | jq 'select(.event_type=="SubscriberReferenced")'
+```
+
+... or as part of a serverless trigger when some files arrive on storage and batch process/cron job to process waiting X12 files.
+
+It can create journals, read store projections and so on. For more advanced usage see [scripts/stroke-demo.sh](./scripts/stroke-demo.sh) or `scribe --help`.
 
 ## Build
 
@@ -51,8 +66,7 @@ order by aggregate_id;
 "
 ```
 
-See `scripts/stroke-demo.sh` for the full ingest, stitch, coverage, PHI, and
-balance command lines.
+See [scripts/stroke-demo.sh](./scripts/stroke-demo.sh) for the full ingest, stitch, coverage, PHI, and balance command lines.
 
 ## Safety
 
@@ -66,7 +80,7 @@ amounts, and EDI content are made up.
 ## More
 
 - [theory.md](./theory.md): compact model notes
-- [EVENTS.md](./EVENTS.md): event names
+- [events.md](./events.md): event names
 - [tests/fixtures/stroke_encounter/README.md](./tests/fixtures/stroke_encounter/README.md): fixture map.
 
 ## License
