@@ -19,7 +19,18 @@ be resolved for controlled PHI workflows.
 ```
 
 837 says what was claimed: identity, patient/subscriber/provider references,
-service lines, billed amounts, dates, diagnoses, and locators.
+service/revenue lines, billed amounts, dates, diagnoses, and locators.
+
+`ClaimServiceLineRecorded` carries the submitted line facts needed for matching
+and projection: line order, procedure qualifier/code, procedure modifiers,
+charge amount, unit measure, unit count, and diagnosis pointers where present.
+Institutional `SV2` lines also carry the revenue code. Consumers should use
+these named fields, not infer submitted amounts and units from `raw_elements`.
+
+Provider references keep their role in the event name. Current 837 provider
+roles include billing, rendering, referring, supervising, facility, attending,
+operating, and other provider references. `reference_scope` says whether the
+provider applied at claim or service-line scope.
 
 835 says how the payer adjudicated it: status, payer control number, paid
 amount, patient responsibility, adjustments, remittance dates, service-line

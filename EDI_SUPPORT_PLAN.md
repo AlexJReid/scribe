@@ -15,6 +15,39 @@ Reference sources include CMS documentation, companion guides, and Stedi healthc
 
 The immediate priority is to make 837 support useful enough to drive claim stitching, 835 matching, and downstream projections. That means supporting both professional and institutional claim shapes.
 
+### Current Progress
+
+As of the current implementation pass:
+
+- `ClaimServiceLineRecorded` emits named submitted-line fields instead of making
+  consumers infer from `raw_elements`: `procedure_code_qualifier`,
+  `procedure_code_set`, `procedure_code`, `procedure_modifiers`,
+  `charge_amount`, `unit_measure_code`, `unit_count`, and
+  `diagnosis_pointers`.
+- Professional `SV1` and institutional `SV2` line positions are handled
+  separately. `SV2` emits `revenue_code`.
+- Stitching and balance projection read submitted charge/unit facts from the
+  named fields, not from raw element positions.
+- 837 provider role extraction now covers billing, rendering, referring,
+  supervising, facility, attending, operating, and other provider references,
+  with `reference_scope` distinguishing claim and service-line context.
+- Binary journal key support includes the new 837 line fields.
+- `README.md`, `theory.md`, and `events.md` describe the current event surface.
+- Tests have started moving out of `tests/test_parser.c`: shared helpers live in
+  `tests/test_support.h`, low-level parser checks in `tests/test_x12_parser.c`,
+  JSON/token checks in `tests/test_core.c`, store checks in `tests/test_store.c`,
+  and focused 837 mapper coverage in `tests/test_837_mapper.c`.
+
+Next logical implementation slices:
+
+- Make `diagnosis_pointers` a structured array, matching
+  `procedure_modifiers`.
+- Parse the `CLM05` claim header composite into named fields for facility/place
+  code, qualifier, and claim frequency.
+- Attach `PRV` provider taxonomy/specialty facts to provider context.
+- Continue 837I-specific claim facts: admission/discharge dates, patient status,
+  occurrence codes, value codes, and DRG.
+
 ### 837 Professional (837P)
 
 Current support should be expanded from basic claim extraction into richer claim, provider, diagnosis, and service-line events.

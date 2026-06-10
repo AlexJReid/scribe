@@ -111,7 +111,8 @@ static const journal_key_def_t journal_keys[] = {
     {"unit_measure_code", 94u},
     {"unit_count", 95u},
     {"diagnosis_pointers", 96u},
-    {"revenue_code", 97u}
+    {"revenue_code", 97u},
+    {"procedure_modifiers", 98u}
 };
 
 static unsigned short key_id_for_name(const char *name)

@@ -18,6 +18,9 @@ or when reading a PHI-resolved store.
 
 837: `ClaimObserved`, `ClaimReferencedSubscriber`, `ClaimReferencedPatient`,
 `ClaimReferencedBillingProvider`, `ClaimReferencedRenderingProvider`,
+`ClaimReferencedReferringProvider`, `ClaimReferencedSupervisingProvider`,
+`ClaimReferencedFacility`, `ClaimReferencedAttendingProvider`,
+`ClaimReferencedOperatingProvider`, `ClaimReferencedOtherProvider`,
 `ClaimDiagnosesRecorded`, `ClaimDateRecorded`, `ClaimServiceLineRecorded`,
 `ClaimLineDateRecorded`.
 

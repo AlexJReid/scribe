@@ -147,6 +147,50 @@ static void split_first_component(
     *code = value;
 }
 
+static void split_procedure_components(
+    x12_str_t value,
+    char component_sep,
+    x12_str_t *qualifier,
+    x12_str_t *code,
+    x12_str_t *modifiers,
+    size_t *modifier_count
+)
+{
+    size_t start = 0u;
+    size_t index = 0u;
+    size_t i;
+
+    *qualifier = empty_str();
+    *code = empty_str();
+    *modifier_count = 0u;
+
+    for (i = 0u; i <= value.len; i++) {
+        if (i == value.len || value.ptr[i] == component_sep) {
+            x12_str_t component;
+
+            component.ptr = value.ptr + start;
+            component.len = i - start;
+
+            if (index == 0u) {
+                *qualifier = component;
+            } else if (index == 1u) {
+                *code = component;
+            } else if (index <= 5u && component.len > 0u && *modifier_count < 4u) {
+                modifiers[*modifier_count] = component;
+                (*modifier_count)++;
+            }
+
+            start = i + 1u;
+            index++;
+        }
+    }
+
+    if (index == 1u) {
+        *code = *qualifier;
+        *qualifier = empty_str();
+    }
+}
+
 static int normalize_diagnosis_code(
     x12_str_t raw_code,
     char *buffer,
@@ -492,6 +536,20 @@ static int flush_claim_context_references(x12_mapper_837_t *mapper)
     );
 }
 
+static int write_claim_scoped_nm1_reference(
+    x12_mapper_837_t *mapper,
+    const x12_segment_t *seg,
+    const char *event_type,
+    token_type_t id_token_type
+)
+{
+    if (mapper->current_claim_id.len == 0u) {
+        return X12_OK;
+    }
+
+    return write_nm1_reference(mapper, seg, event_type, id_token_type);
+}
+
 static int write_date_observed(
     x12_mapper_837_t *mapper,
     const x12_segment_t *seg
@@ -652,6 +710,8 @@ static int write_service_line_observed(
     x12_str_t procedure_element = element_or_empty(seg, 0);
     x12_str_t procedure_qualifier;
     x12_str_t procedure_code;
+    x12_str_t procedure_modifiers[4];
+    size_t procedure_modifier_count;
     x12_str_t charge_amount = element_or_empty(seg, 1);
     x12_str_t unit_measure_code = element_or_empty(seg, 2);
     x12_str_t unit_count = element_or_empty(seg, 3);
@@ -667,7 +727,14 @@ static int write_service_line_observed(
         diagnosis_pointers = empty_str();
     }
 
-    split_first_component(procedure_element, mapper->component_sep, &procedure_qualifier, &procedure_code);
+    split_procedure_components(
+        procedure_element,
+        mapper->component_sep,
+        &procedure_qualifier,
+        &procedure_code,
+        procedure_modifiers,
+        &procedure_modifier_count
+    );
 
     rc = event_writer_begin_event(mapper->writer, "ClaimServiceLineRecorded", seg);
     if (rc != X12_OK) {
@@ -713,6 +780,15 @@ static int write_service_line_observed(
         return X12_ERR_IO;
     }
     if (event_writer_write_string_field(fp, "procedure_code", procedure_code, 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_str_array_field(
+            fp,
+            "procedure_modifiers",
+            procedure_modifiers,
+            procedure_modifier_count,
+            1
+        ) != X12_OK) {
         return X12_ERR_IO;
     }
     if (event_writer_write_string_field(fp, "charge_amount", charge_amount, 1) != X12_OK) {
@@ -803,6 +879,44 @@ int x12_mapper_837_on_segment(const x12_segment_t *seg, void *user)
 
             buffer_segment(&mapper->rendering_provider, seg);
             return X12_OK;
+        }
+        if (x12_str_eq_cstr(seg->elements[0], "DN")) {
+            return write_claim_scoped_nm1_reference(
+                mapper,
+                seg,
+                "ClaimReferencedReferringProvider",
+                TOK_PROVIDER_ID
+            );
+        }
+        if (x12_str_eq_cstr(seg->elements[0], "DQ")) {
+            return write_claim_scoped_nm1_reference(
+                mapper,
+                seg,
+                "ClaimReferencedSupervisingProvider",
+                TOK_PROVIDER_ID
+            );
+        }
+        if (x12_str_eq_cstr(seg->elements[0], "77")) {
+            return write_claim_scoped_nm1_reference(mapper, seg, "ClaimReferencedFacility", TOK_PROVIDER_ID);
+        }
+        if (x12_str_eq_cstr(seg->elements[0], "71")) {
+            return write_claim_scoped_nm1_reference(
+                mapper,
+                seg,
+                "ClaimReferencedAttendingProvider",
+                TOK_PROVIDER_ID
+            );
+        }
+        if (x12_str_eq_cstr(seg->elements[0], "72")) {
+            return write_claim_scoped_nm1_reference(
+                mapper,
+                seg,
+                "ClaimReferencedOperatingProvider",
+                TOK_PROVIDER_ID
+            );
+        }
+        if (x12_str_eq_cstr(seg->elements[0], "ZZ")) {
+            return write_claim_scoped_nm1_reference(mapper, seg, "ClaimReferencedOtherProvider", TOK_PROVIDER_ID);
         }
     }
 

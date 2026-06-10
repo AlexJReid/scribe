@@ -82,6 +82,30 @@ endif()
 
 add_test(NAME test_parser COMMAND test_parser)
 
+add_executable(test_x12_parser tests/test_x12_parser.c)
+target_link_libraries(test_x12_parser PRIVATE scribe_core)
+target_compile_definitions(test_x12_parser PRIVATE
+    TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+)
+scribe_enable_warnings(test_x12_parser)
+
+add_test(NAME test_x12_parser COMMAND test_x12_parser)
+
+add_executable(test_core tests/test_core.c)
+target_link_libraries(test_core PRIVATE scribe_core)
+scribe_enable_warnings(test_core)
+
+add_test(NAME test_core COMMAND test_core)
+
+add_executable(test_store tests/test_store.c)
+target_link_libraries(test_store PRIVATE scribe_core)
+target_compile_definitions(test_store PRIVATE
+    TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-output"
+)
+scribe_enable_warnings(test_store)
+
+add_test(NAME test_store COMMAND test_store)
+
 add_executable(test_837_mapper tests/test_837_mapper.c)
 target_link_libraries(test_837_mapper PRIVATE scribe_core)
 target_compile_definitions(test_837_mapper PRIVATE

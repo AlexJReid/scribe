@@ -28,7 +28,7 @@ Parse an 837 claim file and filter the emitted event stream:
 
 ```bash
 scribe parse --type 837 claims.edi \
-  | jq 'select(.event_type=="SubscriberReferenced")'
+  | jq 'select(.event_type=="ClaimReferencedSubscriber")'
 ```
 
 Ingest multiple inputs into a replayable evidence stream:
@@ -53,6 +53,17 @@ scribe stitch claims \
 Claims match on tokenised `CLM01`/`CLP01`. Service lines are paired by procedure
 and charge, date when available, or line order, with the chosen `match_method`
 included in the aggregate output.
+
+837 service-line events expose submitted procedure, modifiers, charge, unit
+measure, unit count, and diagnosis pointer facts directly. Professional `SV1`
+lines and institutional `SV2` revenue lines use the same
+`ClaimServiceLineRecorded` event; `SV2` also carries `revenue_code`.
+`raw_elements` remains available as source evidence, but stitch/projection code
+reads the named fields.
+
+837 provider references include billing, rendering, referring, supervising,
+facility, attending, operating, and other provider roles, with
+`reference_scope` indicating claim or service-line scope.
 
 Project a balance from the journal:
 

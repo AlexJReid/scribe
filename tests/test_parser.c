@@ -7,6 +7,7 @@
 #include "json_scan.h"
 #include "phi_vault.h"
 #include "store.h"
+#include "test_support.h"
 #include "tokenise.h"
 #include "x12_mapper_270_271.h"
 #include "x12_mapper_834.h"
@@ -19,145 +20,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#ifndef TEST_FIXTURE_DIR
-#define TEST_FIXTURE_DIR "tests/fixtures"
-#endif
-
-#ifndef TEST_OUTPUT_DIR
-#define TEST_OUTPUT_DIR "."
-#endif
-
-#define REQUIRE(cond) do { \
-    if (!(cond)) { \
-        fprintf(stderr, "%s:%d: requirement failed: %s\n", __FILE__, __LINE__, #cond); \
-        return 1; \
-    } \
-} while (0)
-
-static int require_ok(int actual, const char *expr, const char *file, int line)
-{
-    if (actual == X12_OK) {
-        return 0;
-    }
-
-    fprintf(
-        stderr,
-        "%s:%d: requirement failed: %s == X12_OK (actual %d)\n",
-        file,
-        line,
-        expr,
-        actual
-    );
-    return 1;
-}
-
-#define REQUIRE_OK(expr) do { \
-    int require_ok_actual = (expr); \
-    if (require_ok(require_ok_actual, #expr, __FILE__, __LINE__)) { \
-        return 1; \
-    } \
-} while (0)
-
-static int require_str_equal(
-    const char *actual,
-    const char *expected,
-    const char *actual_expr,
-    const char *expected_expr,
-    const char *file,
-    int line
-)
-{
-    if (actual != NULL && expected != NULL && strcmp(actual, expected) == 0) {
-        return 0;
-    }
-
-    fprintf(
-        stderr,
-        "%s:%d: requirement failed: %s == %s (actual \"%s\", expected \"%s\")\n",
-        file,
-        line,
-        actual_expr,
-        expected_expr,
-        actual == NULL ? "(null)" : actual,
-        expected == NULL ? "(null)" : expected
-    );
-    return 1;
-}
-
-#define REQUIRE_STR(actual, expected) do { \
-    if (require_str_equal((actual), (expected), #actual, #expected, __FILE__, __LINE__)) { \
-        return 1; \
-    } \
-} while (0)
-
-typedef struct {
-    size_t count;
-    int saw_isa;
-    int saw_clm;
-} parser_seen_t;
-
-static int make_path(char *out, size_t out_len, const char *base, const char *name)
-{
-    int written = snprintf(out, out_len, "%s/%s", base, name);
-
-    if (written < 0 || (size_t)written >= out_len) {
-        return 1;
-    }
-
-    return 0;
-}
-
-static int parser_seen_cb(const x12_segment_t *seg, void *user)
-{
-    parser_seen_t *seen = (parser_seen_t *)user;
-
-    seen->count++;
-
-    if (seg->segment_index == 1u) {
-        REQUIRE(x12_str_eq_cstr(seg->tag, "ISA"));
-        REQUIRE(seg->element_count == 16u);
-        REQUIRE(x12_str_eq_cstr(seg->elements[12], "000000001"));
-        seen->saw_isa = 1;
-    }
-
-    if (x12_str_eq_cstr(seg->tag, "CLM")) {
-        REQUIRE(seg->element_count >= 2u);
-        REQUIRE(x12_str_eq_cstr(seg->elements[0], "CLM123"));
-        REQUIRE(x12_str_eq_cstr(seg->elements[1], "125.50"));
-        seen->saw_clm = 1;
-    }
-
-    return X12_OK;
-}
-
-static int read_file_text(const char *path, char *out, size_t out_len)
-{
-    FILE *fp;
-    size_t read_len;
-
-    if (out_len == 0u) {
-        return 1;
-    }
-
-    fp = fopen(path, "rb");
-    if (fp == NULL) {
-        return 1;
-    }
-
-    read_len = fread(out, 1u, out_len - 1u, fp);
-    if (ferror(fp)) {
-        (void)fclose(fp);
-        return 1;
-    }
-
-    out[read_len] = '\0';
-    if (fclose(fp) != 0) {
-        return 1;
-    }
-
-    return 0;
-}
 
 static int copy_sqlite_column_text(sqlite3_stmt *stmt, int column, char *out, size_t out_len)
 {
@@ -236,26 +98,6 @@ static int phi_mapping_source_drops(
     return out_rc;
 }
 
-static size_t count_substring(const char *text, const char *needle)
-{
-    size_t count = 0u;
-    size_t needle_len;
-    const char *cursor;
-
-    if (text == NULL || needle == NULL || needle[0] == '\0') {
-        return 0u;
-    }
-
-    cursor = text;
-    needle_len = strlen(needle);
-    while ((cursor = strstr(cursor, needle)) != NULL) {
-        count++;
-        cursor += needle_len;
-    }
-
-    return count;
-}
-
 static int parse_fixture_to_output(
     const char *fixture_name,
     const char *transaction_type,
@@ -298,50 +140,6 @@ static int parse_fixture_to_output(
     x12_document_free(&doc);
 
     REQUIRE(read_file_text(out_path, output, output_len) == 0);
-    return 0;
-}
-
-static int test_delimiter_detection(void)
-{
-    char path[512];
-    x12_document_t doc;
-    int rc;
-
-    REQUIRE(make_path(path, sizeof(path), TEST_FIXTURE_DIR, "sample_837.edi") == 0);
-
-    rc = x12_document_load(path, &doc);
-    REQUIRE_OK(rc);
-
-    rc = x12_document_detect_delimiters(&doc);
-    REQUIRE_OK(rc);
-    REQUIRE(doc.delimiters.element_sep == '*');
-    REQUIRE(doc.delimiters.component_sep == ':');
-    REQUIRE(doc.delimiters.segment_term == '~');
-
-    x12_document_free(&doc);
-    return 0;
-}
-
-static int test_segment_and_element_splitting(void)
-{
-    char path[512];
-    x12_document_t doc;
-    parser_seen_t seen;
-    int rc;
-
-    memset(&seen, 0, sizeof(seen));
-    REQUIRE(make_path(path, sizeof(path), TEST_FIXTURE_DIR, "sample_837.edi") == 0);
-
-    rc = x12_document_load(path, &doc);
-    REQUIRE_OK(rc);
-
-    rc = x12_document_each_segment(&doc, parser_seen_cb, &seen);
-    REQUIRE_OK(rc);
-    REQUIRE(seen.count == 16u);
-    REQUIRE(seen.saw_isa);
-    REQUIRE(seen.saw_clm);
-
-    x12_document_free(&doc);
     return 0;
 }
 
@@ -1582,179 +1380,8 @@ static int test_member_coverage_aggregate_from_journal(void)
     return 0;
 }
 
-static int test_store_indexes_and_aggregates(void)
-{
-    char db_path[512];
-    char db_wal_path[560];
-    char db_shm_path[560];
-    char event_ids[4][SCRIBE_STORE_ID_MAX];
-    char state_json[512];
-    scribe_store_t store;
-    scribe_source_drop_t source_drop;
-    scribe_event_locator_t locator;
-    size_t count = 0u;
-    size_t version = 0u;
-
-    REQUIRE(make_path(db_path, sizeof(db_path), TEST_OUTPUT_DIR, "scribe_store.sqlite") == 0);
-    REQUIRE(snprintf(db_wal_path, sizeof(db_wal_path), "%s-wal", db_path) > 0);
-    REQUIRE(snprintf(db_shm_path, sizeof(db_shm_path), "%s-shm", db_path) > 0);
-    (void)remove(db_path);
-    (void)remove(db_wal_path);
-    (void)remove(db_shm_path);
-
-    scribe_store_init(&store);
-    REQUIRE_OK(scribe_store_open(&store, db_path));
-    REQUIRE_OK(scribe_store_init_schema(&store));
-    REQUIRE_OK(scribe_store_put_source_drop(
-                &store,
-                "835:000000102:102:0001",
-                "835",
-                "/inbound/remits/facility_835.edi",
-                "2026-09-14T00:00:00Z",
-                "sha256:file"
-            ));
-    REQUIRE_OK(scribe_store_get_source_drop(
-                &store,
-                "835:000000102:102:0001",
-                &source_drop
-            ));
-    REQUIRE_STR(source_drop.source_drop_id, "835:000000102:102:0001");
-    REQUIRE_STR(source_drop.source_type, "835");
-    REQUIRE_STR(source_drop.source_file, "/inbound/remits/facility_835.edi");
-    REQUIRE_STR(source_drop.received_at, "2026-09-14T00:00:00Z");
-    REQUIRE_STR(source_drop.file_hash, "sha256:file");
-    REQUIRE_OK(scribe_store_put_event(
-                &store,
-                "evt_000128",
-                "835:000000102:102:0001",
-                "RemittanceAdjustmentObserved",
-                "20260603-000001",
-                8172,
-                612,
-                "sha256:event"
-            ));
-    REQUIRE_OK(scribe_store_put_event_key(
-                &store,
-                "claim_id",
-                "8259c238232f9585e95fc8f45b0bb410",
-                "evt_000128"
-            ));
-    REQUIRE_OK(scribe_store_put_event_key(
-                &store,
-                "payer_claim_control_number",
-                "edf29f09740ab104da309e2b036e14d1",
-                "evt_000128"
-            ));
-
-    REQUIRE_OK(scribe_store_find_event_ids_by_key(
-                &store,
-                "claim_id",
-                "8259c238232f9585e95fc8f45b0bb410",
-                event_ids,
-                4u,
-                &count
-            ));
-    REQUIRE(count == 1u);
-    REQUIRE_STR(event_ids[0], "evt_000128");
-
-    REQUIRE_OK(scribe_store_get_event_locator(&store, "evt_000128", &locator));
-    REQUIRE_STR(locator.source_drop_id, "835:000000102:102:0001");
-    REQUIRE_STR(locator.event_type, "RemittanceAdjustmentObserved");
-    REQUIRE_STR(locator.segment_id, "20260603-000001");
-    REQUIRE(locator.offset == 8172);
-    REQUIRE(locator.length == 612);
-    REQUIRE_STR(locator.checksum, "sha256:event");
-
-    REQUIRE_OK(scribe_store_put_claim_aggregate(
-                &store,
-                "claim:8259c238232f9585e95fc8f45b0bb410",
-                3u,
-                "{\"version\":3,\"has_835\":true}",
-                "evt_000128",
-                "835:000000102:102:0001"
-            ));
-    REQUIRE_OK(scribe_store_put_claim_aggregate(
-                &store,
-                "claim:8259c238232f9585e95fc8f45b0bb410",
-                2u,
-                "{\"version\":2}",
-                "evt_000024",
-                "837:000000101:101:0001"
-            ));
-    REQUIRE_OK(scribe_store_get_latest_claim_aggregate(
-                &store,
-                "claim:8259c238232f9585e95fc8f45b0bb410",
-                &version,
-                state_json,
-                sizeof(state_json)
-            ));
-    REQUIRE(version == 3u);
-    REQUIRE(strstr(state_json, "\"version\":3") != NULL);
-
-    REQUIRE(scribe_store_get_event_locator(&store, "evt_missing", &locator) == X12_ERR_NOT_FOUND);
-    REQUIRE_OK(scribe_store_close(&store));
-    (void)remove(db_path);
-    (void)remove(db_wal_path);
-    (void)remove(db_shm_path);
-
-    return 0;
-}
-
-static int test_json_escaping(void)
-{
-    FILE *fp;
-    char output[128];
-    const char input[] = "a\"b\\c\n";
-
-    fp = tmpfile();
-    REQUIRE(fp != NULL);
-    REQUIRE_OK(event_writer_write_json_string(fp, input, strlen(input)));
-    REQUIRE(fflush(fp) == 0);
-    REQUIRE(fseek(fp, 0, SEEK_SET) == 0);
-    REQUIRE(fgets(output, sizeof(output), fp) != NULL);
-    REQUIRE_STR(output, "\"a\\\"b\\\\c\\n\"");
-    REQUIRE(fclose(fp) == 0);
-
-    return 0;
-}
-
-static int test_json_scan_unescapes_strings(void)
-{
-    char value[128];
-    int synthetic = 0;
-    const char line[] =
-        "{\"description\":\"a\\\"b\\\\c\\n\","
-        "\"synthetic\":true,"
-        "\"raw_elements\":[\"x\",\"y\\tz\"]}";
-
-    REQUIRE(json_get_string(line, "description", value, sizeof(value)) == 1);
-    REQUIRE_STR(value, "a\"b\\c\n");
-    REQUIRE(json_get_bool(line, "synthetic", &synthetic) == 1);
-    REQUIRE(synthetic == 1);
-    REQUIRE(json_get_array_string_at(line, "raw_elements", 1u, value, sizeof(value)) == 1);
-    REQUIRE_STR(value, "y\tz");
-
-    return 0;
-}
-
-static int test_tokenise_format(void)
-{
-    char token[TOKENISE_MAX_TOKEN_LEN];
-    x12_str_t raw;
-
-    raw.ptr = "ABC123";
-    raw.len = strlen(raw.ptr);
-
-    REQUIRE_OK(tokenise_value(TOK_CLAIM_ID, raw, token, sizeof(token)));
-    REQUIRE_STR(token, "f58260c3ffcdfaff81c42473f162e481");
-
-    return 0;
-}
-
 int main(void)
 {
-    REQUIRE(test_delimiter_detection() == 0);
-    REQUIRE(test_segment_and_element_splitting() == 0);
     REQUIRE(test_837_claim_event() == 0);
     REQUIRE(test_x12_005010x222_example_01_shape() == 0);
     REQUIRE(test_834_ins_event() == 0);
@@ -1763,10 +1390,6 @@ int main(void)
     REQUIRE(test_stroke_encounter_fixture_set() == 0);
     REQUIRE(test_stroke_balance_projection_from_journal() == 0);
     REQUIRE(test_member_coverage_aggregate_from_journal() == 0);
-    REQUIRE(test_store_indexes_and_aggregates() == 0);
-    REQUIRE(test_json_escaping() == 0);
-    REQUIRE(test_json_scan_unescapes_strings() == 0);
-    REQUIRE(test_tokenise_format() == 0);
 
     return 0;
 }
