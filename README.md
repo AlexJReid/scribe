@@ -89,8 +89,6 @@ reference output lives in [demo/](./demo).
 ./demo.sh
 ```
 
-Expected current balance: `550.00`.
-
 Inspect the claim latest table:
 
 ```sh
