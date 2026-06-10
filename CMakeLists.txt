@@ -76,5 +76,8 @@ target_compile_definitions(test_parser PRIVATE
     TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-output"
 )
 scribe_enable_warnings(test_parser)
+if(MSVC)
+    target_link_options(test_parser PRIVATE /STACK:8388608)
+endif()
 
 add_test(NAME test_parser COMMAND test_parser)
