@@ -52,13 +52,20 @@ For more advanced usage see [scripts/stroke-demo.sh](./scripts/stroke-demo.sh),
 
 ## Build
 
+No releases yet, but binaries are attached to each Action run.
+
+The case study will build if not needed. On Linux and Windows you'll need sqlite3. See [CI](./github/workflows) for exact packages. macOS has it already.
+
+```sh
+./scripts/stroke-demo.sh
+```
+
+or
+
 ```sh
 cmake -S . -B build
 cmake --build build
-ctest --test-dir build --output-on-failure
 ```
-
-Run focused checks with `build/scribe ...`.
 
 ## Shape
 
@@ -76,7 +83,7 @@ stores, but this can be swapped out in the future.
 
 ## Demo
 
-The synthetic _encounter_ case study lives in
+The synthetic _stroke encounter_ case study lives in
 [tests/fixtures/stroke_encounter/](./tests/fixtures/stroke_encounter/). Generated
 reference output lives in [demo/](./demo).
 
