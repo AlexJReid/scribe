@@ -317,7 +317,7 @@ static int apply_claim_service_line(balance_state_t *state, const journal_event_
         copy_cstr(line->procedure_code, sizeof(line->procedure_code), procedure_code);
     }
     if (line->billed == 0 &&
-        json_get_array_string_at(journal_line, "raw_elements", 1u, amount_text, sizeof(amount_text))) {
+        json_get_string(journal_line, "charge_amount", amount_text, sizeof(amount_text))) {
         if (parse_money(amount_text, &amount) != X12_OK) {
             return X12_ERR_INVALID_ARGUMENT;
         }

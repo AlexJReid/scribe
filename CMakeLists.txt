@@ -81,3 +81,13 @@ if(MSVC)
 endif()
 
 add_test(NAME test_parser COMMAND test_parser)
+
+add_executable(test_837_mapper tests/test_837_mapper.c)
+target_link_libraries(test_837_mapper PRIVATE scribe_core)
+target_compile_definitions(test_837_mapper PRIVATE
+    TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+    TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-output"
+)
+scribe_enable_warnings(test_837_mapper)
+
+add_test(NAME test_837_mapper COMMAND test_837_mapper)

@@ -106,7 +106,12 @@ static const journal_key_def_t journal_keys[] = {
     {"quantity_qualifier", 89u},
     {"quantity", 90u},
     {"authorization_or_certification_indicator", 91u},
-    {"in_plan_network_indicator", 92u}
+    {"in_plan_network_indicator", 92u},
+    {"charge_amount", 93u},
+    {"unit_measure_code", 94u},
+    {"unit_count", 95u},
+    {"diagnosis_pointers", 96u},
+    {"revenue_code", 97u}
 };
 
 static unsigned short key_id_for_name(const char *name)

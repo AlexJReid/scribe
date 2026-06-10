@@ -648,11 +648,26 @@ static int write_service_line_observed(
 )
 {
     FILE *fp = event_writer_stream(mapper->writer);
+    x12_str_t revenue_code = empty_str();
+    x12_str_t procedure_element = element_or_empty(seg, 0);
     x12_str_t procedure_qualifier;
     x12_str_t procedure_code;
+    x12_str_t charge_amount = element_or_empty(seg, 1);
+    x12_str_t unit_measure_code = element_or_empty(seg, 2);
+    x12_str_t unit_count = element_or_empty(seg, 3);
+    x12_str_t diagnosis_pointers = element_or_empty(seg, 6);
     int rc;
 
-    split_first_component(element_or_empty(seg, 0), mapper->component_sep, &procedure_qualifier, &procedure_code);
+    if (x12_str_eq_cstr(seg->tag, "SV2")) {
+        revenue_code = element_or_empty(seg, 0);
+        procedure_element = element_or_empty(seg, 1);
+        charge_amount = element_or_empty(seg, 2);
+        unit_measure_code = element_or_empty(seg, 3);
+        unit_count = element_or_empty(seg, 4);
+        diagnosis_pointers = empty_str();
+    }
+
+    split_first_component(procedure_element, mapper->component_sep, &procedure_qualifier, &procedure_code);
 
     rc = event_writer_begin_event(mapper->writer, "ClaimServiceLineRecorded", seg);
     if (rc != X12_OK) {
@@ -688,6 +703,9 @@ static int write_service_line_observed(
     if (event_writer_write_string_field(fp, "service_line_number", mapper->current_service_line_number, 1) != X12_OK) {
         return X12_ERR_IO;
     }
+    if (event_writer_write_string_field(fp, "revenue_code", revenue_code, 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
     if (event_writer_write_string_field(fp, "procedure_code_qualifier", procedure_qualifier, 1) != X12_OK) {
         return X12_ERR_IO;
     }
@@ -695,6 +713,18 @@ static int write_service_line_observed(
         return X12_ERR_IO;
     }
     if (event_writer_write_string_field(fp, "procedure_code", procedure_code, 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(fp, "charge_amount", charge_amount, 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(fp, "unit_measure_code", unit_measure_code, 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(fp, "unit_count", unit_count, 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(fp, "diagnosis_pointers", diagnosis_pointers, 1) != X12_OK) {
         return X12_ERR_IO;
     }
     if (event_writer_write_str_array_field(fp, "raw_elements", seg->elements, seg->element_count, 1) != X12_OK) {

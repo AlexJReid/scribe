@@ -702,13 +702,13 @@ static int apply_submitted_service_line(claim_aggregate_t *aggregate, const jour
     if (json_get_string(journal_line, "procedure_code", value, sizeof(value))) {
         copy_cstr(line->procedure_code, sizeof(line->procedure_code), value);
     }
-    if (json_get_array_string_at(journal_line, "raw_elements", 1u, value, sizeof(value))) {
+    if (json_get_string(journal_line, "charge_amount", value, sizeof(value))) {
         copy_cstr(line->submitted_charge_amount, sizeof(line->submitted_charge_amount), value);
     }
-    if (json_get_array_string_at(journal_line, "raw_elements", 2u, value, sizeof(value))) {
+    if (json_get_string(journal_line, "unit_measure_code", value, sizeof(value))) {
         copy_cstr(line->submitted_unit_measure_code, sizeof(line->submitted_unit_measure_code), value);
     }
-    if (json_get_array_string_at(journal_line, "raw_elements", 3u, value, sizeof(value))) {
+    if (json_get_string(journal_line, "unit_count", value, sizeof(value))) {
         copy_cstr(line->submitted_unit_count, sizeof(line->submitted_unit_count), value);
     }
 
