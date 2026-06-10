@@ -8,10 +8,19 @@
 #define SCRIBE_STORE_ID_MAX 128u
 #define SCRIBE_STORE_TYPE_MAX 96u
 #define SCRIBE_STORE_CHECKSUM_MAX 128u
+#define SCRIBE_STORE_PATH_MAX 512u
 
 typedef struct {
     void *db;
 } scribe_store_t;
+
+typedef struct {
+    char source_drop_id[SCRIBE_STORE_ID_MAX];
+    char source_type[SCRIBE_STORE_TYPE_MAX];
+    char source_file[SCRIBE_STORE_PATH_MAX];
+    char received_at[SCRIBE_STORE_ID_MAX];
+    char file_hash[SCRIBE_STORE_CHECKSUM_MAX];
+} scribe_source_drop_t;
 
 typedef struct {
     char event_id[SCRIBE_STORE_ID_MAX];
@@ -32,8 +41,15 @@ int scribe_store_put_source_drop(
     scribe_store_t *store,
     const char *source_drop_id,
     const char *source_type,
+    const char *source_file,
     const char *received_at,
     const char *file_hash
+);
+
+int scribe_store_get_source_drop(
+    scribe_store_t *store,
+    const char *source_drop_id,
+    scribe_source_drop_t *out
 );
 
 int scribe_store_put_event(

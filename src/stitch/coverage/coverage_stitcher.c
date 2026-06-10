@@ -1246,10 +1246,15 @@ static int make_drop_key(
     return X12_OK;
 }
 
-static int set_current_source_drop(coverage_state_t *state, const char *drop_key)
+static int set_current_source_drop(
+    coverage_state_t *state,
+    const char *drop_key,
+    const journal_event_t *event
+)
 {
     const char *separator;
     size_t drop_type_len;
+    char source_file[COVERAGE_VALUE_MAX] = "";
     char source_type[32];
     int written;
     int rc;
@@ -1262,6 +1267,13 @@ static int set_current_source_drop(coverage_state_t *state, const char *drop_key
     state->source_drop_count++;
 
     separator = strchr(drop_key, '|');
+    if (event != NULL) {
+        (void)json_get_string(event, "source_file", source_file, sizeof(source_file));
+    }
+    if (source_file[0] == '\0' && separator != NULL && separator[1] != '\0') {
+        copy_cstr(source_file, sizeof(source_file), separator + 1);
+    }
+
     if (separator == NULL && strchr(drop_key, ':') != NULL) {
         const char *type_end = strchr(drop_key, ':');
 
@@ -1318,6 +1330,7 @@ static int set_current_source_drop(coverage_state_t *state, const char *drop_key
         state->read_store,
         state->current_source_drop_id,
         source_type,
+        source_file,
         "",
         ""
     );
@@ -2154,7 +2167,7 @@ int coverage_stitcher_stitch(const coverage_stitcher_input_t *input)
             break;
         }
         if (drop_key[0] != '\0' && strcmp(state->current_drop_key, drop_key) != 0) {
-            rc = set_current_source_drop(state, drop_key);
+            rc = set_current_source_drop(state, drop_key, &record);
             if (rc != X12_OK) {
                 break;
             }

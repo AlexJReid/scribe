@@ -172,6 +172,7 @@ int scribe_store_init_schema(scribe_store_t *store)
         "CREATE TABLE IF NOT EXISTS source_drops ("
         "  source_drop_id TEXT PRIMARY KEY,"
         "  source_type TEXT NOT NULL,"
+        "  source_file TEXT NOT NULL,"
         "  received_at TEXT NOT NULL,"
         "  file_hash TEXT NOT NULL"
         ");"
@@ -239,6 +240,7 @@ int scribe_store_put_source_drop(
     scribe_store_t *store,
     const char *source_drop_id,
     const char *source_type,
+    const char *source_file,
     const char *received_at,
     const char *file_hash
 )
@@ -250,10 +252,11 @@ int scribe_store_put_source_drop(
     rc = prepare(
         db,
         "INSERT INTO source_drops "
-        "(source_drop_id, source_type, received_at, file_hash) "
-        "VALUES (?, ?, ?, ?) "
+        "(source_drop_id, source_type, source_file, received_at, file_hash) "
+        "VALUES (?, ?, ?, ?, ?) "
         "ON CONFLICT(source_drop_id) DO UPDATE SET "
         "source_type = excluded.source_type, "
+        "source_file = excluded.source_file, "
         "received_at = excluded.received_at, "
         "file_hash = excluded.file_hash;",
         &stmt
@@ -267,13 +270,70 @@ int scribe_store_put_source_drop(
         rc = bind_text(stmt, 2, source_type);
     }
     if (rc == X12_OK) {
-        rc = bind_text(stmt, 3, received_at);
+        rc = bind_text(stmt, 3, source_file);
     }
     if (rc == X12_OK) {
-        rc = bind_text(stmt, 4, file_hash);
+        rc = bind_text(stmt, 4, received_at);
+    }
+    if (rc == X12_OK) {
+        rc = bind_text(stmt, 5, file_hash);
     }
     if (rc == X12_OK) {
         rc = step_done(stmt);
+    }
+    if (sqlite3_finalize(stmt) != SQLITE_OK && rc == X12_OK) {
+        rc = X12_ERR_IO;
+    }
+
+    return rc;
+}
+
+int scribe_store_get_source_drop(
+    scribe_store_t *store,
+    const char *source_drop_id,
+    scribe_source_drop_t *out
+)
+{
+    sqlite3_stmt *stmt;
+    sqlite3 *db = store_db(store);
+    int step_rc;
+    int rc;
+
+    if (source_drop_id == NULL || out == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+    memset(out, 0, sizeof(*out));
+
+    rc = prepare(
+        db,
+        "SELECT source_drop_id, source_type, source_file, received_at, file_hash "
+        "FROM source_drops WHERE source_drop_id = ?;",
+        &stmt
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    rc = bind_text(stmt, 1, source_drop_id);
+    step_rc = rc == X12_OK ? sqlite3_step(stmt) : SQLITE_DONE;
+    if (rc == X12_OK && step_rc == SQLITE_ROW) {
+        rc = copy_column_text(stmt, 0, out->source_drop_id, sizeof(out->source_drop_id));
+        if (rc == X12_OK) {
+            rc = copy_column_text(stmt, 1, out->source_type, sizeof(out->source_type));
+        }
+        if (rc == X12_OK) {
+            rc = copy_column_text(stmt, 2, out->source_file, sizeof(out->source_file));
+        }
+        if (rc == X12_OK) {
+            rc = copy_column_text(stmt, 3, out->received_at, sizeof(out->received_at));
+        }
+        if (rc == X12_OK) {
+            rc = copy_column_text(stmt, 4, out->file_hash, sizeof(out->file_hash));
+        }
+    } else if (rc == X12_OK && step_rc == SQLITE_DONE) {
+        rc = X12_ERR_NOT_FOUND;
+    } else if (rc == X12_OK) {
+        rc = sqlite_to_x12(step_rc);
     }
     if (sqlite3_finalize(stmt) != SQLITE_OK && rc == X12_OK) {
         rc = X12_ERR_IO;

@@ -175,6 +175,18 @@ static int normalize_diagnosis_code(
     return X12_OK;
 }
 
+static int diagnosis_is_principal(x12_str_t qualifier)
+{
+    return x12_str_eq_cstr(qualifier, "ABK") ||
+           x12_str_eq_cstr(qualifier, "BK");
+}
+
+static int diagnosis_is_other(x12_str_t qualifier)
+{
+    return x12_str_eq_cstr(qualifier, "ABF") ||
+           x12_str_eq_cstr(qualifier, "BF");
+}
+
 static const char *procedure_code_set(x12_str_t qualifier)
 {
     if (x12_str_eq_cstr(qualifier, "HC")) {
@@ -561,7 +573,7 @@ static int write_diagnosis_observed(
             continue;
         }
 
-        if (x12_str_eq_cstr(qualifier, "ABK")) {
+        if (diagnosis_is_principal(qualifier)) {
             rc = normalize_diagnosis_code(
                 raw_code,
                 principal_buffer,
@@ -571,7 +583,7 @@ static int write_diagnosis_observed(
             if (rc != X12_OK) {
                 return rc;
             }
-        } else if (x12_str_eq_cstr(qualifier, "ABF") &&
+        } else if (diagnosis_is_other(qualifier) &&
                    other_diagnosis_count < (sizeof(other_diagnoses) / sizeof(other_diagnoses[0]))) {
             rc = normalize_diagnosis_code(
                 raw_code,

@@ -7,15 +7,20 @@ with control numbers, segment positions, byte offsets, and run IDs so pipelines
 can validate, load, replay, and debug claims/remits without hand-rolling brittle
 string parsers.
 
-Use it in three layers:
+Use it in five layers:
 
-1. **Parse** EDI into NDJSON events.
+1. **Parse** EDI into JSON events to understand/debug content.
 2. **Ingest** X12 files into an immutable journal.
-3. **Project** the journal into claim, coverage, balance, and notification read models.
+3. **Stitch** journal events into claim and coverage aggregate versions, matching
+   837 claim submissions with 835 remittances.
+4. **Project** the journal into balance and notification read models.
+5. **Consume** applications and reports read directly from the projected read store(s).
 
 The parser handles 834 enrollment, 837 claims, 835 remits, and 270/271 eligibility
 traffic. Raw PHI can be kept out of normal flows by writing tokenised events and
 resolving sensitive values through a separate PHI vault only when required.
+
+> scribe parses X12 syntax and maps selected healthcare EDI facts into journal events. It is not (yet) a full X12/TR3 validator.
 
 ## Examples
 
@@ -33,6 +38,21 @@ scribe ingest --out journal.scribe \
   --837 claims.edi \
   --835 remit.edi
 ```
+
+Stitch claim versions by matching 837 claim facts with 835 remittance facts,
+then populate read-store indexes:
+
+```bash
+scribe stitch claims \
+  --journal journal.scribe \
+  --read-store read_store.sqlite \
+  --out claim_aggregates.ndjson \
+  --notify-out notifications.ndjson
+```
+
+Claims match on tokenised `CLM01`/`CLP01`. Service lines are paired by procedure
+and charge, date when available, or line order, with the chosen `match_method`
+included in the aggregate output.
 
 Project a balance from the journal:
 

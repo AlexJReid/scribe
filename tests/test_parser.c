@@ -14,6 +14,8 @@
 #include "x12_mapper_837.h"
 #include "x12_reader.h"
 
+#include <sqlite3.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +31,30 @@
 #define REQUIRE(cond) do { \
     if (!(cond)) { \
         fprintf(stderr, "%s:%d: requirement failed: %s\n", __FILE__, __LINE__, #cond); \
+        return 1; \
+    } \
+} while (0)
+
+static int require_ok(int actual, const char *expr, const char *file, int line)
+{
+    if (actual == X12_OK) {
+        return 0;
+    }
+
+    fprintf(
+        stderr,
+        "%s:%d: requirement failed: %s == X12_OK (actual %d)\n",
+        file,
+        line,
+        expr,
+        actual
+    );
+    return 1;
+}
+
+#define REQUIRE_OK(expr) do { \
+    int require_ok_actual = (expr); \
+    if (require_ok(require_ok_actual, #expr, __FILE__, __LINE__)) { \
         return 1; \
     } \
 } while (0)
@@ -133,6 +159,83 @@ static int read_file_text(const char *path, char *out, size_t out_len)
     return 0;
 }
 
+static int copy_sqlite_column_text(sqlite3_stmt *stmt, int column, char *out, size_t out_len)
+{
+    const unsigned char *value;
+    int len;
+
+    if (stmt == NULL || out == NULL || out_len == 0u) {
+        return 1;
+    }
+
+    value = sqlite3_column_text(stmt, column);
+    if (value == NULL) {
+        value = (const unsigned char *)"";
+    }
+    len = sqlite3_column_bytes(stmt, column);
+    if (len < 0 || (size_t)len >= out_len) {
+        return 1;
+    }
+
+    memcpy(out, value, (size_t)len);
+    out[len] = '\0';
+    return 0;
+}
+
+static int phi_mapping_source_drops(
+    phi_vault_t *vault,
+    const char *namespace_name,
+    const char *token,
+    char *first_source_drop_id,
+    size_t first_len,
+    char *last_source_drop_id,
+    size_t last_len
+)
+{
+    sqlite3 *db;
+    sqlite3_stmt *stmt = NULL;
+    int rc;
+    int step_rc;
+    int out_rc = 1;
+
+    if (vault == NULL || namespace_name == NULL || token == NULL ||
+        first_source_drop_id == NULL || last_source_drop_id == NULL) {
+        return 1;
+    }
+
+    db = (sqlite3 *)vault->db;
+    if (db == NULL) {
+        return 1;
+    }
+
+    rc = sqlite3_prepare_v2(
+        db,
+        "SELECT first_source_drop_id, last_source_drop_id "
+        "FROM phi_mappings WHERE namespace = ? AND token = ?;",
+        -1,
+        &stmt,
+        NULL
+    );
+    if (rc != SQLITE_OK) {
+        return 1;
+    }
+    rc = sqlite3_bind_text(stmt, 1, namespace_name, -1, SQLITE_TRANSIENT);
+    if (rc == SQLITE_OK) {
+        rc = sqlite3_bind_text(stmt, 2, token, -1, SQLITE_TRANSIENT);
+    }
+    step_rc = rc == SQLITE_OK ? sqlite3_step(stmt) : SQLITE_DONE;
+    if (step_rc == SQLITE_ROW &&
+        copy_sqlite_column_text(stmt, 0, first_source_drop_id, first_len) == 0 &&
+        copy_sqlite_column_text(stmt, 1, last_source_drop_id, last_len) == 0) {
+        out_rc = 0;
+    }
+    if (sqlite3_finalize(stmt) != SQLITE_OK) {
+        return 1;
+    }
+
+    return out_rc;
+}
+
 static size_t count_substring(const char *text, const char *needle)
 {
     size_t count = 0u;
@@ -171,9 +274,9 @@ static int parse_fixture_to_output(
     REQUIRE(make_path(out_path, sizeof(out_path), TEST_OUTPUT_DIR, out_name) == 0);
 
     rc = x12_document_load(input_path, &doc);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     rc = event_writer_open(&writer, out_path, input_path, transaction_type);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
 
     if (strcmp(transaction_type, "270") == 0) {
         rc = x12_map_270_document(&doc, &writer);
@@ -189,9 +292,9 @@ static int parse_fixture_to_output(
         rc = X12_ERR_INVALID_ARGUMENT;
     }
 
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     rc = event_writer_close(&writer);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     x12_document_free(&doc);
 
     REQUIRE(read_file_text(out_path, output, output_len) == 0);
@@ -207,10 +310,10 @@ static int test_delimiter_detection(void)
     REQUIRE(make_path(path, sizeof(path), TEST_FIXTURE_DIR, "sample_837.edi") == 0);
 
     rc = x12_document_load(path, &doc);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
 
     rc = x12_document_detect_delimiters(&doc);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     REQUIRE(doc.delimiters.element_sep == '*');
     REQUIRE(doc.delimiters.component_sep == ':');
     REQUIRE(doc.delimiters.segment_term == '~');
@@ -230,10 +333,10 @@ static int test_segment_and_element_splitting(void)
     REQUIRE(make_path(path, sizeof(path), TEST_FIXTURE_DIR, "sample_837.edi") == 0);
 
     rc = x12_document_load(path, &doc);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
 
     rc = x12_document_each_segment(&doc, parser_seen_cb, &seen);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     REQUIRE(seen.count == 16u);
     REQUIRE(seen.saw_isa);
     REQUIRE(seen.saw_clm);
@@ -258,13 +361,13 @@ static int test_837_claim_event(void)
     REQUIRE(make_path(phi_out_path, sizeof(phi_out_path), TEST_OUTPUT_DIR, "sample_837_phi.ndjson") == 0);
 
     rc = x12_document_load(input_path, &doc);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     rc = event_writer_open(&writer, out_path, input_path, "837");
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     rc = x12_map_837_document(&doc, &writer);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     rc = event_writer_close(&writer);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     x12_document_free(&doc);
 
     REQUIRE(read_file_text(out_path, output, sizeof(output)) == 0);
@@ -309,14 +412,14 @@ static int test_837_claim_event(void)
     REQUIRE(strstr(output, "\"event_type\":\"ServiceLineObserved\"") == NULL);
 
     rc = x12_document_load(input_path, &doc);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     rc = event_writer_open(&writer, phi_out_path, input_path, "837");
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     event_writer_set_include_phi(&writer, 1);
     rc = x12_map_837_document(&doc, &writer);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     rc = event_writer_close(&writer);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     x12_document_free(&doc);
 
     REQUIRE(read_file_text(phi_out_path, phi_output, sizeof(phi_output)) == 0);
@@ -326,6 +429,42 @@ static int test_837_claim_event(void)
     REQUIRE(strstr(phi_output, "\"id_value\":\"SUB12345\"") != NULL);
     REQUIRE(strstr(phi_output, "\"claim_id_token\":\"40d5e288b97e8a83d8f2fa18541f14f4\"") != NULL);
     REQUIRE(strstr(phi_output, "\"id_value_token\":\"6ead5d9ab487004819b146b59f6b36f8\"") != NULL);
+    return 0;
+}
+
+static int test_x12_005010x222_example_01_shape(void)
+{
+    char output[24000];
+
+    REQUIRE(parse_fixture_to_output(
+                "x12_005010x222_example_01_synthetic.edi",
+                "837",
+                "x12_005010x222_example_01.ndjson",
+                output,
+                sizeof(output)
+            ) == 0);
+    REQUIRE(strstr(output, "\"source_drop_id\":\"837:000000201:201:0021\"") != NULL);
+    REQUIRE(strstr(output, "\"event_type\":\"ClaimObserved\"") != NULL);
+    REQUIRE(strstr(output, "\"total_charge_amount\":\"100\"") != NULL);
+    REQUIRE(strstr(output, "\"claim_id\":\"X12EXAMPLE01\"") == NULL);
+    REQUIRE(strstr(output, "\"last_name_or_org\":\"NOVA\"") == NULL);
+    REQUIRE(strstr(output, "\"first_name\":\"JAMIE\"") == NULL);
+    REQUIRE(strstr(output, "\"event_type\":\"ClaimReferencedBillingProvider\"") != NULL);
+    REQUIRE(strstr(output, "\"event_type\":\"ClaimReferencedSubscriber\"") != NULL);
+    REQUIRE(strstr(output, "\"event_type\":\"ClaimReferencedPatient\"") != NULL);
+    REQUIRE(strstr(output, "\"event_type\":\"ClaimDiagnosesRecorded\"") != NULL);
+    REQUIRE(strstr(output, "\"principal_diagnosis_code\":\"J02.9\"") != NULL);
+    REQUIRE(strstr(output, "\"other_diagnosis_codes\":[\"R51.9\"]") != NULL);
+    REQUIRE(strstr(output, "\"raw_diagnosis_elements\":[\"BK:J029\",\"BF:R519\"]") != NULL);
+    REQUIRE(count_substring(output, "\"event_type\":\"ClaimServiceLineRecorded\"") == 4u);
+    REQUIRE(count_substring(output, "\"event_type\":\"ClaimLineDateRecorded\"") == 4u);
+    REQUIRE(strstr(output, "\"procedure_code\":\"99213\"") != NULL);
+    REQUIRE(strstr(output, "\"procedure_code\":\"87070\"") != NULL);
+    REQUIRE(strstr(output, "\"procedure_code\":\"99214\"") != NULL);
+    REQUIRE(strstr(output, "\"procedure_code\":\"86663\"") != NULL);
+    REQUIRE(strstr(output, "\"date_value\":\"20260603\"") != NULL);
+    REQUIRE(strstr(output, "\"date_value\":\"20260610\"") != NULL);
+
     return 0;
 }
 
@@ -345,13 +484,13 @@ static int test_834_ins_event(void)
     REQUIRE(make_path(phi_out_path, sizeof(phi_out_path), TEST_OUTPUT_DIR, "sample_834_phi.ndjson") == 0);
 
     rc = x12_document_load(input_path, &doc);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     rc = event_writer_open(&writer, out_path, input_path, "834");
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     rc = x12_map_834_document(&doc, &writer);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     rc = event_writer_close(&writer);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     x12_document_free(&doc);
 
     REQUIRE(read_file_text(out_path, output, sizeof(output)) == 0);
@@ -367,14 +506,14 @@ static int test_834_ins_event(void)
     REQUIRE(strstr(output, "\"benefit_status_code\":\"A\"") != NULL);
 
     rc = x12_document_load(input_path, &doc);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     rc = event_writer_open(&writer, phi_out_path, input_path, "834");
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     event_writer_set_include_phi(&writer, 1);
     rc = x12_map_834_document(&doc, &writer);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     rc = event_writer_close(&writer);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     x12_document_free(&doc);
 
     REQUIRE(read_file_text(phi_out_path, phi_output, sizeof(phi_output)) == 0);
@@ -432,29 +571,29 @@ static int test_270_271_eligibility_events(void)
 
     raw.ptr = "SUB12345";
     raw.len = strlen(raw.ptr);
-    REQUIRE(tokenise_value(TOK_MEMBER_ID, raw, member_token, sizeof(member_token)) == X12_OK);
+    REQUIRE_OK(tokenise_value(TOK_MEMBER_ID, raw, member_token, sizeof(member_token)));
     raw.ptr = "842610001";
     raw.len = strlen(raw.ptr);
-    REQUIRE(tokenise_value(TOK_PAYER_ID, raw, payer_token, sizeof(payer_token)) == X12_OK);
+    REQUIRE_OK(tokenise_value(TOK_PAYER_ID, raw, payer_token, sizeof(payer_token)));
     raw.ptr = "1234567893";
     raw.len = strlen(raw.ptr);
-    REQUIRE(tokenise_value(TOK_PROVIDER_ID, raw, provider_token, sizeof(provider_token)) == X12_OK);
+    REQUIRE_OK(tokenise_value(TOK_PROVIDER_ID, raw, provider_token, sizeof(provider_token)));
     raw.ptr = "19800101";
     raw.len = strlen(raw.ptr);
-    REQUIRE(tokenise_value(TOK_MEMBER_DOB, raw, dob_token, sizeof(dob_token)) == X12_OK);
+    REQUIRE_OK(tokenise_value(TOK_MEMBER_DOB, raw, dob_token, sizeof(dob_token)));
     REQUIRE(snprintf(member_snippet, sizeof(member_snippet), "\"member_id\":\"%s\"", member_token) > 0);
     REQUIRE(snprintf(payer_snippet, sizeof(payer_snippet), "\"payer_id\":\"%s\"", payer_token) > 0);
     REQUIRE(snprintf(provider_snippet, sizeof(provider_snippet), "\"provider_id\":\"%s\"", provider_token) > 0);
     REQUIRE(snprintf(dob_snippet, sizeof(dob_snippet), "\"date_of_birth\":\"%s\"", dob_token) > 0);
 
     rc = x12_document_load(x270_path, &doc);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     rc = event_writer_open(&writer, x270_out_path, x270_path, "270");
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     rc = x12_map_270_document(&doc, &writer);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     rc = event_writer_close(&writer);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     x12_document_free(&doc);
 
     REQUIRE(read_file_text(x270_out_path, output_270, sizeof(output_270)) == 0);
@@ -480,14 +619,14 @@ static int test_270_271_eligibility_events(void)
     REQUIRE(strstr(output_270, "\"gender_code\"") == NULL);
 
     rc = x12_document_load(x270_path, &doc);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     rc = event_writer_open(&writer, x270_phi_out_path, x270_path, "270");
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     event_writer_set_include_phi(&writer, 1);
     rc = x12_map_270_document(&doc, &writer);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     rc = event_writer_close(&writer);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     x12_document_free(&doc);
 
     REQUIRE(read_file_text(x270_phi_out_path, phi_output_270, sizeof(phi_output_270)) == 0);
@@ -502,13 +641,13 @@ static int test_270_271_eligibility_events(void)
     REQUIRE(strstr(phi_output_270, "\"gender_code\":\"F\"") != NULL);
 
     rc = x12_document_load(x271_path, &doc);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     rc = event_writer_open(&writer, x271_out_path, x271_path, "271");
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     rc = x12_map_271_document(&doc, &writer);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     rc = event_writer_close(&writer);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     x12_document_free(&doc);
 
     REQUIRE(read_file_text(x271_out_path, output_271, sizeof(output_271)) == 0);
@@ -533,14 +672,14 @@ static int test_270_271_eligibility_events(void)
     REQUIRE(strstr(output_271, "\"first_name\"") == NULL);
 
     rc = x12_document_load(x271_path, &doc);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     rc = event_writer_open(&writer, x271_phi_out_path, x271_path, "271");
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     event_writer_set_include_phi(&writer, 1);
     rc = x12_map_271_document(&doc, &writer);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     rc = event_writer_close(&writer);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     x12_document_free(&doc);
 
     REQUIRE(read_file_text(x271_phi_out_path, phi_output_271, sizeof(phi_output_271)) == 0);
@@ -556,16 +695,16 @@ static int test_270_271_eligibility_events(void)
     (void)remove(journal_path);
     journal_builder_input_init(&journal_input);
     journal_input.run_id = "coverage-context-test";
-    REQUIRE(journal_builder_input_add_834(&journal_input, x834_path) == X12_OK);
-    REQUIRE(journal_builder_input_add_270(&journal_input, x270_path) == X12_OK);
-    REQUIRE(journal_builder_input_add_271(&journal_input, x271_path) == X12_OK);
-    REQUIRE(journal_builder_build(&journal_input, journal_path) == X12_OK);
+    REQUIRE_OK(journal_builder_input_add_834(&journal_input, x834_path));
+    REQUIRE_OK(journal_builder_input_add_270(&journal_input, x270_path));
+    REQUIRE_OK(journal_builder_input_add_271(&journal_input, x271_path));
+    REQUIRE_OK(journal_builder_build(&journal_input, journal_path));
 
     journal_reader_init(&reader);
-    REQUIRE(journal_reader_open(&reader, journal_path) == X12_OK);
+    REQUIRE_OK(journal_reader_open(&reader, journal_path));
     while (1) {
         rc = journal_reader_next(&reader, &event);
-        REQUIRE(rc == X12_OK);
+        REQUIRE_OK(rc);
         if (event.record_len == 0u) {
             break;
         }
@@ -593,7 +732,7 @@ static int test_270_271_eligibility_events(void)
             saw_271 = 1;
         }
     }
-    REQUIRE(journal_reader_close(&reader) == X12_OK);
+    REQUIRE_OK(journal_reader_close(&reader));
     REQUIRE(saw_834);
     REQUIRE(saw_270);
     REQUIRE(saw_271);
@@ -621,12 +760,12 @@ static int test_835_remittance_events(void)
     REQUIRE(make_path(phi_out_path, sizeof(phi_out_path), TEST_OUTPUT_DIR, "sample_835_phi.ndjson") == 0);
     payer_claim_control_raw.ptr = "PAYERCLM123";
     payer_claim_control_raw.len = strlen(payer_claim_control_raw.ptr);
-    REQUIRE(tokenise_value(
+    REQUIRE_OK(tokenise_value(
                 TOK_PAYER_CLAIM_CONTROL_NUMBER,
                 payer_claim_control_raw,
                 payer_claim_control_token,
                 sizeof(payer_claim_control_token)
-            ) == X12_OK);
+            ));
     REQUIRE(snprintf(
                 payer_claim_control_snippet,
                 sizeof(payer_claim_control_snippet),
@@ -635,13 +774,13 @@ static int test_835_remittance_events(void)
             ) > 0);
 
     rc = x12_document_load(input_path, &doc);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     rc = event_writer_open(&writer, out_path, input_path, "835");
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     rc = x12_map_835_document(&doc, &writer);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     rc = event_writer_close(&writer);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     x12_document_free(&doc);
 
     REQUIRE(read_file_text(out_path, output, sizeof(output)) == 0);
@@ -689,14 +828,14 @@ static int test_835_remittance_events(void)
     REQUIRE(strstr(output, "\"date_value\":\"20260601\"") != NULL);
 
     rc = x12_document_load(input_path, &doc);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     rc = event_writer_open(&writer, phi_out_path, input_path, "835");
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     event_writer_set_include_phi(&writer, 1);
     rc = x12_map_835_document(&doc, &writer);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     rc = event_writer_close(&writer);
-    REQUIRE(rc == X12_OK);
+    REQUIRE_OK(rc);
     x12_document_free(&doc);
 
     REQUIRE(read_file_text(phi_out_path, phi_output, sizeof(phi_output)) == 0);
@@ -816,6 +955,8 @@ static int test_stroke_balance_projection_from_journal(void)
     char projection[96000];
     char resolved[256];
     char indexed_event_ids[16][SCRIBE_STORE_ID_MAX];
+    char first_source_drop_id[SCRIBE_STORE_ID_MAX];
+    char last_source_drop_id[SCRIBE_STORE_ID_MAX];
     char patient_name_token[TOKENISE_MAX_TOKEN_LEN];
     char event_type[128];
     char source_transaction[32];
@@ -829,6 +970,7 @@ static int test_stroke_balance_projection_from_journal(void)
     phi_vault_t phi_vault;
     scribe_store_t read_store;
     scribe_event_locator_t indexed_locator;
+    scribe_source_drop_t indexed_source_drop;
     size_t indexed_event_count = 0u;
     size_t latest_version = 0u;
     int saw_stroke_834 = 0;
@@ -868,24 +1010,24 @@ static int test_stroke_balance_projection_from_journal(void)
     journal_builder_input_init(&journal_input);
     journal_input.include_phi = 1;
     journal_input.run_id = "ingest-test-run";
-    REQUIRE(journal_builder_input_add_834(&journal_input, coverage_834_path) == X12_OK);
-    REQUIRE(journal_builder_input_add_270(&journal_input, eligibility_270_path) == X12_OK);
-    REQUIRE(journal_builder_input_add_271(&journal_input, eligibility_271_path) == X12_OK);
-    REQUIRE(journal_builder_input_add_837(&journal_input, facility_837_path) == X12_OK);
-    REQUIRE(journal_builder_input_add_837(&journal_input, professional_837_path) == X12_OK);
-    REQUIRE(journal_builder_input_add_837(&journal_input, rehab_837_path) == X12_OK);
-    REQUIRE(journal_builder_input_add_837(&journal_input, neurology_837_path) == X12_OK);
-    REQUIRE(journal_builder_input_add_835(&journal_input, facility_835_path) == X12_OK);
-    REQUIRE(journal_builder_input_add_835(&journal_input, professional_835_path) == X12_OK);
-    REQUIRE(journal_builder_input_add_835(&journal_input, rehab_835_path) == X12_OK);
-    REQUIRE(journal_builder_input_add_835(&journal_input, neurology_835_path) == X12_OK);
-    REQUIRE(journal_builder_build(&journal_input, journal_path) == X12_OK);
+    REQUIRE_OK(journal_builder_input_add_834(&journal_input, coverage_834_path));
+    REQUIRE_OK(journal_builder_input_add_270(&journal_input, eligibility_270_path));
+    REQUIRE_OK(journal_builder_input_add_271(&journal_input, eligibility_271_path));
+    REQUIRE_OK(journal_builder_input_add_837(&journal_input, facility_837_path));
+    REQUIRE_OK(journal_builder_input_add_837(&journal_input, professional_837_path));
+    REQUIRE_OK(journal_builder_input_add_837(&journal_input, rehab_837_path));
+    REQUIRE_OK(journal_builder_input_add_837(&journal_input, neurology_837_path));
+    REQUIRE_OK(journal_builder_input_add_835(&journal_input, facility_835_path));
+    REQUIRE_OK(journal_builder_input_add_835(&journal_input, professional_835_path));
+    REQUIRE_OK(journal_builder_input_add_835(&journal_input, rehab_835_path));
+    REQUIRE_OK(journal_builder_input_add_835(&journal_input, neurology_835_path));
+    REQUIRE_OK(journal_builder_build(&journal_input, journal_path));
 
     journal_reader_init(&journal_reader);
-    REQUIRE(journal_reader_open(&journal_reader, journal_path) == X12_OK);
+    REQUIRE_OK(journal_reader_open(&journal_reader, journal_path));
     while (1) {
         rc = journal_reader_next(&journal_reader, &journal_event);
-        REQUIRE(rc == X12_OK);
+        REQUIRE_OK(rc);
         if (journal_event.record_len == 0u) {
             break;
         }
@@ -911,7 +1053,7 @@ static int test_stroke_balance_projection_from_journal(void)
             saw_stroke_271 = 1;
         }
     }
-    REQUIRE(journal_reader_close(&journal_reader) == X12_OK);
+    REQUIRE_OK(journal_reader_close(&journal_reader));
     REQUIRE(saw_stroke_834);
     REQUIRE(saw_stroke_270);
     REQUIRE(saw_stroke_271);
@@ -922,7 +1064,7 @@ static int test_stroke_balance_projection_from_journal(void)
     stitch_input.notify_out_path = notification_path;
     stitch_input.include_phi = 1;
     stitch_input.run_id = "stitch-test-run";
-    REQUIRE(aggregate_stitcher_stitch(&stitch_input) == X12_OK);
+    REQUIRE_OK(aggregate_stitcher_stitch(&stitch_input));
     REQUIRE(read_file_text(aggregate_path, aggregates, sizeof(aggregates)) == 0);
     REQUIRE(read_file_text(notification_path, notifications, sizeof(notifications)) == 0);
 
@@ -985,7 +1127,7 @@ static int test_stroke_balance_projection_from_journal(void)
     balance_projector_input_init(&projection_input);
     projection_input.journal_path = journal_path;
     projection_input.include_phi = 1;
-    REQUIRE(balance_projector_project(&projection_input, projection_path) == X12_OK);
+    REQUIRE_OK(balance_projector_project(&projection_input, projection_path));
     REQUIRE(read_file_text(projection_path, projection, sizeof(projection)) == 0);
 
     REQUIRE(strstr(projection, "\"event_type\":\"ClaimBalanceProjected\"") != NULL);
@@ -1010,12 +1152,12 @@ static int test_stroke_balance_projection_from_journal(void)
 
     journal_input.include_phi = 0;
     journal_input.phi_vault_path = phi_vault_path;
-    REQUIRE(journal_builder_build(&journal_input, nonphi_journal_path) == X12_OK);
+    REQUIRE_OK(journal_builder_build(&journal_input, nonphi_journal_path));
 
     phi_vault_init(&phi_vault);
-    REQUIRE(phi_vault_open(&phi_vault, phi_vault_path) == X12_OK);
-    REQUIRE(phi_vault_init_schema(&phi_vault) == X12_OK);
-    REQUIRE(phi_vault_resolve(
+    REQUIRE_OK(phi_vault_open(&phi_vault, phi_vault_path));
+    REQUIRE_OK(phi_vault_init_schema(&phi_vault));
+    REQUIRE_OK(phi_vault_resolve(
                 &phi_vault,
                 "claim_id",
                 "8259c238232f9585e95fc8f45b0bb410",
@@ -1023,9 +1165,20 @@ static int test_stroke_balance_projection_from_journal(void)
                 "unit",
                 resolved,
                 sizeof(resolved)
-            ) == X12_OK);
+            ));
     REQUIRE_STR(resolved, "CLM-STROKE-RAD-FAC-001");
-    REQUIRE(phi_vault_resolve(
+    REQUIRE(phi_mapping_source_drops(
+                &phi_vault,
+                "claim_id",
+                "8259c238232f9585e95fc8f45b0bb410",
+                first_source_drop_id,
+                sizeof(first_source_drop_id),
+                last_source_drop_id,
+                sizeof(last_source_drop_id)
+            ) == 0);
+    REQUIRE_STR(first_source_drop_id, "837:000000101:101:0001");
+    REQUIRE_STR(last_source_drop_id, "835:000000102:102:0001");
+    REQUIRE_OK(phi_vault_resolve(
                 &phi_vault,
                 "payer_claim_control_number",
                 "edf29f09740ab104da309e2b036e14d1",
@@ -1033,9 +1186,9 @@ static int test_stroke_balance_projection_from_journal(void)
                 "unit",
                 resolved,
                 sizeof(resolved)
-            ) == X12_OK);
+            ));
     REQUIRE_STR(resolved, "PAYER-STROKE-FAC-001");
-    REQUIRE(phi_vault_resolve(
+    REQUIRE_OK(phi_vault_resolve(
                 &phi_vault,
                 "patient_id_name",
                 "483f7b234ed109f0e2323052f22e4e59",
@@ -1043,17 +1196,17 @@ static int test_stroke_balance_projection_from_journal(void)
                 "unit",
                 resolved,
                 sizeof(resolved)
-            ) == X12_OK);
+            ));
     REQUIRE_STR(resolved, "REID|ALEX");
     patient_name_raw.ptr = "REID|ALEX";
     patient_name_raw.len = strlen(patient_name_raw.ptr);
-    REQUIRE(tokenise_value(
+    REQUIRE_OK(tokenise_value(
                 TOK_PATIENT_NAME,
                 patient_name_raw,
                 patient_name_token,
                 sizeof(patient_name_token)
-            ) == X12_OK);
-    REQUIRE(phi_vault_resolve(
+            ));
+    REQUIRE_OK(phi_vault_resolve(
                 &phi_vault,
                 "patient_name",
                 patient_name_token,
@@ -1061,7 +1214,7 @@ static int test_stroke_balance_projection_from_journal(void)
                 "unit",
                 resolved,
                 sizeof(resolved)
-            ) == X12_OK);
+            ));
     REQUIRE_STR(resolved, "REID|ALEX");
     conflicting_raw.ptr = "DIFFERENT-RAW-CLAIM";
     conflicting_raw.len = strlen(conflicting_raw.ptr);
@@ -1072,7 +1225,7 @@ static int test_stroke_balance_projection_from_journal(void)
                 conflicting_raw,
                 "test-conflict"
             ) == X12_ERR_CONFLICT);
-    REQUIRE(phi_vault_close(&phi_vault) == X12_OK);
+    REQUIRE_OK(phi_vault_close(&phi_vault));
     (void)remove(resolved_phi_read_store_path);
     (void)remove(resolved_phi_read_store_wal_path);
     (void)remove(resolved_phi_read_store_shm_path);
@@ -1081,17 +1234,17 @@ static int test_stroke_balance_projection_from_journal(void)
     stitch_input.read_store_path = resolved_phi_read_store_path;
     stitch_input.phi_vault_path = phi_vault_path;
     stitch_input.include_phi = 1;
-    REQUIRE(aggregate_stitcher_stitch(&stitch_input) == X12_OK);
+    REQUIRE_OK(aggregate_stitcher_stitch(&stitch_input));
     scribe_store_init(&read_store);
-    REQUIRE(scribe_store_open(&read_store, resolved_phi_read_store_path) == X12_OK);
-    REQUIRE(scribe_store_init_schema(&read_store) == X12_OK);
-    REQUIRE(scribe_store_get_latest_claim_aggregate(
+    REQUIRE_OK(scribe_store_open(&read_store, resolved_phi_read_store_path));
+    REQUIRE_OK(scribe_store_init_schema(&read_store));
+    REQUIRE_OK(scribe_store_get_latest_claim_aggregate(
                 &read_store,
                 "claim:8259c238232f9585e95fc8f45b0bb410",
                 &latest_version,
                 latest_aggregate,
                 sizeof(latest_aggregate)
-            ) == X12_OK);
+            ));
     REQUIRE(latest_version == 2u);
     REQUIRE(strstr(latest_aggregate, "\"contains_phi\":true") != NULL);
     REQUIRE(strstr(latest_aggregate, "\"claim_id\":\"CLM-STROKE-RAD-FAC-001\"") != NULL);
@@ -1105,7 +1258,7 @@ static int test_stroke_balance_projection_from_journal(void)
     REQUIRE(strstr(latest_aggregate, "\"service_lines\":[") != NULL);
     REQUIRE(strstr(latest_aggregate, "\"match_method\":\"procedure_charge_date\"") != NULL);
     REQUIRE(strstr(latest_aggregate, "\"line_paid_amount\":\"250.00\"") != NULL);
-    REQUIRE(scribe_store_close(&read_store) == X12_OK);
+    REQUIRE_OK(scribe_store_close(&read_store));
     (void)remove(nonphi_read_store_path);
     (void)remove(nonphi_read_store_wal_path);
     (void)remove(nonphi_read_store_shm_path);
@@ -1118,7 +1271,7 @@ static int test_stroke_balance_projection_from_journal(void)
     stitch_input.read_store_path = nonphi_read_store_path;
     stitch_input.phi_vault_path = NULL;
     stitch_input.include_phi = 0;
-    REQUIRE(aggregate_stitcher_stitch(&stitch_input) == X12_OK);
+    REQUIRE_OK(aggregate_stitcher_stitch(&stitch_input));
     REQUIRE(read_file_text(nonphi_aggregate_path, aggregates, sizeof(aggregates)) == 0);
 
     REQUIRE(count_substring(aggregates, "\"event_type\":\"ClaimAggregateUpdated\"") == 8u);
@@ -1135,15 +1288,15 @@ static int test_stroke_balance_projection_from_journal(void)
     REQUIRE(strstr(aggregates, "ALEX") == NULL);
 
     scribe_store_init(&read_store);
-    REQUIRE(scribe_store_open(&read_store, nonphi_read_store_path) == X12_OK);
-    REQUIRE(scribe_store_init_schema(&read_store) == X12_OK);
-    REQUIRE(scribe_store_get_latest_claim_aggregate(
+    REQUIRE_OK(scribe_store_open(&read_store, nonphi_read_store_path));
+    REQUIRE_OK(scribe_store_init_schema(&read_store));
+    REQUIRE_OK(scribe_store_get_latest_claim_aggregate(
                 &read_store,
                 "claim:8259c238232f9585e95fc8f45b0bb410",
                 &latest_version,
                 latest_aggregate,
                 sizeof(latest_aggregate)
-            ) == X12_OK);
+            ));
     REQUIRE(latest_version == 2u);
     REQUIRE(strstr(latest_aggregate, "\"contains_phi\":false") != NULL);
     REQUIRE(strstr(latest_aggregate, "\"has_835\":true") != NULL);
@@ -1152,42 +1305,48 @@ static int test_stroke_balance_projection_from_journal(void)
     REQUIRE(strstr(latest_aggregate, "PAYER-STROKE") == NULL);
     REQUIRE(strstr(latest_aggregate, "REID") == NULL);
     REQUIRE(strstr(latest_aggregate, "ALEX") == NULL);
-    REQUIRE(scribe_store_find_event_ids_by_key(
+    REQUIRE_OK(scribe_store_find_event_ids_by_key(
                 &read_store,
                 "claim_id",
                 "8259c238232f9585e95fc8f45b0bb410",
                 indexed_event_ids,
                 16u,
                 &indexed_event_count
-            ) == X12_OK);
+            ));
     REQUIRE(indexed_event_count > 0u);
-    REQUIRE(scribe_store_get_event_locator(
+    REQUIRE_OK(scribe_store_get_event_locator(
                 &read_store,
                 indexed_event_ids[0],
                 &indexed_locator
-            ) == X12_OK);
+            ));
     REQUIRE(indexed_locator.source_drop_id[0] != '\0');
     REQUIRE(indexed_locator.event_type[0] != '\0');
-    REQUIRE(scribe_store_find_event_ids_by_key(
+    REQUIRE_OK(scribe_store_find_event_ids_by_key(
                 &read_store,
                 "payer_claim_control_number",
                 "edf29f09740ab104da309e2b036e14d1",
                 indexed_event_ids,
                 16u,
                 &indexed_event_count
-            ) == X12_OK);
+            ));
     REQUIRE(indexed_event_count > 0u);
-    REQUIRE(scribe_store_get_event_locator(
+    REQUIRE_OK(scribe_store_get_event_locator(
                 &read_store,
                 indexed_event_ids[0],
                 &indexed_locator
-            ) == X12_OK);
+            ));
     REQUIRE_STR(indexed_locator.source_drop_id, "835:000000102:102:0001");
-    REQUIRE(scribe_store_close(&read_store) == X12_OK);
+    REQUIRE_OK(scribe_store_get_source_drop(
+                &read_store,
+                indexed_locator.source_drop_id,
+                &indexed_source_drop
+            ));
+    REQUIRE_STR(indexed_source_drop.source_file, facility_835_path);
+    REQUIRE_OK(scribe_store_close(&read_store));
 
     projection_input.journal_path = nonphi_journal_path;
     projection_input.include_phi = 0;
-    REQUIRE(balance_projector_project(&projection_input, nonphi_projection_path) == X12_OK);
+    REQUIRE_OK(balance_projector_project(&projection_input, nonphi_projection_path));
     REQUIRE(read_file_text(nonphi_projection_path, projection, sizeof(projection)) == 0);
 
     REQUIRE(strstr(projection, "\"claim_id\":\"8259c238232f9585e95fc8f45b0bb410\"") != NULL);
@@ -1258,13 +1417,13 @@ static int test_member_coverage_aggregate_from_journal(void)
 
     raw.ptr = "SUB-STROKE-001";
     raw.len = strlen(raw.ptr);
-    REQUIRE(tokenise_value(TOK_MEMBER_ID, raw, member_token, sizeof(member_token)) == X12_OK);
+    REQUIRE_OK(tokenise_value(TOK_MEMBER_ID, raw, member_token, sizeof(member_token)));
     raw.ptr = "PAYOR123";
     raw.len = strlen(raw.ptr);
-    REQUIRE(tokenise_value(TOK_PAYER_ID, raw, payer_token, sizeof(payer_token)) == X12_OK);
+    REQUIRE_OK(tokenise_value(TOK_PAYER_ID, raw, payer_token, sizeof(payer_token)));
     raw.ptr = "19790314";
     raw.len = strlen(raw.ptr);
-    REQUIRE(tokenise_value(TOK_MEMBER_DOB, raw, dob_token, sizeof(dob_token)) == X12_OK);
+    REQUIRE_OK(tokenise_value(TOK_MEMBER_DOB, raw, dob_token, sizeof(dob_token)));
     REQUIRE(snprintf(aggregate_id, sizeof(aggregate_id), "member_coverage:%s", member_token) > 0);
 
     (void)remove(journal_path);
@@ -1281,17 +1440,17 @@ static int test_member_coverage_aggregate_from_journal(void)
     journal_builder_input_init(&journal_input);
     journal_input.run_id = "coverage-ingest-test";
     journal_input.phi_vault_path = phi_vault_path;
-    REQUIRE(journal_builder_input_add_834(&journal_input, coverage_834_path) == X12_OK);
-    REQUIRE(journal_builder_input_add_270(&journal_input, eligibility_270_path) == X12_OK);
-    REQUIRE(journal_builder_input_add_271(&journal_input, eligibility_271_path) == X12_OK);
-    REQUIRE(journal_builder_build(&journal_input, journal_path) == X12_OK);
+    REQUIRE_OK(journal_builder_input_add_834(&journal_input, coverage_834_path));
+    REQUIRE_OK(journal_builder_input_add_270(&journal_input, eligibility_270_path));
+    REQUIRE_OK(journal_builder_input_add_271(&journal_input, eligibility_271_path));
+    REQUIRE_OK(journal_builder_build(&journal_input, journal_path));
 
     coverage_stitcher_input_init(&coverage_input);
     coverage_input.journal_path = journal_path;
     coverage_input.out_path = aggregate_path;
     coverage_input.read_store_path = read_store_path;
     coverage_input.run_id = "coverage-stitch-test";
-    REQUIRE(coverage_stitcher_stitch(&coverage_input) == X12_OK);
+    REQUIRE_OK(coverage_stitcher_stitch(&coverage_input));
     REQUIRE(read_file_text(aggregate_path, aggregates, sizeof(aggregates)) == 0);
 
     REQUIRE(strstr(aggregates, "\"event_type\":\"MemberCoverageUpdated\"") != NULL);
@@ -1317,49 +1476,49 @@ static int test_member_coverage_aggregate_from_journal(void)
     REQUIRE(strstr(aggregates, "ALEX") == NULL);
 
     scribe_store_init(&store);
-    REQUIRE(scribe_store_open(&store, read_store_path) == X12_OK);
-    REQUIRE(scribe_store_init_schema(&store) == X12_OK);
-    REQUIRE(scribe_store_get_latest_member_coverage(
+    REQUIRE_OK(scribe_store_open(&store, read_store_path));
+    REQUIRE_OK(scribe_store_init_schema(&store));
+    REQUIRE_OK(scribe_store_get_latest_member_coverage(
                 &store,
                 aggregate_id,
                 &latest_version,
                 latest_coverage,
                 sizeof(latest_coverage)
-            ) == X12_OK);
+            ));
     REQUIRE(latest_version > 0u);
     REQUIRE(strstr(latest_coverage, "\"contains_phi\":false") != NULL);
     REQUIRE(strstr(latest_coverage, "\"benefit_count\":3") != NULL);
-    REQUIRE(scribe_store_find_member_coverage_ids_by_key(
+    REQUIRE_OK(scribe_store_find_member_coverage_ids_by_key(
                 &store,
                 "member_id",
                 member_token,
                 aggregate_ids,
                 4u,
                 &aggregate_count
-            ) == X12_OK);
+            ));
     REQUIRE(aggregate_count == 1u);
     REQUIRE_STR(aggregate_ids[0], aggregate_id);
-    REQUIRE(scribe_store_find_member_coverage_ids_by_key(
+    REQUIRE_OK(scribe_store_find_member_coverage_ids_by_key(
                 &store,
                 "payer_id",
                 payer_token,
                 aggregate_ids,
                 4u,
                 &aggregate_count
-            ) == X12_OK);
+            ));
     REQUIRE(aggregate_count == 1u);
     REQUIRE_STR(aggregate_ids[0], aggregate_id);
-    REQUIRE(scribe_store_find_member_coverage_ids_by_key(
+    REQUIRE_OK(scribe_store_find_member_coverage_ids_by_key(
                 &store,
                 "service_type_code",
                 "47",
                 aggregate_ids,
                 4u,
                 &aggregate_count
-            ) == X12_OK);
+            ));
     REQUIRE(aggregate_count == 1u);
     REQUIRE_STR(aggregate_ids[0], aggregate_id);
-    REQUIRE(scribe_store_close(&store) == X12_OK);
+    REQUIRE_OK(scribe_store_close(&store));
 
     coverage_stitcher_input_init(&coverage_input);
     coverage_input.journal_path = journal_path;
@@ -1368,7 +1527,7 @@ static int test_member_coverage_aggregate_from_journal(void)
     coverage_input.phi_vault_path = phi_vault_path;
     coverage_input.include_phi = 1;
     coverage_input.run_id = "coverage-phi-stitch-test";
-    REQUIRE(coverage_stitcher_stitch(&coverage_input) == X12_OK);
+    REQUIRE_OK(coverage_stitcher_stitch(&coverage_input));
     REQUIRE(read_file_text(phi_aggregate_path, phi_aggregates, sizeof(phi_aggregates)) == 0);
 
     REQUIRE(strstr(phi_aggregates, "\"contains_phi\":true") != NULL);
@@ -1385,29 +1544,29 @@ static int test_member_coverage_aggregate_from_journal(void)
     REQUIRE(strstr(phi_aggregates, dob_token) != NULL);
 
     scribe_store_init(&store);
-    REQUIRE(scribe_store_open(&store, phi_read_store_path) == X12_OK);
-    REQUIRE(scribe_store_init_schema(&store) == X12_OK);
-    REQUIRE(scribe_store_get_latest_member_coverage(
+    REQUIRE_OK(scribe_store_open(&store, phi_read_store_path));
+    REQUIRE_OK(scribe_store_init_schema(&store));
+    REQUIRE_OK(scribe_store_get_latest_member_coverage(
                 &store,
                 aggregate_id,
                 &latest_version,
                 latest_coverage,
                 sizeof(latest_coverage)
-            ) == X12_OK);
+            ));
     REQUIRE(latest_version > 0u);
     REQUIRE(strstr(latest_coverage, "\"contains_phi\":true") != NULL);
     REQUIRE(strstr(latest_coverage, "\"member_id\":\"SUB-STROKE-001\"") != NULL);
-    REQUIRE(scribe_store_find_member_coverage_ids_by_key(
+    REQUIRE_OK(scribe_store_find_member_coverage_ids_by_key(
                 &store,
                 "member_id_raw",
                 "SUB-STROKE-001",
                 aggregate_ids,
                 4u,
                 &aggregate_count
-            ) == X12_OK);
+            ));
     REQUIRE(aggregate_count == 1u);
     REQUIRE_STR(aggregate_ids[0], aggregate_id);
-    REQUIRE(scribe_store_close(&store) == X12_OK);
+    REQUIRE_OK(scribe_store_close(&store));
 
     (void)remove(journal_path);
     (void)remove(read_store_path);
@@ -1431,6 +1590,7 @@ static int test_store_indexes_and_aggregates(void)
     char event_ids[4][SCRIBE_STORE_ID_MAX];
     char state_json[512];
     scribe_store_t store;
+    scribe_source_drop_t source_drop;
     scribe_event_locator_t locator;
     size_t count = 0u;
     size_t version = 0u;
@@ -1443,16 +1603,27 @@ static int test_store_indexes_and_aggregates(void)
     (void)remove(db_shm_path);
 
     scribe_store_init(&store);
-    REQUIRE(scribe_store_open(&store, db_path) == X12_OK);
-    REQUIRE(scribe_store_init_schema(&store) == X12_OK);
-    REQUIRE(scribe_store_put_source_drop(
+    REQUIRE_OK(scribe_store_open(&store, db_path));
+    REQUIRE_OK(scribe_store_init_schema(&store));
+    REQUIRE_OK(scribe_store_put_source_drop(
                 &store,
                 "835:000000102:102:0001",
                 "835",
+                "/inbound/remits/facility_835.edi",
                 "2026-09-14T00:00:00Z",
                 "sha256:file"
-            ) == X12_OK);
-    REQUIRE(scribe_store_put_event(
+            ));
+    REQUIRE_OK(scribe_store_get_source_drop(
+                &store,
+                "835:000000102:102:0001",
+                &source_drop
+            ));
+    REQUIRE_STR(source_drop.source_drop_id, "835:000000102:102:0001");
+    REQUIRE_STR(source_drop.source_type, "835");
+    REQUIRE_STR(source_drop.source_file, "/inbound/remits/facility_835.edi");
+    REQUIRE_STR(source_drop.received_at, "2026-09-14T00:00:00Z");
+    REQUIRE_STR(source_drop.file_hash, "sha256:file");
+    REQUIRE_OK(scribe_store_put_event(
                 &store,
                 "evt_000128",
                 "835:000000102:102:0001",
@@ -1461,32 +1632,32 @@ static int test_store_indexes_and_aggregates(void)
                 8172,
                 612,
                 "sha256:event"
-            ) == X12_OK);
-    REQUIRE(scribe_store_put_event_key(
+            ));
+    REQUIRE_OK(scribe_store_put_event_key(
                 &store,
                 "claim_id",
                 "8259c238232f9585e95fc8f45b0bb410",
                 "evt_000128"
-            ) == X12_OK);
-    REQUIRE(scribe_store_put_event_key(
+            ));
+    REQUIRE_OK(scribe_store_put_event_key(
                 &store,
                 "payer_claim_control_number",
                 "edf29f09740ab104da309e2b036e14d1",
                 "evt_000128"
-            ) == X12_OK);
+            ));
 
-    REQUIRE(scribe_store_find_event_ids_by_key(
+    REQUIRE_OK(scribe_store_find_event_ids_by_key(
                 &store,
                 "claim_id",
                 "8259c238232f9585e95fc8f45b0bb410",
                 event_ids,
                 4u,
                 &count
-            ) == X12_OK);
+            ));
     REQUIRE(count == 1u);
     REQUIRE_STR(event_ids[0], "evt_000128");
 
-    REQUIRE(scribe_store_get_event_locator(&store, "evt_000128", &locator) == X12_OK);
+    REQUIRE_OK(scribe_store_get_event_locator(&store, "evt_000128", &locator));
     REQUIRE_STR(locator.source_drop_id, "835:000000102:102:0001");
     REQUIRE_STR(locator.event_type, "RemittanceAdjustmentObserved");
     REQUIRE_STR(locator.segment_id, "20260603-000001");
@@ -1494,34 +1665,34 @@ static int test_store_indexes_and_aggregates(void)
     REQUIRE(locator.length == 612);
     REQUIRE_STR(locator.checksum, "sha256:event");
 
-    REQUIRE(scribe_store_put_claim_aggregate(
+    REQUIRE_OK(scribe_store_put_claim_aggregate(
                 &store,
                 "claim:8259c238232f9585e95fc8f45b0bb410",
                 3u,
                 "{\"version\":3,\"has_835\":true}",
                 "evt_000128",
                 "835:000000102:102:0001"
-            ) == X12_OK);
-    REQUIRE(scribe_store_put_claim_aggregate(
+            ));
+    REQUIRE_OK(scribe_store_put_claim_aggregate(
                 &store,
                 "claim:8259c238232f9585e95fc8f45b0bb410",
                 2u,
                 "{\"version\":2}",
                 "evt_000024",
                 "837:000000101:101:0001"
-            ) == X12_OK);
-    REQUIRE(scribe_store_get_latest_claim_aggregate(
+            ));
+    REQUIRE_OK(scribe_store_get_latest_claim_aggregate(
                 &store,
                 "claim:8259c238232f9585e95fc8f45b0bb410",
                 &version,
                 state_json,
                 sizeof(state_json)
-            ) == X12_OK);
+            ));
     REQUIRE(version == 3u);
     REQUIRE(strstr(state_json, "\"version\":3") != NULL);
 
     REQUIRE(scribe_store_get_event_locator(&store, "evt_missing", &locator) == X12_ERR_NOT_FOUND);
-    REQUIRE(scribe_store_close(&store) == X12_OK);
+    REQUIRE_OK(scribe_store_close(&store));
     (void)remove(db_path);
     (void)remove(db_wal_path);
     (void)remove(db_shm_path);
@@ -1537,7 +1708,7 @@ static int test_json_escaping(void)
 
     fp = tmpfile();
     REQUIRE(fp != NULL);
-    REQUIRE(event_writer_write_json_string(fp, input, strlen(input)) == X12_OK);
+    REQUIRE_OK(event_writer_write_json_string(fp, input, strlen(input)));
     REQUIRE(fflush(fp) == 0);
     REQUIRE(fseek(fp, 0, SEEK_SET) == 0);
     REQUIRE(fgets(output, sizeof(output), fp) != NULL);
@@ -1574,7 +1745,7 @@ static int test_tokenise_format(void)
     raw.ptr = "ABC123";
     raw.len = strlen(raw.ptr);
 
-    REQUIRE(tokenise_value(TOK_CLAIM_ID, raw, token, sizeof(token)) == X12_OK);
+    REQUIRE_OK(tokenise_value(TOK_CLAIM_ID, raw, token, sizeof(token)));
     REQUIRE_STR(token, "f58260c3ffcdfaff81c42473f162e481");
 
     return 0;
@@ -1585,6 +1756,7 @@ int main(void)
     REQUIRE(test_delimiter_detection() == 0);
     REQUIRE(test_segment_and_element_splitting() == 0);
     REQUIRE(test_837_claim_event() == 0);
+    REQUIRE(test_x12_005010x222_example_01_shape() == 0);
     REQUIRE(test_834_ins_event() == 0);
     REQUIRE(test_270_271_eligibility_events() == 0);
     REQUIRE(test_835_remittance_events() == 0);

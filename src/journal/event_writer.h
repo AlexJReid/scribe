@@ -8,6 +8,8 @@
 
 #include <stdio.h>
 
+#define EVENT_WRITER_SOURCE_DROP_ID_MAX 256u
+
 typedef struct {
     FILE *fp;
     int owns_file;
@@ -19,7 +21,7 @@ typedef struct {
     x12_str_t st02;
     int include_phi;
     phi_vault_t *phi_vault;
-    const char *phi_source_ref;
+    char current_source_drop_id[EVENT_WRITER_SOURCE_DROP_ID_MAX];
     int binary_journal;
     FILE *payload_sink;
     journal_record_builder_t journal_record;
@@ -47,8 +49,7 @@ void event_writer_set_run_id(event_writer_t *writer, const char *run_id);
 int event_writer_set_binary_journal(event_writer_t *writer, int binary_journal);
 void event_writer_set_phi_vault(
     event_writer_t *writer,
-    phi_vault_t *vault,
-    const char *source_ref
+    phi_vault_t *vault
 );
 int event_writer_record_phi_mapping(
     event_writer_t *writer,

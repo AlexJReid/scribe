@@ -1040,10 +1040,15 @@ static int record_batch_update(
     return X12_OK;
 }
 
-static int set_current_source_drop(stitch_state_t *state, const char *drop_key)
+static int set_current_source_drop(
+    stitch_state_t *state,
+    const char *drop_key,
+    const journal_event_t *journal_line
+)
 {
     const char *separator;
     size_t drop_type_len;
+    char source_file[STITCH_VALUE_MAX] = "";
     char source_type[32];
     int written;
     int rc;
@@ -1056,6 +1061,13 @@ static int set_current_source_drop(stitch_state_t *state, const char *drop_key)
     state->source_drop_count++;
 
     separator = strchr(drop_key, '|');
+    if (journal_line != NULL) {
+        (void)json_get_string(journal_line, "source_file", source_file, sizeof(source_file));
+    }
+    if (source_file[0] == '\0' && separator != NULL && separator[1] != '\0') {
+        copy_cstr(source_file, sizeof(source_file), separator + 1);
+    }
+
     if (separator == NULL && strchr(drop_key, ':') != NULL) {
         const char *type_end = strchr(drop_key, ':');
 
@@ -1109,6 +1121,7 @@ static int set_current_source_drop(stitch_state_t *state, const char *drop_key)
             state->read_store,
             state->current_source_drop_id,
             source_type,
+            source_file,
             "",
             ""
         );
@@ -1570,7 +1583,7 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
             if (rc != X12_OK) {
                 break;
             }
-            rc = set_current_source_drop(state, drop_key);
+            rc = set_current_source_drop(state, drop_key, &record);
             if (rc != X12_OK) {
                 break;
             }

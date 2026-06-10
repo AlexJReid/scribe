@@ -28,6 +28,10 @@ payments, and locators.
 837 `CLM01` and 835 `CLP01` share the `claim_id` namespace. 835 `CLP07` uses
 `payer_claim_control_number`.
 
+The `x12_005010x222_example_01_synthetic.edi` fixture is a synthetic,
+non-verbatim 837P stream shaped after X12's public 005010X222 Example 01. Keep
+official X12 example text out of the repo unless licensing is explicit.
+
 ## Coverage
 
 ```text
@@ -69,6 +73,10 @@ Source drop IDs identify the file/interchange/transaction batch that should
 collapse into one aggregate version. Event locators identify the exact bytes that
 produced a fact, so renamed files or reordered ingest do not change evidence
 references.
+
+PHI vault mappings store first/last source drop IDs, not file paths. To resolve
+that provenance back to an inbound file, join the source drop ID through the read
+store `source_drops` metadata, which records the source type and source file.
 
 ## Runs
 

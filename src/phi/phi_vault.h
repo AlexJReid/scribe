@@ -22,7 +22,7 @@ int phi_vault_put_mapping(
     const char *namespace_name,
     const char *token,
     x12_str_t raw_value,
-    const char *source_ref
+    const char *source_drop_id
 );
 
 int phi_vault_resolve(

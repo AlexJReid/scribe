@@ -107,7 +107,7 @@ static int append_x12_file(
         x12_document_free(&doc);
         return rc;
     }
-    event_writer_set_phi_vault(&writer, phi_vault, path);
+    event_writer_set_phi_vault(&writer, phi_vault);
 
     if (strcmp(type, "270") == 0) {
         rc = x12_map_270_document(&doc, &writer);

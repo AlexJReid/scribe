@@ -5,8 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define SOURCE_DROP_ID_MAX 256u
-
 static event_writer_t *active_binary_writer = NULL;
 
 static x12_str_t empty_str(void)
@@ -105,7 +103,7 @@ int event_writer_open(
     writer->st02 = empty_str();
     writer->include_phi = 0;
     writer->phi_vault = NULL;
-    writer->phi_source_ref = source_file;
+    writer->current_source_drop_id[0] = '\0';
     writer->binary_journal = 0;
     writer->payload_sink = NULL;
     journal_record_builder_init(&writer->journal_record);
@@ -147,7 +145,7 @@ int event_writer_open_stream(
     writer->st02 = empty_str();
     writer->include_phi = 0;
     writer->phi_vault = NULL;
-    writer->phi_source_ref = source_file;
+    writer->current_source_drop_id[0] = '\0';
     writer->binary_journal = 0;
     writer->payload_sink = NULL;
     journal_record_builder_init(&writer->journal_record);
@@ -205,8 +203,7 @@ int event_writer_set_binary_journal(event_writer_t *writer, int binary_journal)
 
 void event_writer_set_phi_vault(
     event_writer_t *writer,
-    phi_vault_t *vault,
-    const char *source_ref
+    phi_vault_t *vault
 )
 {
     if (writer == NULL) {
@@ -214,7 +211,6 @@ void event_writer_set_phi_vault(
     }
 
     writer->phi_vault = vault;
-    writer->phi_source_ref = source_ref != NULL ? source_ref : writer->source_file;
 }
 
 int event_writer_record_phi_mapping(
@@ -229,6 +225,9 @@ int event_writer_record_phi_mapping(
     if (writer == NULL || writer->phi_vault == NULL || raw.ptr == NULL || raw.len == 0u) {
         return X12_OK;
     }
+    if (writer->current_source_drop_id[0] == '\0') {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
 
     rc = tokenise_value(type, raw, token, sizeof(token));
     if (rc != X12_OK) {
@@ -240,7 +239,7 @@ int event_writer_record_phi_mapping(
         tokenise_namespace(type),
         token,
         raw,
-        writer->phi_source_ref
+        writer->current_source_drop_id
     );
 }
 
@@ -264,6 +263,9 @@ int event_writer_record_phi_name(
     if (writer == NULL || writer->phi_vault == NULL ||
         last_name_or_org.ptr == NULL || last_name_or_org.len == 0u) {
         return X12_OK;
+    }
+    if (writer->current_source_drop_id[0] == '\0') {
+        return X12_ERR_INVALID_ARGUMENT;
     }
 
     if (first_name.ptr != NULL && first_name.len > 0u) {
@@ -301,7 +303,7 @@ int event_writer_record_phi_name(
         tokenise_namespace(name_type),
         name_token,
         name_raw,
-        writer->phi_source_ref
+        writer->current_source_drop_id
     );
     if (rc != X12_OK) {
         return rc;
@@ -330,7 +332,7 @@ int event_writer_record_phi_name(
         id_name_namespace,
         id_token,
         name_raw,
-        writer->phi_source_ref
+        writer->current_source_drop_id
     );
 }
 
@@ -471,7 +473,7 @@ int event_writer_begin_event(
     const x12_segment_t *seg
 )
 {
-    char source_drop_id[SOURCE_DROP_ID_MAX];
+    char source_drop_id[EVENT_WRITER_SOURCE_DROP_ID_MAX];
     FILE *fp;
     int rc;
 
@@ -483,6 +485,12 @@ int event_writer_begin_event(
     if (rc != X12_OK) {
         return rc;
     }
+    (void)snprintf(
+        writer->current_source_drop_id,
+        sizeof(writer->current_source_drop_id),
+        "%s",
+        source_drop_id
+    );
 
     if (writer->binary_journal) {
         if (writer->payload_sink == NULL) {

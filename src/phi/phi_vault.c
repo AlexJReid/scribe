@@ -226,8 +226,8 @@ int phi_vault_init_schema(phi_vault_t *vault)
         "  namespace TEXT NOT NULL,"
         "  token TEXT NOT NULL,"
         "  raw_value TEXT NOT NULL,"
-        "  first_source_ref TEXT NOT NULL,"
-        "  last_source_ref TEXT NOT NULL,"
+        "  first_source_drop_id TEXT NOT NULL,"
+        "  last_source_drop_id TEXT NOT NULL,"
         "  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
         "  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,"
         "  PRIMARY KEY (namespace, token)"
@@ -252,7 +252,7 @@ int phi_vault_put_mapping(
     const char *namespace_name,
     const char *token,
     x12_str_t raw_value,
-    const char *source_ref
+    const char *source_drop_id
 )
 {
     sqlite3_stmt *stmt;
@@ -264,7 +264,8 @@ int phi_vault_put_mapping(
     int rc;
 
     if (db == NULL || namespace_name == NULL || token == NULL ||
-        raw_value.ptr == NULL || raw_value.len == 0u) {
+        raw_value.ptr == NULL || raw_value.len == 0u ||
+        source_drop_id == NULL || source_drop_id[0] == '\0') {
         return X12_ERR_INVALID_ARGUMENT;
     }
 
@@ -303,10 +304,10 @@ int phi_vault_put_mapping(
     rc = prepare(
         db,
         "INSERT INTO phi_mappings "
-        "(namespace, token, raw_value, first_source_ref, last_source_ref) "
+        "(namespace, token, raw_value, first_source_drop_id, last_source_drop_id) "
         "VALUES (?, ?, ?, ?, ?) "
         "ON CONFLICT(namespace, token) DO UPDATE SET "
-        "last_source_ref = excluded.last_source_ref, "
+        "last_source_drop_id = excluded.last_source_drop_id, "
         "updated_at = CURRENT_TIMESTAMP "
         "WHERE phi_mappings.raw_value = excluded.raw_value;",
         &stmt
@@ -323,10 +324,10 @@ int phi_vault_put_mapping(
         rc = bind_x12_str(stmt, 3, raw_value);
     }
     if (rc == X12_OK) {
-        rc = bind_text(stmt, 4, source_ref);
+        rc = bind_text(stmt, 4, source_drop_id);
     }
     if (rc == X12_OK) {
-        rc = bind_text(stmt, 5, source_ref);
+        rc = bind_text(stmt, 5, source_drop_id);
     }
     if (rc == X12_OK) {
         rc = step_done(stmt);
