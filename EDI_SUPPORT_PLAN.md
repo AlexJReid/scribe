@@ -11,22 +11,102 @@ Evolve scribe from a healthcare-focused X12 event extraction tool into a robust 
 
 Reference sources include CMS documentation, companion guides, and Stedi healthcare documentation. These are used to prioritise transaction coverage and validate behaviour, not as implementation dependencies.
 
-## Phase 1 - Complete Core Healthcare Coverage
+## Phase 1 - Complete 837 Claim Coverage
+
+The immediate priority is to make 837 support useful enough to drive claim stitching, 835 matching, and downstream projections. That means supporting both professional and institutional claim shapes.
 
 ### 837 Professional (837P)
-- Validate common loop structures.
-- Expand provider entity extraction.
-- Extract diagnosis pointers.
-- Extract service line details.
-- Improve claim status and adjustment modelling.
+
+Current support should be expanded from basic claim extraction into richer claim, provider, diagnosis, and service-line events.
+
+Required event coverage:
+- ClaimSubmitted.
+- SubscriberReferenced.
+- PatientReferenced.
+- BillingProviderReferenced.
+- RenderingProviderReferenced.
+- ReferringProviderReferenced.
+- SupervisingProviderReferenced.
+- FacilityReferenced.
+- DiagnosisReferenced.
+- DiagnosisPointerReferenced.
+- ServiceLineSubmitted.
+- ProcedureReferenced.
+- ChargeReferenced.
+
+Implementation work:
+- Validate common 837P loop structures.
+- Expand provider role extraction.
+- Extract diagnosis codes from HI segments.
+- Extract diagnosis pointers from service lines.
+- Extract service line procedure code, modifiers, units, charge amount, and service date.
+- Preserve CLM01 and service line identifiers for later 835 matching.
 - Add companion-guide-driven fixtures.
 
+Minimum fixtures:
+- Simple office visit.
+- Multi-line professional claim.
+- Claim with referring provider.
+- Claim with rendering provider.
+- Claim with multiple diagnoses and diagnosis pointers.
+
 ### 837 Institutional (837I)
+
+837I needs explicit support rather than treating it as a slightly different 837P. Institutional claims introduce facility, admission, discharge, bill type, revenue code, and inpatient/outpatient concepts.
+
+Required event coverage:
+- InstitutionalClaimSubmitted.
+- FacilityReferenced.
+- AttendingProviderReferenced.
+- OperatingProviderReferenced.
+- OtherProviderReferenced.
+- SubscriberReferenced.
+- PatientReferenced.
+- DiagnosisReferenced.
+- OccurrenceCodeReferenced.
+- ValueCodeReferenced.
+- RevenueLineSubmitted.
+- ProcedureReferenced.
+- ChargeReferenced.
+
+Implementation work:
 - Support institutional claim-specific loops.
-- Revenue codes.
-- Bill types.
-- Facility identifiers.
-- Institutional service lines.
+- Extract bill type.
+- Extract revenue codes.
+- Extract admission date.
+- Extract discharge date.
+- Extract patient status.
+- Extract occurrence codes.
+- Extract value codes.
+- Extract DRG when present.
+- Extract facility identifiers.
+- Extract attending and operating provider details.
+- Extract institutional service/revenue lines.
+- Preserve claim and revenue line identifiers for later 835 matching.
+
+Minimum fixtures:
+- Simple outpatient institutional claim.
+- Inpatient stay with admission and discharge dates.
+- Institutional claim with revenue codes.
+- Institutional claim with attending provider.
+- Institutional claim with value and occurrence codes.
+- Institutional claim with DRG.
+
+### 837 Shared Matching Requirements
+
+Both 837P and 837I must emit enough detail to make later 835 stitching reliable.
+
+Shared requirements:
+- Preserve tokenised claim identifiers.
+- Preserve service/revenue line order.
+- Preserve procedure, revenue code, charge, units, and dates where available.
+- Emit source segment index and byte offset for every event.
+- Keep PHI tokenised by default.
+- Include enough provider and payer context to debug mismatches.
+
+The stitcher should not have to infer everything from weak claim-level facts. The 837 event stream must carry the facts needed to pair submitted claim lines with remittance lines.
+
+## Phase 2 - Complete Other Core Healthcare Coverage
 
 ### 835 Remittance
 - Full CAS adjustment extraction.
@@ -47,7 +127,7 @@ Reference sources include CMS documentation, companion guides, and Stedi healthc
 - Dependent modelling.
 - Plan transitions.
 
-## Phase 2 - Claim Lifecycle Coverage
+## Phase 3 - Claim Lifecycle Coverage
 
 ### 277CA Claim Acknowledgements
 - Parse acknowledgements.
@@ -68,7 +148,7 @@ Reference sources include CMS documentation, companion guides, and Stedi healthc
 - 999 acknowledgements.
 - TA1 acknowledgements.
 
-## Phase 3 - Validation Engine
+## Phase 4 - Validation Engine
 
 ### Syntax Validation
 - Segment ordering.
@@ -82,6 +162,7 @@ Reference sources include CMS documentation, companion guides, and Stedi healthc
 - Claim balancing.
 - Subscriber/dependent relationships.
 - Control number validation.
+- 837P/837I-specific required data checks.
 
 ### Reporting
 Emit structured validation events:
@@ -89,7 +170,7 @@ Emit structured validation events:
 - ValidationFailed
 - ValidationPassed
 
-## Phase 4 - Generic X12 Infrastructure
+## Phase 5 - Generic X12 Infrastructure
 
 ### Schema Registry
 - Versioned transaction definitions.
@@ -102,7 +183,7 @@ Emit structured validation events:
 - Version-specific mappings.
 - Test fixture packs.
 
-## Phase 5 - Streaming Operation
+## Phase 6 - Streaming Operation
 
 ### Streaming Parse API
 - Parse from memory.
@@ -115,7 +196,7 @@ Emit structured validation events:
 - Reduced memory usage.
 - Streaming journal generation.
 
-## Phase 6 - Interoperability
+## Phase 7 - Interoperability
 
 ### Output Formats
 - NDJSON.
@@ -132,13 +213,14 @@ Emit structured validation events:
 - Airflow.
 - Synapse/Fabric ingestion.
 
-## Phase 7 - Testing
+## Phase 8 - Testing
 
 ### Fixture Expansion
 - CMS examples.
 - Companion guide examples.
 - Edge cases.
 - Invalid files.
+- 837P and 837I fixture packs.
 
 ### Differential Testing
 Compare output against:
