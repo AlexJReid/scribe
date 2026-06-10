@@ -10,7 +10,7 @@ non-PHI notification facts.
 
 scribe turns X12 healthcare EDI into auditable events.
 
-Instead of giving you a huge opaque parse tree, it emits small domain events with control numbers, segment positions, and byte offsets so pipelines can validate, load, and debug claims/remits without hand-rolling brittle string parsers.
+Instead of giving you a huge opaque JSON dump, it emits small domain events with control numbers, segment positions, and byte offsets so pipelines can validate, load, and debug claims/remits without hand-rolling brittle string parsers.
 
 It is a small, versatile binary that runs on any platform. Use the CLI interactively, in a command pipeline:
 
@@ -19,9 +19,10 @@ scribe parse --type 837 claims.edi \
   | jq 'select(.event_type=="SubscriberReferenced")'
 ```
 
-... or as part of a serverless trigger when some files arrive on storage and batch process/cron job to process waiting X12 files.
+It can be invoked as a serverless trigger (Lambda, S3) when some files arrive on storage or as a batch process/cron job to process waiting X12 files. As it is just a binary, it can run as a K8S job or within common data schedulers.
 
-It can create journals, read store projections and so on. For more advanced usage see [scripts/stroke-demo.sh](./scripts/stroke-demo.sh) or `scribe --help`.
+Beyond parsing it can create journals, stitch, produce read store projections and so on.
+For more advanced usage see [scripts/stroke-demo.sh](./scripts/stroke-demo.sh) or `scribe --help`.
 
 ## Build
 
@@ -42,11 +43,11 @@ Run focused checks with `build/scribe ...`.
 - Read store: indexes, versioned aggregate snapshots, and latest rows
 - Outputs: claim aggregates, member coverage, balances, and outbox facts
 
-SQLite is used as a stand-in for a managed database to back the vault and read stores in this proof of concept.
+SQLite is used as a stand-in for a managed database to back the vault and read stores, but this can be easily swapped out in the future.
 
 ## Demo
 
-The walked synthetic stroke case lives in [tests/fixtures/stroke_encounter/](./tests/fixtures/stroke_encounter/) - 
+The synthetic _encounter_ case study lives in [tests/fixtures/stroke_encounter/](./tests/fixtures/stroke_encounter/) - 
 generated reference output lives in [demo/](./demo).
 
 ```sh
@@ -66,7 +67,7 @@ order by aggregate_id;
 "
 ```
 
-See [scripts/stroke-demo.sh](./scripts/stroke-demo.sh) for the full ingest, stitch, coverage, PHI, and balance command lines.
+See [scripts/stroke-demo.sh](./scripts/stroke-demo.sh) and [demo.sh](./demo.sh) for the full ingest, stitch, coverage, PHI, and balance command lines.
 
 ## Safety
 
