@@ -1,0 +1,97 @@
+name: Build
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            libsqlite3-dev \
+            sqlite3
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Package binary
+        run: |
+          mkdir -p dist
+          tar -czf "dist/scribe-linux-${{ matrix.arch }}.tar.gz" -C build scribe
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: scribe-linux-${{ matrix.arch }}
+          path: dist/scribe-linux-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+
+  windows-x64:
+    name: windows x64
+    runs-on: windows-latest
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        shell: pwsh
+        run: vcpkg install sqlite3:x64-windows
+
+      - name: Configure
+        shell: pwsh
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+
+      - name: Build
+        run: cmake --build build --config RelWithDebInfo --parallel
+
+      - name: Test
+        run: ctest --test-dir build -C RelWithDebInfo --output-on-failure
+
+      - name: Package binary
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive `
+            -Path build/RelWithDebInfo/scribe.exe `
+            -DestinationPath dist/scribe-windows-x64.zip
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: scribe-windows-x64
+          path: dist/scribe-windows-x64.zip
+          if-no-files-found: error
