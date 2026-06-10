@@ -45,7 +45,7 @@ scribe project balance \
 
 `scribe` is a small C binary. Run it interactively, in shell pipelines, as a
 serverless trigger when files arrive in S3, as a cron/batch job, as a K8S job, or
-inside common data schedulers.
+inside common schedulers.
 
 For more advanced usage see [scripts/stroke-demo.sh](./scripts/stroke-demo.sh),
 [demo.sh](./demo.sh), or `scribe --help`.
