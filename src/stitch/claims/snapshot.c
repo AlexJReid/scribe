@@ -674,7 +674,7 @@ static int build_snapshot_state_json(
         &writer,
         1,
         1,
-        0
+        1
     );
     if (rc == X12_OK) {
         rc = json_writer_write_cstring(&writer, out, out_len);
@@ -1039,6 +1039,41 @@ static void snapshot_get_size(yyjson_val *obj, const char *key, size_t *out)
     }
 }
 
+static int hydrate_applied_event_ids(claim_aggregate_t *aggregate, yyjson_val *root)
+{
+    yyjson_val *arr;
+    yyjson_val *item;
+    size_t idx;
+    size_t max;
+
+    if (aggregate == NULL || root == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    arr = yyjson_obj_get(root, "applied_event_ids");
+    if (arr == NULL || !yyjson_is_arr(arr)) {
+        return X12_OK;
+    }
+
+    aggregate->source_event_count = 0u;
+    yyjson_arr_foreach(arr, idx, max, item) {
+        stitched_source_event_t *source_event;
+
+        if (!yyjson_is_uint(item)) {
+            continue;
+        }
+        if (aggregate->source_event_count >= STITCH_MAX_SOURCE_EVENTS) {
+            return X12_ERR_NO_MEMORY;
+        }
+
+        source_event = &aggregate->source_events[aggregate->source_event_count++];
+        memset(source_event, 0, sizeof(*source_event));
+        source_event->event_id = (size_t)yyjson_get_uint(item);
+    }
+
+    return X12_OK;
+}
+
 static int hydrate_adjustments(
     stitched_service_line_t *line,
     yyjson_val *line_obj
@@ -1287,7 +1322,10 @@ int claim_stitch_hydrate_snapshot(
         snapshot_get_size(snapshot_state, "adjustment_count", &aggregate->adjustment_count);
     }
 
-    rc = hydrate_service_lines(aggregate, root);
+    rc = hydrate_applied_event_ids(aggregate, root);
+    if (rc == X12_OK) {
+        rc = hydrate_service_lines(aggregate, root);
+    }
     yyjson_doc_free(doc);
     if (rc != X12_OK) {
         state->aggregate_count--;

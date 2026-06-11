@@ -84,7 +84,14 @@ concept stores several of them in one SQLite file.
 | Aggregate versions | `claim_aggregate_versions`, `member_coverage_versions` | Append-only version history of materialized aggregate snapshots, including updated-by event and source drop. | Preserves the state transition history and gives consumers idempotent `(aggregate_id, version)` facts. |
 | Latest aggregate cache | `claim_aggregate_latest`, `member_coverage_latest` | Current snapshot for each aggregate id. | Lets incremental reducers start from latest state and apply only new routed events, making normal processing proportional to the new drop. |
 | PHI vault | separate PHI SQLite, currently `phi_mappings` and audit rows | Token-to-raw resolver scoped by namespace, actor, and purpose. | Keeps normal read stores tokenised/non-PHI. Controlled PHI workflows resolve values explicitly and can be audited separately. |
-| Outbox | currently NDJSON `AggregateVersionRecorded` output, future table | Delivery facts emitted after aggregate versions are recorded. | Keeps subscriber delivery/retry/cursor concerns out of the aggregate reducer. |
+| Outbox | currently NDJSON `AggregateVersionRecorded` output, future table | Delivery facts emitted after aggregate versions are recorded. A separate service owns fan-out to subscribers. | Keeps subscriber delivery/retry/cursor concerns out of the aggregate reducer. |
+
+The stitcher can also write changed aggregate versions to NDJSON via `--out`.
+That stream is for debugging, demos, tests, and operational inspection. The
+durable materialization surface is the read store: versioned aggregate tables,
+latest aggregate tables, indexes, and an outbox. Notification NDJSON is not an
+aggregate debug stream; it is the proof-of-concept outbox handoff that a fan-out
+worker would replace with, or read from, a managed outbox table.
 
 The key distinction is that `event_keys` answer "which journal events mention
 this key?" while aggregate key indexes answer "which durable aggregate owns this
@@ -163,16 +170,29 @@ scribe ingest --out demo/stroke.journal.d/20260720/stroke-drop-facility-835.jour
   --phi-vault demo/stroke_phi_vault.sqlite \
   --835 tests/fixtures/stroke_encounter/facility_835.edi
 
-scribe stitch claims --journal demo/stroke.journal.d \
-  --read-store demo/stroke_read_store.sqlite \
-  --out demo/stroke_aggregates.ndjson
+scribe stitch claims \
+  --journal demo/stroke.journal.d/20260617/stroke-drop-facility-837.journal \
+  --incremental \
+  --read-store demo/stroke_resume_read_store.sqlite \
+  --out demo/stroke_resume_first.ndjson
+
+scribe stitch claims \
+  --journal demo/stroke.journal.d/20260720/stroke-drop-facility-835.journal \
+  --incremental \
+  --read-store demo/stroke_resume_read_store.sqlite \
+  --out demo/stroke_resume_append.ndjson
 ```
 
 Each ingest writes one binary journal segment under an arrival-date partition.
-The stitch/project readers accept either one segment file or a directory tree of
-`.journal` segment files and replay them in lexical path order. The 837 and 835
-files keep distinct source drop IDs from their X12 controls, while `run_id`
-identifies the ingest execution that wrote that segment.
+The incremental stitch calls treat each segment as the newly appended source
+drop: the first call records claim version 1 from the 837, and the second call
+hydrates that aggregate from `stroke_resume_read_store.sqlite` before applying
+the 835 as version 2. The stitch/project readers also accept a directory tree of
+`.journal` segment files and replay them in lexical path order for an explicit
+audit rebuild. The `--out` NDJSON files in the example are debug views of the
+versions emitted by each run; applications should query the read-store tables.
+The 837 and 835 files keep distinct source drop IDs from their X12 controls,
+while `run_id` identifies the ingest execution that wrote that segment.
 
 PHI vault mappings store first/last source drop IDs, not file paths. To resolve
 that provenance back to an inbound file, join the source drop ID through the read
@@ -189,9 +209,10 @@ Each execution should have a `run_id`.
   available, formatted as `type:isa13:gs06:st02`.
 - `updated_by_*`: last journal event and locator that changed the batch.
 
-The stitcher records new aggregate versions. A notifier owns delivery retries,
-subscriber cursors, and dead letters. Consumers should use `(aggregate_id,
-version)` for idempotency.
+The stitcher records new aggregate versions and writes notification facts for
+those versions. Another service owns fan-out, delivery retries, subscriber
+cursors, and dead letters. Consumers should use `(aggregate_id, version)` for
+idempotency.
 
 ## PHI
 

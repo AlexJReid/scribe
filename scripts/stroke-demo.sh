@@ -25,50 +25,118 @@ append_source_drop() {
     "--$type" "$path"
 }
 
+append_claim_delta() {
+  segment_path="$1"
+  read_store="$2"
+  out_path="$3"
+  notify_path="$4"
+  run_id="$5"
+  delta_path="demo/.stroke_claim_delta.ndjson"
+  notify_delta_path="demo/.stroke_claim_notifications_delta.ndjson"
+  shift 5
+
+  build/scribe stitch claims \
+    --journal "$segment_path" \
+    --incremental \
+    --read-store "$read_store" \
+    --notify-out "$notify_delta_path" \
+    --run-id "$run_id" \
+    --out "$delta_path" \
+    "$@"
+  cat "$delta_path" >> "$out_path"
+  cat "$notify_delta_path" >> "$notify_path"
+}
+
+append_coverage_delta() {
+  segment_path="$1"
+  read_store="$2"
+  out_path="$3"
+  run_id="$4"
+  delta_path="demo/.stroke_coverage_delta.ndjson"
+  shift 4
+
+  build/scribe stitch coverage \
+    --journal "$segment_path" \
+    --incremental \
+    --read-store "$read_store" \
+    --run-id "$run_id" \
+    --out "$delta_path" \
+    "$@"
+  cat "$delta_path" >> "$out_path"
+}
+
 echo "writing partitioned stroke journal source drops, phi vault enabled"
 append_source_drop 20260601 stroke-drop-coverage-834 834 tests/fixtures/stroke_encounter/coverage_834.edi
 append_source_drop 20260602 stroke-drop-eligibility-270 270 tests/fixtures/stroke_encounter/eligibility_270.edi
 append_source_drop 20260603 stroke-drop-eligibility-271 271 tests/fixtures/stroke_encounter/eligibility_271.edi
 append_source_drop 20260617 stroke-drop-facility-837 837 tests/fixtures/stroke_encounter/facility_837.edi
+
+echo "seeding resumable claim store from first facility 837 drop"
+build/scribe stitch claims \
+  --journal demo/stroke.journal.d/20260617/stroke-drop-facility-837.journal \
+  --incremental \
+  --read-store demo/stroke_resume_read_store.sqlite \
+  --notify-out demo/stroke_resume_first_notifications.ndjson \
+  --run-id stroke-resume-facility-837 \
+  --out demo/stroke_resume_first.ndjson
+
 append_source_drop 20260617 stroke-drop-professional-837 837 tests/fixtures/stroke_encounter/professional_837.edi
 append_source_drop 20260701 stroke-drop-rehab-837 837 tests/fixtures/stroke_encounter/rehab_837.edi
 append_source_drop 20260715 stroke-drop-neurology-837 837 tests/fixtures/stroke_encounter/neurology_837.edi
 append_source_drop 20260720 stroke-drop-facility-835 835 tests/fixtures/stroke_encounter/facility_835.edi
+
+echo "resuming claim store from appended facility 835 drop"
+build/scribe stitch claims \
+  --journal demo/stroke.journal.d/20260720/stroke-drop-facility-835.journal \
+  --incremental \
+  --read-store demo/stroke_resume_read_store.sqlite \
+  --notify-out demo/stroke_resume_append_notifications.ndjson \
+  --run-id stroke-resume-facility-835 \
+  --out demo/stroke_resume_append.ndjson
+
 append_source_drop 20260720 stroke-drop-professional-835 835 tests/fixtures/stroke_encounter/professional_835.edi
 append_source_drop 20260728 stroke-drop-rehab-835 835 tests/fixtures/stroke_encounter/rehab_835.edi
 append_source_drop 20260805 stroke-drop-neurology-835 835 tests/fixtures/stroke_encounter/neurology_835.edi
 
-echo "stitching claims"
-build/scribe stitch claims \
-  --journal demo/stroke.journal.d \
-  --read-store demo/stroke_read_store.sqlite \
-  --notify-out demo/stroke_notifications.ndjson \
-  --run-id stroke-stitch-demo \
-  --out demo/stroke_aggregates.ndjson
+echo "stitching claims incrementally into tokenised read store"
+: > demo/stroke_aggregates.ndjson
+: > demo/stroke_notifications.ndjson
+append_claim_delta demo/stroke.journal.d/20260617/stroke-drop-facility-837.journal demo/stroke_read_store.sqlite demo/stroke_aggregates.ndjson demo/stroke_notifications.ndjson stroke-stitch-demo
+append_claim_delta demo/stroke.journal.d/20260617/stroke-drop-professional-837.journal demo/stroke_read_store.sqlite demo/stroke_aggregates.ndjson demo/stroke_notifications.ndjson stroke-stitch-demo
+append_claim_delta demo/stroke.journal.d/20260701/stroke-drop-rehab-837.journal demo/stroke_read_store.sqlite demo/stroke_aggregates.ndjson demo/stroke_notifications.ndjson stroke-stitch-demo
+append_claim_delta demo/stroke.journal.d/20260715/stroke-drop-neurology-837.journal demo/stroke_read_store.sqlite demo/stroke_aggregates.ndjson demo/stroke_notifications.ndjson stroke-stitch-demo
+append_claim_delta demo/stroke.journal.d/20260720/stroke-drop-facility-835.journal demo/stroke_read_store.sqlite demo/stroke_aggregates.ndjson demo/stroke_notifications.ndjson stroke-stitch-demo
+append_claim_delta demo/stroke.journal.d/20260720/stroke-drop-professional-835.journal demo/stroke_read_store.sqlite demo/stroke_aggregates.ndjson demo/stroke_notifications.ndjson stroke-stitch-demo
+append_claim_delta demo/stroke.journal.d/20260728/stroke-drop-rehab-835.journal demo/stroke_read_store.sqlite demo/stroke_aggregates.ndjson demo/stroke_notifications.ndjson stroke-stitch-demo
+append_claim_delta demo/stroke.journal.d/20260805/stroke-drop-neurology-835.journal demo/stroke_read_store.sqlite demo/stroke_aggregates.ndjson demo/stroke_notifications.ndjson stroke-stitch-demo
 
-echo "reducing coverage/member context"
-build/scribe stitch coverage \
-  --journal demo/stroke.journal.d \
-  --read-store demo/stroke_read_store.sqlite \
-  --run-id stroke-coverage-demo \
-  --out demo/stroke_member_coverage.ndjson
+echo "reducing coverage/member context incrementally into tokenised read store"
+: > demo/stroke_member_coverage.ndjson
+append_coverage_delta demo/stroke.journal.d/20260601/stroke-drop-coverage-834.journal demo/stroke_read_store.sqlite demo/stroke_member_coverage.ndjson stroke-coverage-demo
+append_coverage_delta demo/stroke.journal.d/20260602/stroke-drop-eligibility-270.journal demo/stroke_read_store.sqlite demo/stroke_member_coverage.ndjson stroke-coverage-demo
+append_coverage_delta demo/stroke.journal.d/20260603/stroke-drop-eligibility-271.journal demo/stroke_read_store.sqlite demo/stroke_member_coverage.ndjson stroke-coverage-demo
 
-echo "stitching claims again, with phi decoded"
-build/scribe stitch claims \
-  --journal demo/stroke.journal.d \
-  --read-store demo/stroke_phi_read_store.sqlite \
-  --phi-vault demo/stroke_phi_vault.sqlite \
-  --include-phi \
-  --out demo/stroke_phi_aggregates.ndjson
+echo "stitching claims incrementally again, with phi decoded"
+: > demo/stroke_phi_aggregates.ndjson
+: > demo/stroke_phi_notifications.ndjson
+append_claim_delta demo/stroke.journal.d/20260617/stroke-drop-facility-837.journal demo/stroke_phi_read_store.sqlite demo/stroke_phi_aggregates.ndjson demo/stroke_phi_notifications.ndjson stroke-phi-stitch-demo --phi-vault demo/stroke_phi_vault.sqlite --include-phi
+append_claim_delta demo/stroke.journal.d/20260617/stroke-drop-professional-837.journal demo/stroke_phi_read_store.sqlite demo/stroke_phi_aggregates.ndjson demo/stroke_phi_notifications.ndjson stroke-phi-stitch-demo --phi-vault demo/stroke_phi_vault.sqlite --include-phi
+append_claim_delta demo/stroke.journal.d/20260701/stroke-drop-rehab-837.journal demo/stroke_phi_read_store.sqlite demo/stroke_phi_aggregates.ndjson demo/stroke_phi_notifications.ndjson stroke-phi-stitch-demo --phi-vault demo/stroke_phi_vault.sqlite --include-phi
+append_claim_delta demo/stroke.journal.d/20260715/stroke-drop-neurology-837.journal demo/stroke_phi_read_store.sqlite demo/stroke_phi_aggregates.ndjson demo/stroke_phi_notifications.ndjson stroke-phi-stitch-demo --phi-vault demo/stroke_phi_vault.sqlite --include-phi
+append_claim_delta demo/stroke.journal.d/20260720/stroke-drop-facility-835.journal demo/stroke_phi_read_store.sqlite demo/stroke_phi_aggregates.ndjson demo/stroke_phi_notifications.ndjson stroke-phi-stitch-demo --phi-vault demo/stroke_phi_vault.sqlite --include-phi
+append_claim_delta demo/stroke.journal.d/20260720/stroke-drop-professional-835.journal demo/stroke_phi_read_store.sqlite demo/stroke_phi_aggregates.ndjson demo/stroke_phi_notifications.ndjson stroke-phi-stitch-demo --phi-vault demo/stroke_phi_vault.sqlite --include-phi
+append_claim_delta demo/stroke.journal.d/20260728/stroke-drop-rehab-835.journal demo/stroke_phi_read_store.sqlite demo/stroke_phi_aggregates.ndjson demo/stroke_phi_notifications.ndjson stroke-phi-stitch-demo --phi-vault demo/stroke_phi_vault.sqlite --include-phi
+append_claim_delta demo/stroke.journal.d/20260805/stroke-drop-neurology-835.journal demo/stroke_phi_read_store.sqlite demo/stroke_phi_aggregates.ndjson demo/stroke_phi_notifications.ndjson stroke-phi-stitch-demo --phi-vault demo/stroke_phi_vault.sqlite --include-phi
 
-echo "reducing coverage/member context, with phi decoded"
-build/scribe stitch coverage \
-  --journal demo/stroke.journal.d \
-  --read-store demo/stroke_phi_read_store.sqlite \
-  --phi-vault demo/stroke_phi_vault.sqlite \
-  --include-phi \
-  --run-id stroke-phi-coverage-demo \
-  --out demo/stroke_phi_member_coverage.ndjson
+echo "reducing coverage/member context incrementally, with phi decoded"
+: > demo/stroke_phi_member_coverage.ndjson
+append_coverage_delta demo/stroke.journal.d/20260601/stroke-drop-coverage-834.journal demo/stroke_phi_read_store.sqlite demo/stroke_phi_member_coverage.ndjson stroke-phi-coverage-demo --phi-vault demo/stroke_phi_vault.sqlite --include-phi
+append_coverage_delta demo/stroke.journal.d/20260602/stroke-drop-eligibility-270.journal demo/stroke_phi_read_store.sqlite demo/stroke_phi_member_coverage.ndjson stroke-phi-coverage-demo --phi-vault demo/stroke_phi_vault.sqlite --include-phi
+append_coverage_delta demo/stroke.journal.d/20260603/stroke-drop-eligibility-271.journal demo/stroke_phi_read_store.sqlite demo/stroke_phi_member_coverage.ndjson stroke-phi-coverage-demo --phi-vault demo/stroke_phi_vault.sqlite --include-phi
+
+rm -f demo/.stroke_claim_delta.ndjson
+rm -f demo/.stroke_claim_notifications_delta.ndjson
+rm -f demo/.stroke_coverage_delta.ndjson
 
 echo "projecting balance"
 build/scribe project balance \

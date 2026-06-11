@@ -26,11 +26,14 @@ need_dir demo/stroke.journal.d
 need_file demo/stroke_phi_vault.sqlite
 need_file demo/stroke_read_store.sqlite
 need_file demo/stroke_phi_read_store.sqlite
+need_file demo/stroke_resume_read_store.sqlite
 need_file demo/stroke_aggregates.ndjson
 need_file demo/stroke_phi_aggregates.ndjson
 need_file demo/stroke_member_coverage.ndjson
 need_file demo/stroke_phi_member_coverage.ndjson
 need_file demo/stroke_notifications.ndjson
+need_file demo/stroke_resume_first.ndjson
+need_file demo/stroke_resume_append.ndjson
 need_file demo/stroke_balance.json
 
 if [ "$missing" -ne 0 ]; then
@@ -44,6 +47,24 @@ sed -n 's/.*"totals":{"total_billed":"\([^"]*\)","payer_paid":"\([^"]*\)","contr
   demo/stroke_balance.json
 
 if command -v sqlite3 >/dev/null 2>&1; then
+    echo
+    echo "Append/resume claim demo"
+    sqlite3 -line demo/stroke_resume_read_store.sqlite "
+select
+  aggregate_id,
+  version,
+  json_extract(state_json, '$.run_id') as run_id,
+  json_extract(state_json, '$.source_run_id') as source_run_id,
+  json_extract(state_json, '$.source_drop_id') as source_drop,
+  json_extract(state_json, '$.state.has_837') as has_837,
+  json_extract(state_json, '$.state.has_835') as has_835,
+  json_extract(state_json, '$.state.source_event_count') as source_events,
+  json_extract(state_json, '$.state.submitted_service_line_count') as submitted_lines,
+  json_extract(state_json, '$.state.remittance_service_line_count') as remit_lines
+from claim_aggregate_latest
+order by aggregate_id;
+"
+
     echo
     echo "Latest claim aggregates: tokenised read store"
     sqlite3 -line demo/stroke_read_store.sqlite "

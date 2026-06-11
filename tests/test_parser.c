@@ -771,6 +771,7 @@ static int test_incremental_claim_stitch_from_source_drops(void)
     REQUIRE(strstr(first_out, "\"version\":1") != NULL);
     REQUIRE(strstr(first_out, "\"has_837\":true") != NULL);
     REQUIRE(strstr(first_out, "\"has_835\":true") == NULL);
+    REQUIRE(strstr(first_out, "\"source_event_count\":12") != NULL);
 
     aggregate_stitcher_input_init(&stitch_input);
     stitch_input.journal_path = journal_835_path;
@@ -784,6 +785,7 @@ static int test_incremental_claim_stitch_from_source_drops(void)
     REQUIRE(strstr(second_out, "\"version\":2") != NULL);
     REQUIRE(strstr(second_out, "\"has_837\":true") != NULL);
     REQUIRE(strstr(second_out, "\"has_835\":true") != NULL);
+    REQUIRE(strstr(second_out, "\"source_event_count\":26") != NULL);
     REQUIRE(strstr(second_out, "\"submitted_service_line_count\":3") != NULL);
     REQUIRE(strstr(second_out, "\"remittance_service_line_count\":3") != NULL);
     REQUIRE(count_substring(second_out, "\"event_type\":\"ClaimAggregateUpdated\"") == 1u);

@@ -62,6 +62,15 @@ scribe stitch claims \
   --notify-out notifications.ndjson
 ```
 
+The stitch `--out` NDJSON is a debug/inspection stream of changed aggregate
+versions from that run. It is useful for tests, demos, diffs, and operational
+logs, but it is not the durable application interface. Consumers should read the
+versioned and latest aggregate rows from the read store. `--notify-out` is
+different: it is the outbox handoff for aggregate-version notifications. In this
+proof of concept that handoff is NDJSON, while a deployment would usually write
+the same delivery facts to a managed outbox table for a separate fan-out service
+to deliver to subscribers.
+
 `--incremental` treats `--journal` as the new source-drop segment: the stitcher
 indexes that segment, hydrates only touched aggregates from the read store, and
 emits changed versions. Omit `--incremental` for an explicit full replay/rebuild.
@@ -122,7 +131,11 @@ cmake --build build
   directory of `.journal` segment files
 - PHI vault: raw PHI resolver, separate from normal stores
 - Read store: indexes, versioned aggregate snapshots, and latest rows
-- Outputs: claim aggregates, member coverage, balances, and outbox facts
+- Debug/output streams: aggregate/version NDJSON and balances.
+  Stitch aggregate NDJSON is for inspection; applications should consume the
+  read store.
+- Outbox stream: aggregate-version notification facts for a separate fan-out
+  service.
 
 SQLite is used as a stand-in for a managed database to back the vault and read
 stores, but this can be swapped out in the future.

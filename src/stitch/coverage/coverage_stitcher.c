@@ -242,6 +242,37 @@ static int stable_event_id(
     return X12_OK;
 }
 
+static int stable_numeric_event_id(
+    const journal_event_t *event,
+    size_t fallback_event_id,
+    size_t *out
+)
+{
+    char event_id[SCRIBE_STORE_ID_MAX];
+    char *end;
+    unsigned long long value;
+    int rc;
+
+    if (out == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    rc = stable_event_id(event, fallback_event_id, event_id, sizeof(event_id));
+    if (rc != X12_OK) {
+        return rc;
+    }
+    if (strncmp(event_id, "ev:", 3u) != 0) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    value = strtoull(event_id + 3, &end, 16);
+    if (end == event_id + 3 || *end != '\0') {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+    *out = (size_t)value;
+    return X12_OK;
+}
+
 static int member_coverage_id_from_key(
     const char *key,
     char *out,
@@ -2743,11 +2774,17 @@ int coverage_stitcher_stitch(const coverage_stitcher_input_t *input)
         }
 
         while (rc == X12_OK) {
+            size_t stable_id;
+
             rc = journal_reader_next(&journal, &record);
             if (rc != X12_OK || record.record_len == 0u) {
                 break;
             }
             event_id++;
+            rc = stable_numeric_event_id(&record, event_id, &stable_id);
+            if (rc != X12_OK) {
+                break;
+            }
             rc = make_drop_key(&record, drop_key, sizeof(drop_key));
             if (rc != X12_OK) {
                 break;
@@ -2776,7 +2813,7 @@ int coverage_stitcher_stitch(const coverage_stitcher_input_t *input)
                 }
             }
             if (!input->incremental || reduce_pass) {
-                rc = apply_coverage_event(state, &record, event_id, record.offset, record.stored_len);
+                rc = apply_coverage_event(state, &record, stable_id, record.offset, record.stored_len);
                 if (rc != X12_OK) {
                     break;
                 }

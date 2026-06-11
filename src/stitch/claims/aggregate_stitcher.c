@@ -126,6 +126,37 @@ static int stable_event_id(
     return X12_OK;
 }
 
+static int stable_numeric_event_id(
+    const journal_event_t *journal_line,
+    size_t fallback_event_id,
+    size_t *out
+)
+{
+    char event_id[SCRIBE_STORE_ID_MAX];
+    char *end;
+    unsigned long long value;
+    int rc;
+
+    if (out == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    rc = stable_event_id(journal_line, fallback_event_id, event_id, sizeof(event_id));
+    if (rc != X12_OK) {
+        return rc;
+    }
+    if (strncmp(event_id, "ev:", 3u) != 0) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    value = strtoull(event_id + 3, &end, 16);
+    if (end == event_id + 3 || *end != '\0') {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+    *out = (size_t)value;
+    return X12_OK;
+}
+
 static int claim_aggregate_id_from_key(
     const char *key,
     char *out,
@@ -1826,11 +1857,17 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
         }
 
         while (rc == X12_OK) {
+            size_t stable_id;
+
             rc = journal_reader_next(&journal, &record);
             if (rc != X12_OK || record.record_len == 0u) {
                 break;
             }
             event_id++;
+            rc = stable_numeric_event_id(&record, event_id, &stable_id);
+            if (rc != X12_OK) {
+                break;
+            }
             rc = make_drop_key(&record, drop_key, sizeof(drop_key));
             if (rc != X12_OK) {
                 break;
@@ -1870,7 +1907,7 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
                 rc = apply_claim_event(
                     state,
                     &record,
-                    event_id,
+                    stable_id,
                     record.offset,
                     record.stored_len,
                     drop_key
