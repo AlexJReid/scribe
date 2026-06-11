@@ -40,8 +40,7 @@ payments, and locators.
 `payer_claim_control_number`.
 
 The `x12_005010x222_example_01_synthetic.edi` fixture is a synthetic,
-non-verbatim 837P stream shaped after X12's public 005010X222 Example 01. Keep
-official X12 example text out of the repo unless licensing is explicit.
+non-verbatim 837P stream shaped after X12's public (but copyrighted) 005010X222 Example 01.
 
 ## Coverage
 
