@@ -19,7 +19,19 @@ be resolved for controlled PHI workflows.
 ```
 
 837 says what was claimed: identity, patient/subscriber/provider references,
-service/revenue lines, billed amounts, dates, diagnoses, and locators.
+claim envelope, service/revenue lines, billed amounts, dates, diagnoses,
+healthcare-code components, and locators.
+
+The mapper preserves selected 837I/P facts as named events, not as a full TR3
+validation model:
+
+- `CLM`: claim id, total charge, CLM05 facility type/qualifier/frequency, and
+  common claim indicators.
+- `SBR`, `PAT`, `DMG`: subscriber/patient context, claim-scoped once `CLM01` is
+  known. DOB and identifier-like values stay tokenised by default.
+- `REF`: claim/service scoped reference identifiers, tokenised by default.
+- `HI`: diagnosis summary plus per-component healthcare-code events for
+  institutional condition, occurrence, value, and procedure-style components.
 
 `ClaimServiceLineRecorded` carries the submitted line facts needed for matching
 and projection: line order, procedure qualifier/code, procedure modifiers,

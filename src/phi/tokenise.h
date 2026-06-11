@@ -17,6 +17,7 @@ typedef enum {
     TOK_PAYER_NAME,
     TOK_ENTITY_NAME,
     TOK_MEMBER_DOB,
+    TOK_REFERENCE_ID,
     TOK_UNKNOWN
 } token_type_t;
 

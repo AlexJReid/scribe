@@ -120,7 +120,26 @@ static const journal_key_def_t journal_keys[] = {
     {"unit_count", 95u},
     {"diagnosis_pointers", 96u},
     {"revenue_code", 97u},
-    {"procedure_modifiers", 98u}
+    {"procedure_modifiers", 98u},
+    {"facility_code_qualifier", 99u},
+    {"provider_signature_indicator", 100u},
+    {"assignment_or_plan_participation_code", 101u},
+    {"benefits_assignment_certification_indicator", 102u},
+    {"release_of_information_code", 103u},
+    {"patient_signature_source_code", 104u},
+    {"party_scope", 105u},
+    {"payer_responsibility_sequence_number_code", 106u},
+    {"individual_relationship_code", 107u},
+    {"insured_group_or_policy_number", 108u},
+    {"insured_group_or_policy_number_token", 109u},
+    {"reference_qualifier", 110u},
+    {"reference_identification", 111u},
+    {"reference_identification_token", 112u},
+    {"healthcare_code_qualifier", 113u},
+    {"healthcare_code", 114u},
+    {"healthcare_code_date_format", 115u},
+    {"healthcare_code_date_value", 116u},
+    {"healthcare_code_components", 117u}
 };
 
 static unsigned short key_id_for_name(const char *name)

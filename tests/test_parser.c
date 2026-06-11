@@ -148,8 +148,8 @@ static int test_837_claim_event(void)
     char input_path[512];
     char out_path[512];
     char phi_out_path[512];
-    char output[8192];
-    char phi_output[8192];
+    char output[16000];
+    char phi_output[16000];
     x12_document_t doc;
     event_writer_t writer;
     int rc;
@@ -232,7 +232,7 @@ static int test_837_claim_event(void)
 
 static int test_x12_005010x222_example_01_shape(void)
 {
-    char output[24000];
+    char output[50000];
 
     REQUIRE(parse_fixture_to_output(
                 "x12_005010x222_example_01_synthetic.edi",
@@ -653,9 +653,9 @@ static int test_835_remittance_events(void)
 
 static int test_stroke_encounter_fixture_set(void)
 {
-    char facility_837_output[20000];
+    char facility_837_output[30000];
     char facility_835_output[24000];
-    char professional_837_output[20000];
+    char professional_837_output[30000];
     char professional_835_output[24000];
 
     REQUIRE(parse_fixture_to_output(

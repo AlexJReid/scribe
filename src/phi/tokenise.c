@@ -61,6 +61,8 @@ const char *tokenise_namespace(token_type_t type)
         return "entity_name";
     case TOK_MEMBER_DOB:
         return "member_dob";
+    case TOK_REFERENCE_ID:
+        return "reference_id";
     case TOK_UNKNOWN:
     default:
         return "unknown";

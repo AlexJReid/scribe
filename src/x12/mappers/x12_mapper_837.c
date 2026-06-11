@@ -5,6 +5,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#define X12_837_PARTY_NONE 0
+#define X12_837_PARTY_SUBSCRIBER 1
+#define X12_837_PARTY_PATIENT 2
+
 static x12_str_t empty_str(void)
 {
     x12_str_t value;
@@ -122,6 +126,35 @@ static int str_contains_char(x12_str_t value, char needle)
     return 0;
 }
 
+static size_t split_components(
+    x12_str_t value,
+    char component_sep,
+    x12_str_t *components,
+    size_t component_cap
+)
+{
+    size_t start = 0u;
+    size_t count = 0u;
+    size_t i;
+
+    if (components == NULL || component_cap == 0u || value.len == 0u) {
+        return 0u;
+    }
+
+    for (i = 0u; i <= value.len; i++) {
+        if (i == value.len || value.ptr[i] == component_sep) {
+            if (count < component_cap) {
+                components[count].ptr = value.ptr + start;
+                components[count].len = i - start;
+            }
+            count++;
+            start = i + 1u;
+        }
+    }
+
+    return count < component_cap ? count : component_cap;
+}
+
 static void split_first_component(
     x12_str_t value,
     char component_sep,
@@ -231,6 +264,11 @@ static int diagnosis_is_other(x12_str_t qualifier)
            x12_str_eq_cstr(qualifier, "BF");
 }
 
+static int healthcare_code_is_diagnosis(x12_str_t qualifier)
+{
+    return diagnosis_is_principal(qualifier) || diagnosis_is_other(qualifier);
+}
+
 static const char *procedure_code_set(x12_str_t qualifier)
 {
     if (x12_str_eq_cstr(qualifier, "HC")) {
@@ -252,6 +290,18 @@ static const char *current_loop_scope(const x12_mapper_837_t *mapper)
     return "claim";
 }
 
+static const char *party_scope_name(int party_scope)
+{
+    if (party_scope == X12_837_PARTY_PATIENT) {
+        return "patient";
+    }
+    if (party_scope == X12_837_PARTY_SUBSCRIBER) {
+        return "subscriber";
+    }
+
+    return "unknown";
+}
+
 static void clear_claim_position(x12_mapper_837_t *mapper)
 {
     mapper->current_claim_id = empty_str();
@@ -270,6 +320,7 @@ static void buffer_segment(
 }
 
 static int flush_claim_context_references(x12_mapper_837_t *mapper);
+static int flush_claim_party_context(x12_mapper_837_t *mapper);
 
 static const char *current_date_event_type(const x12_mapper_837_t *mapper)
 {
@@ -288,6 +339,37 @@ static int write_payload_start(FILE *fp)
 static int write_payload_end(FILE *fp)
 {
     return fputc('}', fp) == EOF ? X12_ERR_IO : X12_OK;
+}
+
+static int write_current_claim_fields(
+    x12_mapper_837_t *mapper,
+    FILE *fp,
+    int prefix_comma
+)
+{
+    if (write_tokenized_or_phi_field(
+            mapper->writer,
+            fp,
+            "claim_id",
+            TOK_CLAIM_ID,
+            mapper->current_claim_id,
+            prefix_comma,
+            event_writer_include_phi(mapper->writer)
+        ) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (write_phi_token_field(
+            fp,
+            "claim_id_token",
+            TOK_CLAIM_ID,
+            mapper->current_claim_id,
+            1,
+            event_writer_include_phi(mapper->writer)
+        ) != X12_OK) {
+        return X12_ERR_IO;
+    }
+
+    return X12_OK;
 }
 
 static token_type_t name_token_type_for_id(token_type_t id_token_type)
@@ -312,11 +394,19 @@ static int write_claim_observed(
 )
 {
     FILE *fp = event_writer_stream(mapper->writer);
+    x12_str_t claim_type_components[3];
+    size_t claim_type_component_count;
     int rc;
 
     mapper->current_claim_id = element_or_empty(seg, 0);
     mapper->current_service_line_number = empty_str();
     mapper->in_service_line = 0;
+    claim_type_component_count = split_components(
+        element_or_empty(seg, 4),
+        mapper->component_sep,
+        claim_type_components,
+        sizeof(claim_type_components) / sizeof(claim_type_components[0])
+    );
 
     rc = event_writer_begin_event(mapper->writer, "ClaimObserved", seg);
     if (rc != X12_OK) {
@@ -349,10 +439,53 @@ static int write_claim_observed(
     if (event_writer_write_string_field(fp, "total_charge_amount", element_or_empty(seg, 1), 1) != X12_OK) {
         return X12_ERR_IO;
     }
+    if (event_writer_write_string_field(
+            fp,
+            "facility_type_code",
+            claim_type_component_count > 0u ? claim_type_components[0] : empty_str(),
+            1
+        ) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(
+            fp,
+            "facility_code_qualifier",
+            claim_type_component_count > 1u ? claim_type_components[1] : empty_str(),
+            1
+        ) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(
+            fp,
+            "claim_frequency_type_code",
+            claim_type_component_count > 2u ? claim_type_components[2] : empty_str(),
+            1
+        ) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(fp, "provider_signature_indicator", element_or_empty(seg, 5), 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(fp, "assignment_or_plan_participation_code", element_or_empty(seg, 6), 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(fp, "benefits_assignment_certification_indicator", element_or_empty(seg, 7), 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(fp, "release_of_information_code", element_or_empty(seg, 8), 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(fp, "patient_signature_source_code", element_or_empty(seg, 9), 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
     if (write_payload_end(fp) != X12_OK) {
         return X12_ERR_IO;
     }
     rc = event_writer_end_event(mapper->writer);
+    if (rc != X12_OK) {
+        return rc;
+    }
+    rc = flush_claim_party_context(mapper);
     if (rc != X12_OK) {
         return rc;
     }
@@ -550,6 +683,271 @@ static int write_claim_scoped_nm1_reference(
     return write_nm1_reference(mapper, seg, event_type, id_token_type);
 }
 
+static int write_subscriber_information(
+    x12_mapper_837_t *mapper,
+    const x12_segment_t *seg
+)
+{
+    FILE *fp = event_writer_stream(mapper->writer);
+    int rc;
+
+    if (mapper->current_claim_id.len == 0u) {
+        return X12_OK;
+    }
+
+    rc = event_writer_begin_event(mapper->writer, "ClaimSubscriberInformationRecorded", seg);
+    if (rc != X12_OK) {
+        return rc;
+    }
+    if (write_payload_start(fp) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (write_current_claim_fields(mapper, fp, 0) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_cstring_field(fp, "party_scope", "subscriber", 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(fp, "payer_responsibility_sequence_number_code", element_or_empty(seg, 0), 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(fp, "individual_relationship_code", element_or_empty(seg, 1), 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (write_tokenized_or_phi_field(
+            mapper->writer,
+            fp,
+            "insured_group_or_policy_number",
+            TOK_REFERENCE_ID,
+            element_or_empty(seg, 2),
+            1,
+            event_writer_include_phi(mapper->writer)
+        ) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (write_phi_token_field(
+            fp,
+            "insured_group_or_policy_number_token",
+            TOK_REFERENCE_ID,
+            element_or_empty(seg, 2),
+            1,
+            event_writer_include_phi(mapper->writer)
+        ) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(fp, "claim_filing_indicator_code", element_or_empty(seg, 8), 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (write_payload_end(fp) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    return event_writer_end_event(mapper->writer);
+}
+
+static int write_patient_information(
+    x12_mapper_837_t *mapper,
+    const x12_segment_t *seg
+)
+{
+    FILE *fp = event_writer_stream(mapper->writer);
+    int rc;
+
+    if (mapper->current_claim_id.len == 0u) {
+        return X12_OK;
+    }
+
+    rc = event_writer_begin_event(mapper->writer, "ClaimPatientInformationRecorded", seg);
+    if (rc != X12_OK) {
+        return rc;
+    }
+    if (write_payload_start(fp) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (write_current_claim_fields(mapper, fp, 0) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_cstring_field(fp, "party_scope", "patient", 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(fp, "individual_relationship_code", element_or_empty(seg, 0), 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (write_payload_end(fp) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    return event_writer_end_event(mapper->writer);
+}
+
+static int write_demographics_recorded(
+    x12_mapper_837_t *mapper,
+    const x12_segment_t *seg,
+    int party_scope
+)
+{
+    FILE *fp = event_writer_stream(mapper->writer);
+    int rc;
+
+    if (mapper->current_claim_id.len == 0u) {
+        return X12_OK;
+    }
+
+    rc = event_writer_begin_event(mapper->writer, "ClaimDemographicsRecorded", seg);
+    if (rc != X12_OK) {
+        return rc;
+    }
+    if (write_payload_start(fp) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (write_current_claim_fields(mapper, fp, 0) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_cstring_field(fp, "party_scope", party_scope_name(party_scope), 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(fp, "date_format", element_or_empty(seg, 0), 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (write_tokenized_or_phi_field(
+            mapper->writer,
+            fp,
+            "date_of_birth",
+            TOK_MEMBER_DOB,
+            element_or_empty(seg, 1),
+            1,
+            event_writer_include_phi(mapper->writer)
+        ) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (write_phi_token_field(
+            fp,
+            "date_of_birth_token",
+            TOK_MEMBER_DOB,
+            element_or_empty(seg, 1),
+            1,
+            event_writer_include_phi(mapper->writer)
+        ) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(fp, "gender_code", element_or_empty(seg, 2), 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (write_payload_end(fp) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    return event_writer_end_event(mapper->writer);
+}
+
+static int flush_buffered_claim_context(
+    x12_mapper_837_t *mapper,
+    x12_mapper_837_buffered_segment_t *buffer,
+    int (*write_fn)(x12_mapper_837_t *, const x12_segment_t *)
+)
+{
+    if (!buffer->present) {
+        return X12_OK;
+    }
+
+    return write_fn(mapper, &buffer->segment);
+}
+
+static int flush_buffered_demographics(
+    x12_mapper_837_t *mapper,
+    x12_mapper_837_buffered_segment_t *buffer,
+    int party_scope
+)
+{
+    if (!buffer->present) {
+        return X12_OK;
+    }
+
+    return write_demographics_recorded(mapper, &buffer->segment, party_scope);
+}
+
+static int flush_claim_party_context(x12_mapper_837_t *mapper)
+{
+    int rc;
+
+    rc = flush_buffered_claim_context(mapper, &mapper->subscriber_info, write_subscriber_information);
+    if (rc != X12_OK) {
+        return rc;
+    }
+    rc = flush_buffered_demographics(
+        mapper,
+        &mapper->subscriber_demographics,
+        X12_837_PARTY_SUBSCRIBER
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+    rc = flush_buffered_claim_context(mapper, &mapper->patient_info, write_patient_information);
+    if (rc != X12_OK) {
+        return rc;
+    }
+    return flush_buffered_demographics(
+        mapper,
+        &mapper->patient_demographics,
+        X12_837_PARTY_PATIENT
+    );
+}
+
+static int write_claim_reference_recorded(
+    x12_mapper_837_t *mapper,
+    const x12_segment_t *seg
+)
+{
+    FILE *fp = event_writer_stream(mapper->writer);
+    int rc;
+
+    if (mapper->current_claim_id.len == 0u) {
+        return X12_OK;
+    }
+
+    rc = event_writer_begin_event(mapper->writer, "ClaimReferenceRecorded", seg);
+    if (rc != X12_OK) {
+        return rc;
+    }
+    if (write_payload_start(fp) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (write_current_claim_fields(mapper, fp, 0) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_cstring_field(fp, "reference_scope", current_loop_scope(mapper), 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(fp, "service_line_number", mapper->current_service_line_number, 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(fp, "reference_qualifier", element_or_empty(seg, 0), 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (write_tokenized_or_phi_field(
+            mapper->writer,
+            fp,
+            "reference_identification",
+            TOK_REFERENCE_ID,
+            element_or_empty(seg, 1),
+            1,
+            event_writer_include_phi(mapper->writer)
+        ) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (write_phi_token_field(
+            fp,
+            "reference_identification_token",
+            TOK_REFERENCE_ID,
+            element_or_empty(seg, 1),
+            1,
+            event_writer_include_phi(mapper->writer)
+        ) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (write_payload_end(fp) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    return event_writer_end_event(mapper->writer);
+}
+
 static int write_date_observed(
     x12_mapper_837_t *mapper,
     const x12_segment_t *seg
@@ -700,6 +1098,104 @@ static int write_diagnosis_observed(
     return event_writer_end_event(mapper->writer);
 }
 
+static int write_healthcare_code_recorded(
+    x12_mapper_837_t *mapper,
+    const x12_segment_t *seg,
+    x12_str_t raw_component
+)
+{
+    FILE *fp = event_writer_stream(mapper->writer);
+    x12_str_t components[8];
+    x12_str_t code = empty_str();
+    char normalized_buffer[64];
+    size_t component_count;
+    int rc;
+
+    component_count = split_components(
+        raw_component,
+        mapper->component_sep,
+        components,
+        sizeof(components) / sizeof(components[0])
+    );
+    if (component_count == 0u || components[0].len == 0u) {
+        return X12_OK;
+    }
+
+    if (component_count > 1u) {
+        code = components[1];
+        if (healthcare_code_is_diagnosis(components[0])) {
+            rc = normalize_diagnosis_code(code, normalized_buffer, sizeof(normalized_buffer), &code);
+            if (rc != X12_OK) {
+                return rc;
+            }
+        }
+    }
+
+    rc = event_writer_begin_event(mapper->writer, "ClaimHealthcareCodeRecorded", seg);
+    if (rc != X12_OK) {
+        return rc;
+    }
+    if (write_payload_start(fp) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (write_current_claim_fields(mapper, fp, 0) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(fp, "healthcare_code_qualifier", components[0], 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(fp, "healthcare_code", code, 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(
+            fp,
+            "healthcare_code_date_format",
+            component_count > 2u ? components[2] : empty_str(),
+            1
+        ) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(
+            fp,
+            "healthcare_code_date_value",
+            component_count > 3u ? components[3] : empty_str(),
+            1
+        ) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_str_array_field(
+            fp,
+            "healthcare_code_components",
+            components,
+            component_count,
+            1
+        ) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (write_payload_end(fp) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    return event_writer_end_event(mapper->writer);
+}
+
+static int write_healthcare_codes_recorded(
+    x12_mapper_837_t *mapper,
+    const x12_segment_t *seg
+)
+{
+    size_t i;
+    int rc;
+
+    for (i = 0u; i < seg->element_count; i++) {
+        rc = write_healthcare_code_recorded(mapper, seg, seg->elements[i]);
+        if (rc != X12_OK) {
+            return rc;
+        }
+    }
+
+    return X12_OK;
+}
+
 static int write_service_line_observed(
     x12_mapper_837_t *mapper,
     const x12_segment_t *seg
@@ -824,6 +1320,7 @@ void x12_mapper_837_init(x12_mapper_837_t *mapper, event_writer_t *writer)
     mapper->current_claim_id = empty_str();
     mapper->current_service_line_number = empty_str();
     mapper->in_service_line = 0;
+    mapper->current_party = X12_837_PARTY_NONE;
     mapper->component_sep = ':';
 }
 
@@ -858,11 +1355,15 @@ int x12_mapper_837_on_segment(const x12_segment_t *seg, void *user)
             clear_claim_position(mapper);
             buffer_segment(&mapper->subscriber, seg);
             mapper->patient.present = 0;
+            mapper->patient_info.present = 0;
+            mapper->patient_demographics.present = 0;
+            mapper->current_party = X12_837_PARTY_SUBSCRIBER;
             return X12_OK;
         }
         if (x12_str_eq_cstr(seg->elements[0], "QC")) {
             clear_claim_position(mapper);
             buffer_segment(&mapper->patient, seg);
+            mapper->current_party = X12_837_PARTY_PATIENT;
             return X12_OK;
         }
         if (x12_str_eq_cstr(seg->elements[0], "85")) {
@@ -870,6 +1371,11 @@ int x12_mapper_837_on_segment(const x12_segment_t *seg, void *user)
             buffer_segment(&mapper->billing_provider, seg);
             mapper->subscriber.present = 0;
             mapper->patient.present = 0;
+            mapper->subscriber_info.present = 0;
+            mapper->subscriber_demographics.present = 0;
+            mapper->patient_info.present = 0;
+            mapper->patient_demographics.present = 0;
+            mapper->current_party = X12_837_PARTY_NONE;
             return X12_OK;
         }
         if (x12_str_eq_cstr(seg->elements[0], "82")) {
@@ -920,8 +1426,47 @@ int x12_mapper_837_on_segment(const x12_segment_t *seg, void *user)
         }
     }
 
+    if (x12_str_eq_cstr(seg->tag, "SBR")) {
+        clear_claim_position(mapper);
+        buffer_segment(&mapper->subscriber_info, seg);
+        mapper->subscriber_demographics.present = 0;
+        mapper->patient_info.present = 0;
+        mapper->patient_demographics.present = 0;
+        mapper->current_party = X12_837_PARTY_SUBSCRIBER;
+        return X12_OK;
+    }
+
+    if (x12_str_eq_cstr(seg->tag, "PAT")) {
+        clear_claim_position(mapper);
+        buffer_segment(&mapper->patient_info, seg);
+        mapper->patient_demographics.present = 0;
+        mapper->current_party = X12_837_PARTY_PATIENT;
+        return X12_OK;
+    }
+
+    if (x12_str_eq_cstr(seg->tag, "DMG")) {
+        if (mapper->current_claim_id.len > 0u) {
+            return write_demographics_recorded(mapper, seg, mapper->current_party);
+        }
+        if (mapper->current_party == X12_837_PARTY_PATIENT) {
+            buffer_segment(&mapper->patient_demographics, seg);
+        } else {
+            buffer_segment(&mapper->subscriber_demographics, seg);
+            mapper->current_party = X12_837_PARTY_SUBSCRIBER;
+        }
+        return X12_OK;
+    }
+
+    if (x12_str_eq_cstr(seg->tag, "REF")) {
+        return write_claim_reference_recorded(mapper, seg);
+    }
+
     if (x12_str_eq_cstr(seg->tag, "HI")) {
-        return write_diagnosis_observed(mapper, seg);
+        int rc = write_diagnosis_observed(mapper, seg);
+        if (rc != X12_OK) {
+            return rc;
+        }
+        return write_healthcare_codes_recorded(mapper, seg);
     }
 
     if (x12_str_eq_cstr(seg->tag, "DTP")) {

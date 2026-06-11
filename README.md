@@ -79,12 +79,26 @@ Claims match on tokenised `CLM01`/`CLP01`. Service lines are paired by procedure
 and charge, date when available, or line order, with the chosen `match_method`
 included in the aggregate output.
 
+837 claim events expose the core `CLM` envelope directly: total charge, CLM05
+facility type/qualifier/frequency, provider signature, assignment,
+benefits-assignment, release-of-information, and patient-signature indicators.
+Subscriber/patient context from `SBR`, `PAT`, and `DMG` is emitted as
+claim-scoped events after the claim ID is known; DOB and identifier-like values
+stay tokenised by default.
+
 837 service-line events expose submitted procedure, modifiers, charge, unit
 measure, unit count, and diagnosis pointer facts directly. Professional `SV1`
 lines and institutional `SV2` revenue lines use the same
 `ClaimServiceLineRecorded` event; `SV2` also carries `revenue_code`.
-`raw_elements` remains available as source evidence, but stitch/projection code
+Claim/service scoped `REF` segments become `ClaimReferenceRecorded` with
+tokenised reference identifiers. `raw_elements` remains available as source
+evidence on service-line and diagnosis summaries, but stitch/projection code
 reads the named fields.
+
+837 `HI` emits both a diagnosis summary and per-component healthcare-code facts.
+That covers the common 837I condition, occurrence, value, and procedure-style
+components as journal evidence without turning the mapper into a full TR3
+validator.
 
 837 provider references include billing, rendering, referring, supervising,
 facility, attending, operating, and other provider roles, with

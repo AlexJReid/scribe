@@ -134,6 +134,90 @@ static int test_modifiers_and_provider_roles_in_ndjson(void)
     return 0;
 }
 
+static int test_claim_envelope_and_party_context_in_ndjson(void)
+{
+    char out_path[512];
+    char output[50000];
+
+    REQUIRE(map_fixture(
+                "x12_005010x222_example_01_synthetic.edi",
+                "test_837_mapper_claim_context.ndjson",
+                0
+            ) == 0);
+    REQUIRE(make_path(
+                out_path,
+                sizeof(out_path),
+                TEST_OUTPUT_DIR,
+                "test_837_mapper_claim_context.ndjson"
+            ) == 0);
+    REQUIRE(read_file_text(out_path, output, sizeof(output)) == 0);
+
+    REQUIRE(strstr(output, "\"event_type\":\"ClaimObserved\"") != NULL);
+    REQUIRE(strstr(output, "\"facility_type_code\":\"11\"") != NULL);
+    REQUIRE(strstr(output, "\"facility_code_qualifier\":\"B\"") != NULL);
+    REQUIRE(strstr(output, "\"claim_frequency_type_code\":\"1\"") != NULL);
+    REQUIRE(strstr(output, "\"provider_signature_indicator\":\"Y\"") != NULL);
+    REQUIRE(strstr(output, "\"assignment_or_plan_participation_code\":\"A\"") != NULL);
+    REQUIRE(strstr(output, "\"benefits_assignment_certification_indicator\":\"Y\"") != NULL);
+    REQUIRE(strstr(output, "\"release_of_information_code\":\"I\"") != NULL);
+
+    REQUIRE(strstr(output, "\"event_type\":\"ClaimSubscriberInformationRecorded\"") != NULL);
+    REQUIRE(strstr(output, "\"party_scope\":\"subscriber\"") != NULL);
+    REQUIRE(strstr(output, "\"payer_responsibility_sequence_number_code\":\"P\"") != NULL);
+    REQUIRE(strstr(output, "\"claim_filing_indicator_code\":\"CI\"") != NULL);
+    REQUIRE(strstr(output, "\"insured_group_or_policy_number\":\"GROUP-837P\"") == NULL);
+
+    REQUIRE(strstr(output, "\"event_type\":\"ClaimPatientInformationRecorded\"") != NULL);
+    REQUIRE(strstr(output, "\"party_scope\":\"patient\"") != NULL);
+    REQUIRE(strstr(output, "\"individual_relationship_code\":\"19\"") != NULL);
+
+    REQUIRE(count_substring(output, "\"event_type\":\"ClaimDemographicsRecorded\"") == 2u);
+    REQUIRE(strstr(output, "\"date_of_birth\":\"19430501\"") == NULL);
+    REQUIRE(strstr(output, "\"date_of_birth\":\"19730501\"") == NULL);
+    REQUIRE(strstr(output, "\"gender_code\":\"F\"") != NULL);
+    REQUIRE(strstr(output, "\"gender_code\":\"M\"") != NULL);
+
+    REQUIRE(strstr(output, "\"event_type\":\"ClaimReferenceRecorded\"") != NULL);
+    REQUIRE(strstr(output, "\"reference_scope\":\"claim\"") != NULL);
+    REQUIRE(strstr(output, "\"reference_qualifier\":\"D9\"") != NULL);
+    REQUIRE(strstr(output, "\"reference_identification\":\"SYNTHCLEARING001\"") == NULL);
+    return 0;
+}
+
+static int test_institutional_hi_components_in_ndjson(void)
+{
+    char out_path[512];
+    char output[20000];
+
+    REQUIRE(map_fixture(
+                "sample_837i_hi_components.edi",
+                "test_837_mapper_hi_components.ndjson",
+                0
+            ) == 0);
+    REQUIRE(make_path(
+                out_path,
+                sizeof(out_path),
+                TEST_OUTPUT_DIR,
+                "test_837_mapper_hi_components.ndjson"
+            ) == 0);
+    REQUIRE(read_file_text(out_path, output, sizeof(output)) == 0);
+
+    REQUIRE(strstr(output, "\"event_type\":\"ClaimDiagnosesRecorded\"") != NULL);
+    REQUIRE(strstr(output, "\"principal_diagnosis_code\":\"R07.9\"") != NULL);
+    REQUIRE(strstr(output, "\"event_type\":\"ClaimHealthcareCodeRecorded\"") != NULL);
+    REQUIRE(strstr(output, "\"healthcare_code_qualifier\":\"BG\"") != NULL);
+    REQUIRE(strstr(output, "\"healthcare_code\":\"01\"") != NULL);
+    REQUIRE(strstr(output, "\"healthcare_code_qualifier\":\"BH\"") != NULL);
+    REQUIRE(strstr(output, "\"healthcare_code_date_format\":\"D8\"") != NULL);
+    REQUIRE(strstr(output, "\"healthcare_code_date_value\":\"20260601\"") != NULL);
+    REQUIRE(strstr(output, "\"healthcare_code_qualifier\":\"BE\"") != NULL);
+    REQUIRE(strstr(output, "\"healthcare_code_components\":[\"BE\",\"A1\",\"\",\"\",\"2500.00\"]") != NULL);
+    REQUIRE(strstr(output, "\"healthcare_code_qualifier\":\"BBR\"") != NULL);
+    REQUIRE(strstr(output, "\"healthcare_code\":\"0WQF0ZZ\"") != NULL);
+    REQUIRE(strstr(output, "\"healthcare_code_date_value\":\"20260602\"") != NULL);
+    return 0;
+}
+
 static int test_service_line_fields_in_binary_journal(void)
 {
     char journal_path[512];
@@ -209,6 +293,8 @@ int main(void)
     REQUIRE(test_service_line_fields_in_ndjson() == 0);
     REQUIRE(test_revenue_line_fields_in_ndjson() == 0);
     REQUIRE(test_modifiers_and_provider_roles_in_ndjson() == 0);
+    REQUIRE(test_claim_envelope_and_party_context_in_ndjson() == 0);
+    REQUIRE(test_institutional_hi_components_in_ndjson() == 0);
     REQUIRE(test_service_line_fields_in_binary_journal() == 0);
     return 0;
 }
