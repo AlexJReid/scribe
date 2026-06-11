@@ -15,9 +15,12 @@
 #define TEST_OUTPUT_DIR "."
 #endif
 
+static void test_free_allocations(void);
+
 #define REQUIRE(cond) do { \
     if (!(cond)) { \
         fprintf(stderr, "%s:%d: requirement failed: %s\n", __FILE__, __LINE__, #cond); \
+        test_free_allocations(); \
         return 1; \
     } \
 } while (0)
@@ -42,6 +45,7 @@ static inline int require_ok(int actual, const char *expr, const char *file, int
 #define REQUIRE_OK(expr) do { \
     int require_ok_actual = (expr); \
     if (require_ok(require_ok_actual, #expr, __FILE__, __LINE__)) { \
+        test_free_allocations(); \
         return 1; \
     } \
 } while (0)
@@ -74,6 +78,7 @@ static inline int require_str_equal(
 
 #define REQUIRE_STR(actual, expected) do { \
     if (require_str_equal((actual), (expected), #actual, #expected, __FILE__, __LINE__)) { \
+        test_free_allocations(); \
         return 1; \
     } \
 } while (0)
@@ -140,6 +145,10 @@ static inline char *test_alloc_text(size_t len)
 #define REQUIRE_ALLOC(var, len) do { \
     (var) = test_alloc_text((len)); \
     REQUIRE((var) != NULL); \
+} while (0)
+
+#define TEST_FREE_ALLOCATIONS() do { \
+    test_free_allocations(); \
 } while (0)
 
 static inline int make_path(char *out, size_t out_len, const char *base, const char *name)

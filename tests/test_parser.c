@@ -1173,6 +1173,7 @@ static int test_stroke_balance_projection_from_journal(void)
     (void)remove(phi_vault_wal_path);
     (void)remove(phi_vault_shm_path);
 
+    TEST_FREE_ALLOCATIONS();
     return 0;
 }
 
@@ -1397,6 +1398,7 @@ static int test_member_coverage_aggregate_from_journal(void)
     (void)remove(phi_vault_wal_path);
     (void)remove(phi_vault_shm_path);
 
+    TEST_FREE_ALLOCATIONS();
     return 0;
 }
 
