@@ -1,3 +1,4 @@
+![scribe](./assets/scribe-logo-v2.png)
 # Scribe
 
 `scribe` turns healthcare X12 EDI into auditable events.
