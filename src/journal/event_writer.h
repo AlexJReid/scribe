@@ -23,6 +23,8 @@ typedef struct {
     phi_vault_t *phi_vault;
     char current_source_drop_id[EVENT_WRITER_SOURCE_DROP_ID_MAX];
     int binary_journal;
+    int binary_context_written;
+    char binary_context_source_drop_id[EVENT_WRITER_SOURCE_DROP_ID_MAX];
     FILE *payload_sink;
     journal_record_builder_t journal_record;
 } event_writer_t;

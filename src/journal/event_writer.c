@@ -105,6 +105,8 @@ int event_writer_open(
     writer->phi_vault = NULL;
     writer->current_source_drop_id[0] = '\0';
     writer->binary_journal = 0;
+    writer->binary_context_written = 0;
+    writer->binary_context_source_drop_id[0] = '\0';
     writer->payload_sink = NULL;
     journal_record_builder_init(&writer->journal_record);
 
@@ -147,6 +149,8 @@ int event_writer_open_stream(
     writer->phi_vault = NULL;
     writer->current_source_drop_id[0] = '\0';
     writer->binary_journal = 0;
+    writer->binary_context_written = 0;
+    writer->binary_context_source_drop_id[0] = '\0';
     writer->payload_sink = NULL;
     journal_record_builder_init(&writer->journal_record);
 
@@ -364,6 +368,8 @@ int event_writer_close(event_writer_t *writer)
     writer->owns_file = 0;
     writer->payload_sink = NULL;
     writer->binary_journal = 0;
+    writer->binary_context_written = 0;
+    writer->binary_context_source_drop_id[0] = '\0';
 
     return rc;
 }
@@ -475,6 +481,7 @@ int event_writer_begin_event(
 {
     char source_drop_id[EVENT_WRITER_SOURCE_DROP_ID_MAX];
     FILE *fp;
+    int write_context;
     int rc;
 
     if (writer == NULL || writer->fp == NULL || event_type == NULL || seg == NULL) {
@@ -501,24 +508,27 @@ int event_writer_begin_event(
         if (rc == X12_OK) {
             rc = journal_record_add_cstring(&writer->journal_record, "event_type", event_type);
         }
-        if (rc == X12_OK) {
+        write_context = !writer->binary_context_written ||
+            strcmp(writer->binary_context_source_drop_id, source_drop_id) != 0;
+        if (rc == X12_OK && write_context) {
             rc = journal_record_add_cstring(&writer->journal_record, "source_file", writer->source_file);
         }
-        if (rc == X12_OK) {
+        if (rc == X12_OK && write_context) {
             rc = journal_record_add_cstring(
                 &writer->journal_record,
                 "source_transaction",
                 writer->source_transaction
             );
         }
-        if (rc == X12_OK && source_drop_id[0] != '\0') {
+        if (rc == X12_OK && write_context && source_drop_id[0] != '\0') {
             rc = journal_record_add_cstring(
                 &writer->journal_record,
                 "source_drop_id",
                 source_drop_id
             );
         }
-        if (rc == X12_OK && writer->run_id != NULL && writer->run_id[0] != '\0') {
+        if (rc == X12_OK && write_context &&
+            writer->run_id != NULL && writer->run_id[0] != '\0') {
             rc = journal_record_add_cstring(&writer->journal_record, "run_id", writer->run_id);
         }
         if (rc == X12_OK) {
@@ -535,7 +545,7 @@ int event_writer_begin_event(
                 (unsigned long long)seg->byte_offset
             );
         }
-        if (rc == X12_OK) {
+        if (rc == X12_OK && write_context) {
             rc = journal_record_add_string(
                 &writer->journal_record,
                 "isa13",
@@ -543,7 +553,7 @@ int event_writer_begin_event(
                 writer->isa13.len
             );
         }
-        if (rc == X12_OK) {
+        if (rc == X12_OK && write_context) {
             rc = journal_record_add_string(
                 &writer->journal_record,
                 "gs06",
@@ -551,7 +561,7 @@ int event_writer_begin_event(
                 writer->gs06.len
             );
         }
-        if (rc == X12_OK) {
+        if (rc == X12_OK && write_context) {
             rc = journal_record_add_string(
                 &writer->journal_record,
                 "st02",
@@ -561,6 +571,15 @@ int event_writer_begin_event(
         }
         if (rc != X12_OK) {
             return rc;
+        }
+        if (write_context) {
+            (void)snprintf(
+                writer->binary_context_source_drop_id,
+                sizeof(writer->binary_context_source_drop_id),
+                "%s",
+                source_drop_id
+            );
+            writer->binary_context_written = 1;
         }
         active_binary_writer = writer;
         return X12_OK;

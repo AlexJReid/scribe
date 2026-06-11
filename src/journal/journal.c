@@ -12,7 +12,8 @@
 #include <windows.h>
 #endif
 
-#define JOURNAL_MAGIC "SCRIBEJ3"
+#define JOURNAL_MAGIC "SCRIBEJ4"
+#define JOURNAL_LEGACY_MAGIC "SCRIBEJ3"
 #define JOURNAL_MAGIC_LEN 8u
 #define JOURNAL_LEN_SIZE 4u
 #define JOURNAL_MAX_RECORD_LEN (64u * 1024u * 1024u)
@@ -360,6 +361,208 @@ static const journal_event_field_t *find_field(
     return NULL;
 }
 
+static void clear_context_slot(char **slot)
+{
+    if (slot != NULL) {
+        free(*slot);
+        *slot = NULL;
+    }
+}
+
+static void clear_reader_context(journal_reader_t *reader)
+{
+    if (reader == NULL) {
+        return;
+    }
+
+    clear_context_slot(&reader->context_source_file);
+    clear_context_slot(&reader->context_source_transaction);
+    clear_context_slot(&reader->context_source_drop_id);
+    clear_context_slot(&reader->context_run_id);
+    clear_context_slot(&reader->context_isa13);
+    clear_context_slot(&reader->context_gs06);
+    clear_context_slot(&reader->context_st02);
+}
+
+static int copy_field_to_context_slot(
+    const journal_event_t *event,
+    const char *key,
+    char **slot,
+    int clear_when_missing
+)
+{
+    const journal_event_field_t *field;
+    char *copy;
+
+    if (event == NULL || key == NULL || slot == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    field = find_field(event, key);
+    if (field == NULL) {
+        if (clear_when_missing) {
+            clear_context_slot(slot);
+        }
+        return X12_OK;
+    }
+    if (field->type != JOURNAL_VALUE_STRING || field->len == SIZE_MAX) {
+        return X12_ERR_IO;
+    }
+
+    copy = (char *)malloc(field->len + 1u);
+    if (copy == NULL) {
+        return X12_ERR_NO_MEMORY;
+    }
+    if (field->len > 0u) {
+        memcpy(copy, field->data, field->len);
+    }
+    copy[field->len] = '\0';
+
+    free(*slot);
+    *slot = copy;
+    return X12_OK;
+}
+
+static void attach_reader_context(journal_reader_t *reader, journal_event_t *event)
+{
+    if (reader == NULL || event == NULL) {
+        return;
+    }
+
+    event->context_source_file = reader->context_source_file;
+    event->context_source_transaction = reader->context_source_transaction;
+    event->context_source_drop_id = reader->context_source_drop_id;
+    event->context_run_id = reader->context_run_id;
+    event->context_isa13 = reader->context_isa13;
+    event->context_gs06 = reader->context_gs06;
+    event->context_st02 = reader->context_st02;
+}
+
+static int update_reader_context(journal_reader_t *reader, journal_event_t *event)
+{
+    int reset_context;
+    int rc;
+
+    if (reader == NULL || event == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    reset_context = find_field(event, "source_file") != NULL ||
+        find_field(event, "source_transaction") != NULL;
+
+    rc = copy_field_to_context_slot(
+        event,
+        "source_file",
+        &reader->context_source_file,
+        reset_context
+    );
+    if (rc == X12_OK) {
+        rc = copy_field_to_context_slot(
+            event,
+            "source_transaction",
+            &reader->context_source_transaction,
+            reset_context
+        );
+    }
+    if (rc == X12_OK) {
+        rc = copy_field_to_context_slot(
+            event,
+            "source_drop_id",
+            &reader->context_source_drop_id,
+            reset_context
+        );
+    }
+    if (rc == X12_OK) {
+        rc = copy_field_to_context_slot(
+            event,
+            "run_id",
+            &reader->context_run_id,
+            reset_context
+        );
+    }
+    if (rc == X12_OK) {
+        rc = copy_field_to_context_slot(
+            event,
+            "isa13",
+            &reader->context_isa13,
+            reset_context
+        );
+    }
+    if (rc == X12_OK) {
+        rc = copy_field_to_context_slot(
+            event,
+            "gs06",
+            &reader->context_gs06,
+            reset_context
+        );
+    }
+    if (rc == X12_OK) {
+        rc = copy_field_to_context_slot(
+            event,
+            "st02",
+            &reader->context_st02,
+            reset_context
+        );
+    }
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    attach_reader_context(reader, event);
+    return X12_OK;
+}
+
+static int copy_context_string(const char *value, char *out, size_t out_len)
+{
+    size_t len;
+
+    if (out == NULL || out_len == 0u) {
+        return 0;
+    }
+    out[0] = '\0';
+    if (value == NULL) {
+        return 0;
+    }
+
+    len = strlen(value);
+    if (len >= out_len) {
+        return 0;
+    }
+    memcpy(out, value, len + 1u);
+    return 1;
+}
+
+static const char *event_context_string(const journal_event_t *event, const char *key)
+{
+    if (event == NULL || key == NULL) {
+        return NULL;
+    }
+
+    if (strcmp(key, "source_file") == 0) {
+        return event->context_source_file;
+    }
+    if (strcmp(key, "source_transaction") == 0) {
+        return event->context_source_transaction;
+    }
+    if (strcmp(key, "source_drop_id") == 0) {
+        return event->context_source_drop_id;
+    }
+    if (strcmp(key, "run_id") == 0) {
+        return event->context_run_id;
+    }
+    if (strcmp(key, "isa13") == 0) {
+        return event->context_isa13;
+    }
+    if (strcmp(key, "gs06") == 0) {
+        return event->context_gs06;
+    }
+    if (strcmp(key, "st02") == 0) {
+        return event->context_st02;
+    }
+
+    return NULL;
+}
+
 int journal_write_header(FILE *fp)
 {
     if (fp == NULL) {
@@ -382,7 +585,8 @@ int journal_read_header(FILE *fp)
     if (fread(magic, 1u, sizeof(magic), fp) != sizeof(magic)) {
         return X12_ERR_IO;
     }
-    return memcmp(magic, JOURNAL_MAGIC, sizeof(magic)) == 0 ?
+    return memcmp(magic, JOURNAL_MAGIC, sizeof(magic)) == 0 ||
+        memcmp(magic, JOURNAL_LEGACY_MAGIC, sizeof(magic)) == 0 ?
         X12_OK :
         X12_ERR_UNSUPPORTED;
 }
@@ -871,6 +1075,7 @@ static int journal_reader_open_next_segment(journal_reader_t *reader)
         reader->fp = NULL;
     }
     reader->current_segment_path = NULL;
+    clear_reader_context(reader);
 
     if (reader->segment_index >= reader->segment_count) {
         return X12_OK;
@@ -904,6 +1109,13 @@ void journal_reader_init(journal_reader_t *reader)
         reader->segment_count = 0u;
         reader->segment_index = 0u;
         reader->current_segment_path = NULL;
+        reader->context_source_file = NULL;
+        reader->context_source_transaction = NULL;
+        reader->context_source_drop_id = NULL;
+        reader->context_run_id = NULL;
+        reader->context_isa13 = NULL;
+        reader->context_gs06 = NULL;
+        reader->context_st02 = NULL;
     }
 }
 
@@ -954,6 +1166,7 @@ int journal_reader_next(journal_reader_t *reader, journal_event_t *out)
     size_t bytes_read;
     size_t i;
     long record_offset;
+    int rc;
 
     if (reader == NULL || reader->fp == NULL || out == NULL) {
         if (reader != NULL && reader->fp == NULL && out != NULL &&
@@ -1047,6 +1260,11 @@ int journal_reader_next(journal_reader_t *reader, journal_event_t *out)
             return X12_ERR_IO;
         }
 
+        rc = update_reader_context(reader, out);
+        if (rc != X12_OK) {
+            return rc;
+        }
+
         return X12_OK;
     }
 
@@ -1066,6 +1284,7 @@ int journal_reader_close(journal_reader_t *reader)
     }
     free(reader->buffer);
     free_segment_paths(reader);
+    clear_reader_context(reader);
     journal_reader_init(reader);
     return rc;
 }
@@ -1079,7 +1298,10 @@ int journal_event_get_string(
 {
     const journal_event_field_t *field = find_field(event, key);
 
-    if (field == NULL || field->type != JOURNAL_VALUE_STRING) {
+    if (field == NULL) {
+        return copy_context_string(event_context_string(event, key), out, out_len);
+    }
+    if (field->type != JOURNAL_VALUE_STRING) {
         if (out != NULL && out_len > 0u) {
             out[0] = '\0';
         }

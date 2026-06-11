@@ -151,6 +151,13 @@ cmake -S . -B build
 cmake --build build
 ```
 
+Generate a local throughput workload without checking in bulk EDI files:
+
+```sh
+scripts/throughput-test.sh
+TYPE=835 FILE_COUNT=5000 KEEP=1 scripts/throughput-test.sh
+```
+
 ## Shape
 
 - Inputs: 834 enrollment, 837 claims, 835 remits, 270/271 eligibility

@@ -266,6 +266,65 @@ static int test_x12_005010x222_example_01_shape(void)
     return 0;
 }
 
+static int test_journal_builder_file_list(void)
+{
+    char fixture_path[512];
+    char list_path[512];
+    char journal_path[512];
+    FILE *list_fp;
+    journal_builder_input_t journal_input;
+    journal_reader_t reader;
+    journal_event_t event;
+    char event_type[128];
+    char source_transaction[32];
+    size_t claim_observed_count = 0u;
+    int rc;
+
+    REQUIRE(make_path(fixture_path, sizeof(fixture_path), TEST_FIXTURE_DIR, "sample_837.edi") == 0);
+    REQUIRE(make_path(list_path, sizeof(list_path), TEST_OUTPUT_DIR, "sample_837_list.txt") == 0);
+    REQUIRE(make_path(journal_path, sizeof(journal_path), TEST_OUTPUT_DIR, "sample_837_list.journal") == 0);
+
+    list_fp = fopen(list_path, "wb");
+    REQUIRE(list_fp != NULL);
+    REQUIRE(fprintf(list_fp, "%s\n%s\n\n", fixture_path, fixture_path) > 0);
+    REQUIRE(fclose(list_fp) == 0);
+
+    (void)remove(journal_path);
+    journal_builder_input_init(&journal_input);
+    journal_input.run_id = "file-list-test";
+    journal_input.x837_list_path = list_path;
+    REQUIRE_OK(journal_builder_build(&journal_input, journal_path));
+
+    journal_reader_init(&reader);
+    REQUIRE_OK(journal_reader_open(&reader, journal_path));
+    while (1) {
+        rc = journal_reader_next(&reader, &event);
+        REQUIRE_OK(rc);
+        if (event.record_len == 0u) {
+            break;
+        }
+        event_type[0] = '\0';
+        source_transaction[0] = '\0';
+        (void)journal_event_get_string(&event, "event_type", event_type, sizeof(event_type));
+        (void)journal_event_get_string(
+            &event,
+            "source_transaction",
+            source_transaction,
+            sizeof(source_transaction)
+        );
+        if (strcmp(source_transaction, "837") == 0 &&
+            strcmp(event_type, "ClaimObserved") == 0) {
+            claim_observed_count++;
+        }
+    }
+    REQUIRE_OK(journal_reader_close(&reader));
+    REQUIRE(claim_observed_count == 2u);
+
+    (void)remove(list_path);
+    (void)remove(journal_path);
+    return 0;
+}
+
 static int test_834_ins_event(void)
 {
     char input_path[512];
@@ -1732,6 +1791,7 @@ int main(void)
 {
     REQUIRE(test_837_claim_event() == 0);
     REQUIRE(test_x12_005010x222_example_01_shape() == 0);
+    REQUIRE(test_journal_builder_file_list() == 0);
     REQUIRE(test_834_ins_event() == 0);
     REQUIRE(test_270_271_eligibility_events() == 0);
     REQUIRE(test_835_remittance_events() == 0);

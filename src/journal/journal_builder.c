@@ -133,6 +133,69 @@ static int append_x12_file(
     return rc;
 }
 
+static void trim_line_end(char *line)
+{
+    size_t len;
+
+    if (line == NULL) {
+        return;
+    }
+
+    len = strlen(line);
+    while (len > 0u && (line[len - 1u] == '\n' || line[len - 1u] == '\r')) {
+        line[len - 1u] = '\0';
+        len--;
+    }
+}
+
+static int append_x12_file_list(
+    FILE *fp,
+    const char *list_path,
+    const char *type,
+    int include_phi,
+    const char *run_id,
+    phi_vault_t *phi_vault
+)
+{
+    FILE *list_fp;
+    char path[4096];
+    int rc = X12_OK;
+
+    if (list_path == NULL) {
+        return X12_OK;
+    }
+
+    list_fp = fopen(list_path, "rb");
+    if (list_fp == NULL) {
+        return X12_ERR_IO;
+    }
+
+    while (fgets(path, sizeof(path), list_fp) != NULL) {
+        if (strchr(path, '\n') == NULL && !feof(list_fp)) {
+            rc = X12_ERR_BUFFER_TOO_SMALL;
+            break;
+        }
+        trim_line_end(path);
+        if (path[0] == '\0') {
+            continue;
+        }
+
+        rc = append_x12_file(fp, path, type, include_phi, run_id, phi_vault);
+        if (rc != X12_OK) {
+            break;
+        }
+    }
+
+    if (ferror(list_fp) && rc == X12_OK) {
+        rc = X12_ERR_IO;
+    }
+    if (fclose(list_fp) != 0 && rc == X12_OK) {
+        rc = X12_ERR_IO;
+    }
+
+    return rc;
+}
+
 static int open_journal_output(
     const char *out_path,
     int append,
@@ -257,10 +320,30 @@ int journal_builder_build(
             phi_vault_ptr
         );
     }
+    if (rc == X12_OK) {
+        rc = append_x12_file_list(
+            fp,
+            input->x837_list_path,
+            "837",
+            input->include_phi,
+            run_id,
+            phi_vault_ptr
+        );
+    }
     for (i = 0u; i < input->x835_count && rc == X12_OK; i++) {
         rc = append_x12_file(
             fp,
             input->x835_paths[i],
+            "835",
+            input->include_phi,
+            run_id,
+            phi_vault_ptr
+        );
+    }
+    if (rc == X12_OK) {
+        rc = append_x12_file_list(
+            fp,
+            input->x835_list_path,
             "835",
             input->include_phi,
             run_id,
@@ -277,6 +360,16 @@ int journal_builder_build(
             phi_vault_ptr
         );
     }
+    if (rc == X12_OK) {
+        rc = append_x12_file_list(
+            fp,
+            input->x834_list_path,
+            "834",
+            input->include_phi,
+            run_id,
+            phi_vault_ptr
+        );
+    }
     for (i = 0u; i < input->x270_count && rc == X12_OK; i++) {
         rc = append_x12_file(
             fp,
@@ -287,10 +380,30 @@ int journal_builder_build(
             phi_vault_ptr
         );
     }
+    if (rc == X12_OK) {
+        rc = append_x12_file_list(
+            fp,
+            input->x270_list_path,
+            "270",
+            input->include_phi,
+            run_id,
+            phi_vault_ptr
+        );
+    }
     for (i = 0u; i < input->x271_count && rc == X12_OK; i++) {
         rc = append_x12_file(
             fp,
             input->x271_paths[i],
+            "271",
+            input->include_phi,
+            run_id,
+            phi_vault_ptr
+        );
+    }
+    if (rc == X12_OK) {
+        rc = append_x12_file_list(
+            fp,
+            input->x271_list_path,
             "271",
             input->include_phi,
             run_id,
@@ -333,26 +446,51 @@ int journal_builder_run_cli(int argc, char **argv)
                 journal_builder_input_add_270(&input, argv[++i]) != X12_OK) {
                 return -1;
             }
+        } else if (strcmp(argv[i], "--270-list") == 0) {
+            if (i + 1 >= argc) {
+                return -1;
+            }
+            input.x270_list_path = argv[++i];
         } else if (strcmp(argv[i], "--271") == 0) {
             if (i + 1 >= argc ||
                 journal_builder_input_add_271(&input, argv[++i]) != X12_OK) {
                 return -1;
             }
+        } else if (strcmp(argv[i], "--271-list") == 0) {
+            if (i + 1 >= argc) {
+                return -1;
+            }
+            input.x271_list_path = argv[++i];
         } else if (strcmp(argv[i], "--834") == 0) {
             if (i + 1 >= argc ||
                 journal_builder_input_add_834(&input, argv[++i]) != X12_OK) {
                 return -1;
             }
+        } else if (strcmp(argv[i], "--834-list") == 0) {
+            if (i + 1 >= argc) {
+                return -1;
+            }
+            input.x834_list_path = argv[++i];
         } else if (strcmp(argv[i], "--837") == 0) {
             if (i + 1 >= argc ||
                 journal_builder_input_add_837(&input, argv[++i]) != X12_OK) {
                 return -1;
             }
+        } else if (strcmp(argv[i], "--837-list") == 0) {
+            if (i + 1 >= argc) {
+                return -1;
+            }
+            input.x837_list_path = argv[++i];
         } else if (strcmp(argv[i], "--835") == 0) {
             if (i + 1 >= argc ||
                 journal_builder_input_add_835(&input, argv[++i]) != X12_OK) {
                 return -1;
             }
+        } else if (strcmp(argv[i], "--835-list") == 0) {
+            if (i + 1 >= argc) {
+                return -1;
+            }
+            input.x835_list_path = argv[++i];
         } else if (strcmp(argv[i], "--include-phi") == 0) {
             input.include_phi = 1;
         } else if (strcmp(argv[i], "--append") == 0) {
@@ -377,7 +515,12 @@ int journal_builder_run_cli(int argc, char **argv)
          input.x271_count == 0u &&
          input.x834_count == 0u &&
          input.x837_count == 0u &&
-         input.x835_count == 0u)) {
+         input.x835_count == 0u &&
+         input.x270_list_path == NULL &&
+         input.x271_list_path == NULL &&
+         input.x834_list_path == NULL &&
+         input.x837_list_path == NULL &&
+         input.x835_list_path == NULL)) {
         return -1;
     }
 

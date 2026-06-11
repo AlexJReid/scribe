@@ -30,6 +30,13 @@ typedef struct {
     long long stored_len;
     journal_event_field_t fields[JOURNAL_EVENT_MAX_FIELDS];
     size_t field_count;
+    const char *context_source_file;
+    const char *context_source_transaction;
+    const char *context_source_drop_id;
+    const char *context_run_id;
+    const char *context_isa13;
+    const char *context_gs06;
+    const char *context_st02;
 } journal_event_t;
 
 typedef struct {
@@ -47,6 +54,13 @@ typedef struct {
     size_t segment_count;
     size_t segment_index;
     const char *current_segment_path;
+    char *context_source_file;
+    char *context_source_transaction;
+    char *context_source_drop_id;
+    char *context_run_id;
+    char *context_isa13;
+    char *context_gs06;
+    char *context_st02;
 } journal_reader_t;
 
 int journal_write_header(FILE *fp);

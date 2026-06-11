@@ -44,6 +44,114 @@ static int write_test_journal_segment(const char *path, const char *event_type)
     return 0;
 }
 
+static int test_journal_reader_carries_source_context(void)
+{
+    char journal_path[512];
+    char value[512];
+    FILE *fp;
+    journal_record_builder_t builder;
+    journal_reader_t reader;
+    journal_event_t event;
+
+    REQUIRE(make_path(journal_path, sizeof(journal_path), TEST_OUTPUT_DIR, "compact_context.journal") == 0);
+    (void)remove(journal_path);
+
+    fp = fopen(journal_path, "wb");
+    REQUIRE(fp != NULL);
+    REQUIRE_OK(journal_write_header(fp));
+
+    journal_record_builder_init(&builder);
+    REQUIRE_OK(journal_record_builder_reset(&builder));
+    REQUIRE_OK(journal_record_add_cstring(&builder, "event_type", "FirstEvent"));
+    REQUIRE_OK(journal_record_add_cstring(&builder, "source_file", "/inbound/drop-001.edi"));
+    REQUIRE_OK(journal_record_add_cstring(&builder, "source_transaction", "837"));
+    REQUIRE_OK(journal_record_add_cstring(&builder, "source_drop_id", "837:000000001:1:0001"));
+    REQUIRE_OK(journal_record_add_cstring(&builder, "run_id", "ingest-run"));
+    REQUIRE_OK(journal_record_add_cstring(&builder, "isa13", "000000001"));
+    REQUIRE_OK(journal_record_add_cstring(&builder, "gs06", "1"));
+    REQUIRE_OK(journal_record_add_cstring(&builder, "st02", "0001"));
+    REQUIRE_OK(journal_record_add_u64(&builder, "source_segment_index", 8u));
+    REQUIRE_OK(journal_record_add_u64(&builder, "source_byte_offset", 333u));
+    REQUIRE_OK(journal_write_record(fp, &builder, NULL, NULL));
+
+    REQUIRE_OK(journal_record_builder_reset(&builder));
+    REQUIRE_OK(journal_record_add_cstring(&builder, "event_type", "SecondEvent"));
+    REQUIRE_OK(journal_record_add_u64(&builder, "source_segment_index", 9u));
+    REQUIRE_OK(journal_record_add_u64(&builder, "source_byte_offset", 369u));
+    REQUIRE_OK(journal_write_record(fp, &builder, NULL, NULL));
+    journal_record_builder_free(&builder);
+    REQUIRE(fclose(fp) == 0);
+
+    journal_reader_init(&reader);
+    REQUIRE_OK(journal_reader_open(&reader, journal_path));
+    REQUIRE_OK(journal_reader_next(&reader, &event));
+    REQUIRE(event.record_len > 0u);
+    REQUIRE(journal_event_get_string(&event, "source_file", value, sizeof(value)) == 1);
+    REQUIRE_STR(value, "/inbound/drop-001.edi");
+
+    REQUIRE_OK(journal_reader_next(&reader, &event));
+    REQUIRE(event.record_len > 0u);
+    REQUIRE(journal_event_get_string(&event, "event_type", value, sizeof(value)) == 1);
+    REQUIRE_STR(value, "SecondEvent");
+    REQUIRE(journal_event_get_string(&event, "source_file", value, sizeof(value)) == 1);
+    REQUIRE_STR(value, "/inbound/drop-001.edi");
+    REQUIRE(journal_event_get_string(&event, "source_transaction", value, sizeof(value)) == 1);
+    REQUIRE_STR(value, "837");
+    REQUIRE(journal_event_get_string(&event, "source_drop_id", value, sizeof(value)) == 1);
+    REQUIRE_STR(value, "837:000000001:1:0001");
+    REQUIRE(journal_event_get_string(&event, "run_id", value, sizeof(value)) == 1);
+    REQUIRE_STR(value, "ingest-run");
+    REQUIRE(journal_event_get_string(&event, "isa13", value, sizeof(value)) == 1);
+    REQUIRE_STR(value, "000000001");
+    REQUIRE(journal_event_get_string(&event, "gs06", value, sizeof(value)) == 1);
+    REQUIRE_STR(value, "1");
+    REQUIRE(journal_event_get_string(&event, "st02", value, sizeof(value)) == 1);
+    REQUIRE_STR(value, "0001");
+    REQUIRE(journal_event_get_number_text(&event, "source_segment_index", value, sizeof(value)) == 1);
+    REQUIRE_STR(value, "9");
+
+    REQUIRE_OK(journal_reader_next(&reader, &event));
+    REQUIRE(event.record_len == 0u);
+    REQUIRE_OK(journal_reader_close(&reader));
+
+    (void)remove(journal_path);
+    return 0;
+}
+
+static int test_journal_reader_reads_legacy_magic(void)
+{
+    char journal_path[512];
+    char value[64];
+    FILE *fp;
+    journal_record_builder_t builder;
+    journal_reader_t reader;
+    journal_event_t event;
+
+    REQUIRE(make_path(journal_path, sizeof(journal_path), TEST_OUTPUT_DIR, "legacy_magic.journal") == 0);
+    (void)remove(journal_path);
+
+    fp = fopen(journal_path, "wb");
+    REQUIRE(fp != NULL);
+    REQUIRE(fwrite("SCRIBEJ3", 1u, 8u, fp) == 8u);
+    journal_record_builder_init(&builder);
+    REQUIRE_OK(journal_record_builder_reset(&builder));
+    REQUIRE_OK(journal_record_add_cstring(&builder, "event_type", "LegacyEvent"));
+    REQUIRE_OK(journal_write_record(fp, &builder, NULL, NULL));
+    journal_record_builder_free(&builder);
+    REQUIRE(fclose(fp) == 0);
+
+    journal_reader_init(&reader);
+    REQUIRE_OK(journal_reader_open(&reader, journal_path));
+    REQUIRE_OK(journal_reader_next(&reader, &event));
+    REQUIRE(event.record_len > 0u);
+    REQUIRE(journal_event_get_string(&event, "event_type", value, sizeof(value)) == 1);
+    REQUIRE_STR(value, "LegacyEvent");
+    REQUIRE_OK(journal_reader_close(&reader));
+
+    (void)remove(journal_path);
+    return 0;
+}
+
 static int test_json_escaping(void)
 {
     FILE *fp;
@@ -151,5 +259,7 @@ int main(void)
     REQUIRE(test_json_scan_unescapes_strings() == 0);
     REQUIRE(test_tokenise_format() == 0);
     REQUIRE(test_journal_reader_reads_partition_directory() == 0);
+    REQUIRE(test_journal_reader_carries_source_context() == 0);
+    REQUIRE(test_journal_reader_reads_legacy_magic() == 0);
     return 0;
 }

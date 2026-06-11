@@ -10,14 +10,19 @@
 typedef struct {
     const char *x270_paths[JOURNAL_BUILDER_MAX_INPUT_FILES];
     size_t x270_count;
+    const char *x270_list_path;
     const char *x271_paths[JOURNAL_BUILDER_MAX_INPUT_FILES];
     size_t x271_count;
+    const char *x271_list_path;
     const char *x834_paths[JOURNAL_BUILDER_MAX_INPUT_FILES];
     size_t x834_count;
+    const char *x834_list_path;
     const char *x837_paths[JOURNAL_BUILDER_MAX_INPUT_FILES];
     size_t x837_count;
+    const char *x837_list_path;
     const char *x835_paths[JOURNAL_BUILDER_MAX_INPUT_FILES];
     size_t x835_count;
+    const char *x835_list_path;
     int include_phi;
     int append;
     const char *phi_vault_path;

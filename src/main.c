@@ -25,7 +25,7 @@ static void usage(FILE *fp)
         "  scribe parse --type 837 input.edi [--out events.ndjson] [--include-phi] [--run-id id]\n"
         "  scribe parse --type 835 input.edi [--out events.ndjson] [--include-phi] [--run-id id]\n"
         "  scribe parse --type 834 input.edi [--out events.ndjson] [--include-phi] [--run-id id]\n"
-        "  scribe ingest --out journal.scribe [--append] [--270 inquiry.edi] [--271 response.edi] [--834 enroll.edi] [--837 claim.edi] [--835 remit.edi] [--phi-vault phi.sqlite] [--include-phi] [--run-id id]\n"
+        "  scribe ingest --out journal.scribe [--append] [--270 inquiry.edi] [--270-list paths.txt] [--271 response.edi] [--271-list paths.txt] [--834 enroll.edi] [--834-list paths.txt] [--837 claim.edi] [--837-list paths.txt] [--835 remit.edi] [--835-list paths.txt] [--phi-vault phi.sqlite] [--include-phi] [--run-id id]\n"
         "  scribe stitch claims --journal journal.scribe [--incremental] [--read-store store.sqlite] [--phi-vault phi.sqlite] [--out aggregates.ndjson] [--notify-out notifications.ndjson] [--include-phi] [--run-id id]\n"
         "  scribe stitch coverage --journal journal.scribe [--incremental] [--read-store store.sqlite] [--phi-vault phi.sqlite] [--out coverage.ndjson] [--include-phi] [--run-id id]\n"
         "  scribe project balance --journal journal.scribe [--out balance.json] [--include-phi]\n"
