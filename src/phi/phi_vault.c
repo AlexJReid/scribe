@@ -2,6 +2,8 @@
 
 #include <sqlite3.h>
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static sqlite3 *vault_db(phi_vault_t *vault)
@@ -34,6 +36,33 @@ static int exec_sql(sqlite3 *db, const char *sql)
         sqlite3_free(err);
     }
     return rc == SQLITE_OK ? X12_OK : sqlite_to_x12(rc);
+}
+
+static char *sqlite_sidecar_path(sqlite3 *db, const char *suffix)
+{
+    const char *path;
+    char *out;
+    size_t path_len;
+    size_t suffix_len;
+
+    if (db == NULL || suffix == NULL) {
+        return NULL;
+    }
+
+    path = sqlite3_db_filename(db, "main");
+    if (path == NULL || path[0] == '\0') {
+        return NULL;
+    }
+
+    path_len = strlen(path);
+    suffix_len = strlen(suffix);
+    out = (char *)malloc(path_len + suffix_len + 1u);
+    if (out == NULL) {
+        return NULL;
+    }
+    memcpy(out, path, path_len);
+    memcpy(out + path_len, suffix, suffix_len + 1u);
+    return out;
 }
 
 static int prepare(sqlite3 *db, const char *sql, sqlite3_stmt **stmt)
@@ -198,15 +227,30 @@ int phi_vault_open(phi_vault_t *vault, const char *path)
 int phi_vault_close(phi_vault_t *vault)
 {
     sqlite3 *db = vault_db(vault);
+    char *wal_path;
+    char *shm_path;
     int rc;
 
     if (db == NULL) {
         return X12_OK;
     }
 
+    wal_path = sqlite_sidecar_path(db, "-wal");
+    shm_path = sqlite_sidecar_path(db, "-shm");
     (void)sqlite3_wal_checkpoint_v2(db, NULL, SQLITE_CHECKPOINT_TRUNCATE, NULL, NULL);
+    (void)sqlite3_exec(db, "PRAGMA journal_mode = DELETE;", NULL, NULL, NULL);
     rc = sqlite3_close(db);
     vault->db = NULL;
+    if (rc == SQLITE_OK) {
+        if (wal_path != NULL) {
+            (void)remove(wal_path);
+        }
+        if (shm_path != NULL) {
+            (void)remove(shm_path);
+        }
+    }
+    free(wal_path);
+    free(shm_path);
     return rc == SQLITE_OK ? X12_OK : sqlite_to_x12(rc);
 }
 

@@ -4,6 +4,7 @@
 #include "x12_parser.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifndef TEST_FIXTURE_DIR
@@ -75,6 +76,70 @@ static inline int require_str_equal(
     if (require_str_equal((actual), (expected), #actual, #expected, __FILE__, __LINE__)) { \
         return 1; \
     } \
+} while (0)
+
+static char **test_allocations;
+static size_t test_allocation_count;
+static int test_alloc_cleanup_registered;
+
+static void test_free_allocations(void)
+{
+    size_t i;
+
+    for (i = 0u; i < test_allocation_count; i++) {
+        free(test_allocations[i]);
+    }
+    free(test_allocations);
+    test_allocations = NULL;
+    test_allocation_count = 0u;
+    test_alloc_cleanup_registered = 0;
+}
+
+static int test_register_allocation(char *ptr)
+{
+    char **next;
+
+    if (ptr == NULL) {
+        return 1;
+    }
+    if (!test_alloc_cleanup_registered) {
+        if (atexit(test_free_allocations) != 0) {
+            return 1;
+        }
+        test_alloc_cleanup_registered = 1;
+    }
+
+    next = (char **)realloc(
+        test_allocations,
+        (test_allocation_count + 1u) * sizeof(*test_allocations)
+    );
+    if (next == NULL) {
+        return 1;
+    }
+
+    test_allocations = next;
+    test_allocations[test_allocation_count++] = ptr;
+    return 0;
+}
+
+static inline char *test_alloc_text(size_t len)
+{
+    char *ptr = (char *)calloc(len, 1u);
+
+    if (ptr == NULL) {
+        return NULL;
+    }
+    if (test_register_allocation(ptr) != 0) {
+        free(ptr);
+        return NULL;
+    }
+
+    return ptr;
+}
+
+#define REQUIRE_ALLOC(var, len) do { \
+    (var) = test_alloc_text((len)); \
+    REQUIRE((var) != NULL); \
 } while (0)
 
 static inline int make_path(char *out, size_t out_len, const char *base, const char *name)

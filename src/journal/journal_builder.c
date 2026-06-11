@@ -133,6 +133,69 @@ static int append_x12_file(
     return rc;
 }
 
+static int open_journal_output(
+    const char *out_path,
+    int append,
+    FILE **out
+)
+{
+    FILE *fp;
+    long size;
+    int rc;
+
+    if (out_path == NULL || out == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    *out = NULL;
+    if (!append) {
+        fp = fopen(out_path, "wb");
+        if (fp == NULL) {
+            return X12_ERR_IO;
+        }
+        rc = journal_write_header(fp);
+        if (rc != X12_OK) {
+            (void)fclose(fp);
+            return rc;
+        }
+        *out = fp;
+        return X12_OK;
+    }
+
+    fp = fopen(out_path, "ab+");
+    if (fp == NULL) {
+        return X12_ERR_IO;
+    }
+    if (fseek(fp, 0L, SEEK_END) != 0) {
+        (void)fclose(fp);
+        return X12_ERR_IO;
+    }
+    size = ftell(fp);
+    if (size < 0) {
+        (void)fclose(fp);
+        return X12_ERR_IO;
+    }
+    if (size == 0L) {
+        rc = journal_write_header(fp);
+    } else {
+        if (fseek(fp, 0L, SEEK_SET) != 0) {
+            (void)fclose(fp);
+            return X12_ERR_IO;
+        }
+        rc = journal_read_header(fp);
+        if (rc == X12_OK && fseek(fp, 0L, SEEK_END) != 0) {
+            rc = X12_ERR_IO;
+        }
+    }
+    if (rc != X12_OK) {
+        (void)fclose(fp);
+        return rc;
+    }
+
+    *out = fp;
+    return X12_OK;
+}
+
 int journal_builder_build(
     const journal_builder_input_t *input,
     const char *out_path
@@ -160,14 +223,9 @@ int journal_builder_build(
         run_id = generated_run_id;
     }
 
-    fp = fopen(out_path, "wb");
+    rc = open_journal_output(out_path, input->append, &fp);
     owns_file = 1;
-    if (fp == NULL) {
-        return X12_ERR_IO;
-    }
-    rc = journal_write_header(fp);
     if (rc != X12_OK) {
-        (void)fclose(fp);
         return rc;
     }
 
@@ -178,6 +236,9 @@ int journal_builder_build(
             rc = phi_vault_init_schema(&phi_vault);
         }
         if (rc != X12_OK) {
+            if (phi_vault.db != NULL) {
+                (void)phi_vault_close(&phi_vault);
+            }
             if (owns_file) {
                 (void)fclose(fp);
             }
@@ -294,6 +355,8 @@ int journal_builder_run_cli(int argc, char **argv)
             }
         } else if (strcmp(argv[i], "--include-phi") == 0) {
             input.include_phi = 1;
+        } else if (strcmp(argv[i], "--append") == 0) {
+            input.append = 1;
         } else if (strcmp(argv[i], "--phi-vault") == 0) {
             if (i + 1 >= argc) {
                 return -1;

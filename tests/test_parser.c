@@ -747,10 +747,16 @@ static int test_stroke_balance_projection_from_journal(void)
     char phi_vault_path[512];
     char phi_vault_wal_path[560];
     char phi_vault_shm_path[560];
-    char aggregates[320000];
-    char notifications[96000];
-    char latest_aggregate[65536];
-    char projection[96000];
+    enum {
+        AGGREGATES_LEN = 320000,
+        NOTIFICATIONS_LEN = 96000,
+        LATEST_AGGREGATE_LEN = 65536,
+        PROJECTION_LEN = 96000
+    };
+    char *aggregates = NULL;
+    char *notifications = NULL;
+    char *latest_aggregate = NULL;
+    char *projection = NULL;
     char resolved[256];
     char indexed_event_ids[16][SCRIBE_STORE_ID_MAX];
     char first_source_drop_id[SCRIBE_STORE_ID_MAX];
@@ -775,6 +781,11 @@ static int test_stroke_balance_projection_from_journal(void)
     int saw_stroke_270 = 0;
     int saw_stroke_271 = 0;
     int rc;
+
+    REQUIRE_ALLOC(aggregates, AGGREGATES_LEN);
+    REQUIRE_ALLOC(notifications, NOTIFICATIONS_LEN);
+    REQUIRE_ALLOC(latest_aggregate, LATEST_AGGREGATE_LEN);
+    REQUIRE_ALLOC(projection, PROJECTION_LEN);
 
     REQUIRE(make_path(coverage_834_path, sizeof(coverage_834_path), TEST_FIXTURE_DIR, "stroke_encounter/coverage_834.edi") == 0);
     REQUIRE(make_path(eligibility_270_path, sizeof(eligibility_270_path), TEST_FIXTURE_DIR, "stroke_encounter/eligibility_270.edi") == 0);
@@ -863,8 +874,8 @@ static int test_stroke_balance_projection_from_journal(void)
     stitch_input.include_phi = 1;
     stitch_input.run_id = "stitch-test-run";
     REQUIRE_OK(aggregate_stitcher_stitch(&stitch_input));
-    REQUIRE(read_file_text(aggregate_path, aggregates, sizeof(aggregates)) == 0);
-    REQUIRE(read_file_text(notification_path, notifications, sizeof(notifications)) == 0);
+    REQUIRE(read_file_text(aggregate_path, aggregates, AGGREGATES_LEN) == 0);
+    REQUIRE(read_file_text(notification_path, notifications, NOTIFICATIONS_LEN) == 0);
 
     REQUIRE(strstr(aggregates, "\"event_type\":\"ClaimAggregateUpdated\"") != NULL);
     REQUIRE(strstr(aggregates, "\"run_id\":\"stitch-test-run\"") != NULL);
@@ -926,7 +937,7 @@ static int test_stroke_balance_projection_from_journal(void)
     projection_input.journal_path = journal_path;
     projection_input.include_phi = 1;
     REQUIRE_OK(balance_projector_project(&projection_input, projection_path));
-    REQUIRE(read_file_text(projection_path, projection, sizeof(projection)) == 0);
+    REQUIRE(read_file_text(projection_path, projection, PROJECTION_LEN) == 0);
 
     REQUIRE(strstr(projection, "\"event_type\":\"ClaimBalanceProjected\"") != NULL);
     REQUIRE(strstr(projection, "\"claim_id\":\"CLM-STROKE-RAD-FAC-001\"") != NULL);
@@ -1041,7 +1052,7 @@ static int test_stroke_balance_projection_from_journal(void)
                 "claim:8259c238232f9585e95fc8f45b0bb410",
                 &latest_version,
                 latest_aggregate,
-                sizeof(latest_aggregate)
+                LATEST_AGGREGATE_LEN
             ));
     REQUIRE(latest_version == 2u);
     REQUIRE(strstr(latest_aggregate, "\"contains_phi\":true") != NULL);
@@ -1070,7 +1081,7 @@ static int test_stroke_balance_projection_from_journal(void)
     stitch_input.phi_vault_path = NULL;
     stitch_input.include_phi = 0;
     REQUIRE_OK(aggregate_stitcher_stitch(&stitch_input));
-    REQUIRE(read_file_text(nonphi_aggregate_path, aggregates, sizeof(aggregates)) == 0);
+    REQUIRE(read_file_text(nonphi_aggregate_path, aggregates, AGGREGATES_LEN) == 0);
 
     REQUIRE(count_substring(aggregates, "\"event_type\":\"ClaimAggregateUpdated\"") == 8u);
     REQUIRE(strstr(aggregates, "\"claim_id\":\"8259c238232f9585e95fc8f45b0bb410\"") != NULL);
@@ -1093,7 +1104,7 @@ static int test_stroke_balance_projection_from_journal(void)
                 "claim:8259c238232f9585e95fc8f45b0bb410",
                 &latest_version,
                 latest_aggregate,
-                sizeof(latest_aggregate)
+                LATEST_AGGREGATE_LEN
             ));
     REQUIRE(latest_version == 2u);
     REQUIRE(strstr(latest_aggregate, "\"contains_phi\":false") != NULL);
@@ -1145,7 +1156,7 @@ static int test_stroke_balance_projection_from_journal(void)
     projection_input.journal_path = nonphi_journal_path;
     projection_input.include_phi = 0;
     REQUIRE_OK(balance_projector_project(&projection_input, nonphi_projection_path));
-    REQUIRE(read_file_text(nonphi_projection_path, projection, sizeof(projection)) == 0);
+    REQUIRE(read_file_text(nonphi_projection_path, projection, PROJECTION_LEN) == 0);
 
     REQUIRE(strstr(projection, "\"claim_id\":\"8259c238232f9585e95fc8f45b0bb410\"") != NULL);
     REQUIRE(strstr(projection, "\"payer_claim_control_number\":\"edf29f09740ab104da309e2b036e14d1\"") != NULL);
@@ -1182,9 +1193,14 @@ static int test_member_coverage_aggregate_from_journal(void)
     char phi_vault_path[512];
     char phi_vault_wal_path[560];
     char phi_vault_shm_path[560];
-    char aggregates[128000];
-    char phi_aggregates[128000];
-    char latest_coverage[65536];
+    enum {
+        COVERAGE_AGGREGATES_LEN = 128000,
+        COVERAGE_PHI_AGGREGATES_LEN = 128000,
+        LATEST_COVERAGE_LEN = 65536
+    };
+    char *aggregates = NULL;
+    char *phi_aggregates = NULL;
+    char *latest_coverage = NULL;
     char aggregate_id[SCRIBE_STORE_ID_MAX];
     char member_token[TOKENISE_MAX_TOKEN_LEN];
     char payer_token[TOKENISE_MAX_TOKEN_LEN];
@@ -1196,6 +1212,10 @@ static int test_member_coverage_aggregate_from_journal(void)
     scribe_store_t store;
     size_t latest_version = 0u;
     size_t aggregate_count = 0u;
+
+    REQUIRE_ALLOC(aggregates, COVERAGE_AGGREGATES_LEN);
+    REQUIRE_ALLOC(phi_aggregates, COVERAGE_PHI_AGGREGATES_LEN);
+    REQUIRE_ALLOC(latest_coverage, LATEST_COVERAGE_LEN);
 
     REQUIRE(make_path(coverage_834_path, sizeof(coverage_834_path), TEST_FIXTURE_DIR, "stroke_encounter/coverage_834.edi") == 0);
     REQUIRE(make_path(eligibility_270_path, sizeof(eligibility_270_path), TEST_FIXTURE_DIR, "stroke_encounter/eligibility_270.edi") == 0);
@@ -1249,7 +1269,7 @@ static int test_member_coverage_aggregate_from_journal(void)
     coverage_input.read_store_path = read_store_path;
     coverage_input.run_id = "coverage-stitch-test";
     REQUIRE_OK(coverage_stitcher_stitch(&coverage_input));
-    REQUIRE(read_file_text(aggregate_path, aggregates, sizeof(aggregates)) == 0);
+    REQUIRE(read_file_text(aggregate_path, aggregates, COVERAGE_AGGREGATES_LEN) == 0);
 
     REQUIRE(strstr(aggregates, "\"event_type\":\"MemberCoverageUpdated\"") != NULL);
     REQUIRE(strstr(aggregates, "\"run_id\":\"coverage-stitch-test\"") != NULL);
@@ -1281,7 +1301,7 @@ static int test_member_coverage_aggregate_from_journal(void)
                 aggregate_id,
                 &latest_version,
                 latest_coverage,
-                sizeof(latest_coverage)
+                LATEST_COVERAGE_LEN
             ));
     REQUIRE(latest_version > 0u);
     REQUIRE(strstr(latest_coverage, "\"contains_phi\":false") != NULL);
@@ -1326,7 +1346,7 @@ static int test_member_coverage_aggregate_from_journal(void)
     coverage_input.include_phi = 1;
     coverage_input.run_id = "coverage-phi-stitch-test";
     REQUIRE_OK(coverage_stitcher_stitch(&coverage_input));
-    REQUIRE(read_file_text(phi_aggregate_path, phi_aggregates, sizeof(phi_aggregates)) == 0);
+    REQUIRE(read_file_text(phi_aggregate_path, phi_aggregates, COVERAGE_PHI_AGGREGATES_LEN) == 0);
 
     REQUIRE(strstr(phi_aggregates, "\"contains_phi\":true") != NULL);
     REQUIRE(strstr(phi_aggregates, "\"member_id\":\"SUB-STROKE-001\"") != NULL);
@@ -1349,7 +1369,7 @@ static int test_member_coverage_aggregate_from_journal(void)
                 aggregate_id,
                 &latest_version,
                 latest_coverage,
-                sizeof(latest_coverage)
+                LATEST_COVERAGE_LEN
             ));
     REQUIRE(latest_version > 0u);
     REQUIRE(strstr(latest_coverage, "\"contains_phi\":true") != NULL);

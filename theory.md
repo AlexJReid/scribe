@@ -85,6 +85,32 @@ collapse into one aggregate version. Event locators identify the exact bytes tha
 produced a fact, so renamed files or reordered ingest do not change evidence
 references.
 
+Worked example, as used by the stroke demo:
+
+```sh
+mkdir -p demo/stroke.journal.d/20260617 demo/stroke.journal.d/20260720
+
+scribe ingest --out demo/stroke.journal.d/20260617/stroke-drop-facility-837.journal \
+  --run-id stroke-drop-facility-837 \
+  --phi-vault demo/stroke_phi_vault.sqlite \
+  --837 tests/fixtures/stroke_encounter/facility_837.edi
+
+scribe ingest --out demo/stroke.journal.d/20260720/stroke-drop-facility-835.journal \
+  --run-id stroke-drop-facility-835 \
+  --phi-vault demo/stroke_phi_vault.sqlite \
+  --835 tests/fixtures/stroke_encounter/facility_835.edi
+
+scribe stitch claims --journal demo/stroke.journal.d \
+  --read-store demo/stroke_read_store.sqlite \
+  --out demo/stroke_aggregates.ndjson
+```
+
+Each ingest writes one binary journal segment under an arrival-date partition.
+The stitch/project readers accept either one segment file or a directory tree of
+`.journal` segment files and replay them in lexical path order. The 837 and 835
+files keep distinct source drop IDs from their X12 controls, while `run_id`
+identifies the ingest execution that wrote that segment.
+
 PHI vault mappings store first/last source drop IDs, not file paths. To resolve
 that provenance back to an inbound file, join the source drop ID through the read
 store `source_drops` metadata, which records the source type and source file.

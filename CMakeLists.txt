@@ -131,6 +131,9 @@ add_test(NAME test_x12_parser COMMAND test_x12_parser)
 
 add_executable(test_core tests/test_core.c)
 target_link_libraries(test_core PRIVATE scribe_core)
+target_compile_definitions(test_core PRIVATE
+    TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-output"
+)
 scribe_enable_warnings(test_core)
 
 add_test(NAME test_core COMMAND test_core)

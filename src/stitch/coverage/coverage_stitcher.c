@@ -1378,7 +1378,7 @@ static int index_journal_event(
 {
     char event_id[32];
     char event_type[96];
-    char segment_id[32];
+    char segment_id[SCRIBE_STORE_ID_MAX];
     char member_id[COVERAGE_ID_MAX];
     char member_id_token[TOKENISE_MAX_TOKEN_LEN];
     char payer_id[COVERAGE_ID_MAX];
@@ -1404,7 +1404,9 @@ static int index_journal_event(
     if (written < 0 || (size_t)written >= sizeof(event_id)) {
         return X12_ERR_BUFFER_TOO_SMALL;
     }
-    if (!json_get_number_text(event, "source_segment_index", segment_id, sizeof(segment_id))) {
+    if (event->segment_path != NULL && event->segment_path[0] != '\0') {
+        copy_cstr(segment_id, sizeof(segment_id), event->segment_path);
+    } else if (!json_get_number_text(event, "source_segment_index", segment_id, sizeof(segment_id))) {
         written = snprintf(segment_id, sizeof(segment_id), "%zu", numeric_event_id);
         if (written < 0 || (size_t)written >= sizeof(segment_id)) {
             return X12_ERR_BUFFER_TOO_SMALL;

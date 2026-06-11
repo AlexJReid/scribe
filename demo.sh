@@ -15,7 +15,14 @@ need_file() {
     fi
 }
 
-need_file demo/stroke.journal
+need_dir() {
+    if [ ! -d "$1" ]; then
+        echo "missing: $1" >&2
+        missing=1
+    fi
+}
+
+need_dir demo/stroke.journal.d
 need_file demo/stroke_phi_vault.sqlite
 need_file demo/stroke_read_store.sqlite
 need_file demo/stroke_phi_read_store.sqlite

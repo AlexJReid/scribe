@@ -25,6 +25,7 @@ typedef struct {
 typedef struct {
     const unsigned char *record;
     size_t record_len;
+    const char *segment_path;
     long long offset;
     long long stored_len;
     journal_event_field_t fields[JOURNAL_EVENT_MAX_FIELDS];
@@ -42,9 +43,14 @@ typedef struct {
     FILE *fp;
     unsigned char *buffer;
     size_t buffer_cap;
+    char **segment_paths;
+    size_t segment_count;
+    size_t segment_index;
+    const char *current_segment_path;
 } journal_reader_t;
 
 int journal_write_header(FILE *fp);
+int journal_read_header(FILE *fp);
 
 void journal_record_builder_init(journal_record_builder_t *builder);
 void journal_record_builder_free(journal_record_builder_t *builder);

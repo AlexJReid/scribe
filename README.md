@@ -39,6 +39,14 @@ scribe ingest --out journal.scribe \
   --835 remit.edi
 ```
 
+Write source drops into partitioned journal segments:
+
+```bash
+scribe ingest --out journal.d/20260617/drop-001.journal --run-id drop-001 --837 claims.edi
+scribe ingest --out journal.d/20260720/drop-002.journal --run-id drop-002 --835 remit.edi
+scribe stitch claims --journal journal.d --out claim_aggregates.ndjson
+```
+
 Stitch claim versions by matching 837 claim facts with 835 remittance facts,
 then populate read-store indexes:
 
@@ -102,7 +110,8 @@ cmake --build build
 - Inputs: 834 enrollment, 837 claims, 835 remits, 270/271 eligibility
 - Events: small auditable facts with source transaction, control numbers,
   segment index, byte offset, and optional run ID
-- Journal: immutable binary evidence stream
+- Journal: immutable binary evidence stream, either one segment file or a
+  directory of `.journal` segment files
 - PHI vault: raw PHI resolver, separate from normal stores
 - Read store: indexes, versioned aggregate snapshots, and latest rows
 - Outputs: claim aggregates, member coverage, balances, and outbox facts

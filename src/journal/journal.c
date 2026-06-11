@@ -1,8 +1,16 @@
 #include "journal.h"
 
+#ifndef _WIN32
+#include <dirent.h>
+#endif
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #define JOURNAL_MAGIC "SCRIBEJ3"
 #define JOURNAL_MAGIC_LEN 8u
@@ -335,6 +343,22 @@ int journal_write_header(FILE *fp)
         X12_ERR_IO;
 }
 
+int journal_read_header(FILE *fp)
+{
+    unsigned char magic[JOURNAL_MAGIC_LEN];
+
+    if (fp == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    if (fread(magic, 1u, sizeof(magic), fp) != sizeof(magic)) {
+        return X12_ERR_IO;
+    }
+    return memcmp(magic, JOURNAL_MAGIC, sizeof(magic)) == 0 ?
+        X12_OK :
+        X12_ERR_UNSUPPORTED;
+}
+
 void journal_record_builder_init(journal_record_builder_t *builder)
 {
     if (builder != NULL) {
@@ -520,36 +544,373 @@ int journal_write_record(
     return X12_OK;
 }
 
+static int has_suffix(const char *value, const char *suffix)
+{
+    size_t value_len;
+    size_t suffix_len;
+
+    if (value == NULL || suffix == NULL) {
+        return 0;
+    }
+
+    value_len = strlen(value);
+    suffix_len = strlen(suffix);
+    if (value_len < suffix_len) {
+        return 0;
+    }
+
+    return strcmp(value + value_len - suffix_len, suffix) == 0;
+}
+
+static char *dup_cstr(const char *value)
+{
+    char *copy;
+    size_t len;
+
+    if (value == NULL) {
+        return NULL;
+    }
+
+    len = strlen(value);
+    copy = (char *)malloc(len + 1u);
+    if (copy == NULL) {
+        return NULL;
+    }
+    memcpy(copy, value, len + 1u);
+    return copy;
+}
+
+static int join_path(const char *base, const char *name, char **out)
+{
+    char *path;
+    size_t base_len;
+    size_t name_len;
+    size_t path_len;
+    int needs_separator;
+
+    if (base == NULL || name == NULL || out == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    *out = NULL;
+    base_len = strlen(base);
+    name_len = strlen(name);
+    needs_separator = base_len > 0u &&
+        base[base_len - 1u] != '/' &&
+        base[base_len - 1u] != '\\';
+    if (base_len > SIZE_MAX - name_len - (needs_separator ? 2u : 1u)) {
+        return X12_ERR_BUFFER_TOO_SMALL;
+    }
+
+    path_len = base_len + name_len + (needs_separator ? 1u : 0u);
+    path = (char *)malloc(path_len + 1u);
+    if (path == NULL) {
+        return X12_ERR_NO_MEMORY;
+    }
+
+    memcpy(path, base, base_len);
+    if (needs_separator) {
+        path[base_len] = '/';
+        memcpy(path + base_len + 1u, name, name_len);
+    } else {
+        memcpy(path + base_len, name, name_len);
+    }
+    path[path_len] = '\0';
+
+    *out = path;
+    return X12_OK;
+}
+
+static int append_segment_path(journal_reader_t *reader, const char *path)
+{
+    char **next;
+    char *copy;
+
+    if (reader == NULL || path == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    copy = dup_cstr(path);
+    if (copy == NULL) {
+        return X12_ERR_NO_MEMORY;
+    }
+
+    if (reader->segment_count == SIZE_MAX / sizeof(*reader->segment_paths)) {
+        free(copy);
+        return X12_ERR_BUFFER_TOO_SMALL;
+    }
+    next = (char **)realloc(
+        reader->segment_paths,
+        (reader->segment_count + 1u) * sizeof(*reader->segment_paths)
+    );
+    if (next == NULL) {
+        free(copy);
+        return X12_ERR_NO_MEMORY;
+    }
+
+    reader->segment_paths = next;
+    reader->segment_paths[reader->segment_count++] = copy;
+    return X12_OK;
+}
+
+static int compare_segment_paths(const void *left, const void *right)
+{
+    const char *left_path = *(const char * const *)left;
+    const char *right_path = *(const char * const *)right;
+
+    return strcmp(left_path, right_path);
+}
+
+static void sort_segment_paths(journal_reader_t *reader)
+{
+    if (reader != NULL && reader->segment_count > 1u) {
+        qsort(
+            reader->segment_paths,
+            reader->segment_count,
+            sizeof(*reader->segment_paths),
+            compare_segment_paths
+        );
+    }
+}
+
+static int path_is_directory(const char *path)
+{
+#ifdef _WIN32
+    DWORD attrs;
+
+    if (path == NULL) {
+        return 0;
+    }
+
+    attrs = GetFileAttributesA(path);
+    return attrs != INVALID_FILE_ATTRIBUTES &&
+        (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0u;
+#else
+    struct stat st;
+
+    if (path == NULL) {
+        return 0;
+    }
+
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+#endif
+}
+
+static int path_is_regular_file(const char *path)
+{
+#ifdef _WIN32
+    DWORD attrs;
+
+    if (path == NULL) {
+        return 0;
+    }
+
+    attrs = GetFileAttributesA(path);
+    return attrs != INVALID_FILE_ATTRIBUTES &&
+        (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0u;
+#else
+    struct stat st;
+
+    if (path == NULL) {
+        return 0;
+    }
+
+    return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+#endif
+}
+
+#ifdef _WIN32
+static int scan_segment_dir(journal_reader_t *reader, const char *dir_path)
+{
+    WIN32_FIND_DATAA data;
+    HANDLE handle;
+    char *pattern = NULL;
+    int rc;
+
+    rc = join_path(dir_path, "*", &pattern);
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    handle = FindFirstFileA(pattern, &data);
+    free(pattern);
+    if (handle == INVALID_HANDLE_VALUE) {
+        return X12_ERR_IO;
+    }
+
+    do {
+        char *child_path;
+
+        if (strcmp(data.cFileName, ".") == 0 || strcmp(data.cFileName, "..") == 0) {
+            continue;
+        }
+
+        rc = join_path(dir_path, data.cFileName, &child_path);
+        if (rc != X12_OK) {
+            FindClose(handle);
+            return rc;
+        }
+
+        if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0u) {
+            rc = scan_segment_dir(reader, child_path);
+        } else if (has_suffix(data.cFileName, ".journal")) {
+            rc = append_segment_path(reader, child_path);
+        }
+        free(child_path);
+        if (rc != X12_OK) {
+            FindClose(handle);
+            return rc;
+        }
+    } while (FindNextFileA(handle, &data) != 0);
+
+    FindClose(handle);
+    return X12_OK;
+}
+#else
+static int scan_segment_dir(journal_reader_t *reader, const char *dir_path)
+{
+    DIR *dir;
+    struct dirent *entry;
+    int rc = X12_OK;
+
+    dir = opendir(dir_path);
+    if (dir == NULL) {
+        return X12_ERR_IO;
+    }
+
+    while ((entry = readdir(dir)) != NULL) {
+        char *child_path;
+
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+
+        rc = join_path(dir_path, entry->d_name, &child_path);
+        if (rc != X12_OK) {
+            break;
+        }
+
+        if (path_is_directory(child_path)) {
+            rc = scan_segment_dir(reader, child_path);
+        } else if (path_is_regular_file(child_path) &&
+                   has_suffix(entry->d_name, ".journal")) {
+            rc = append_segment_path(reader, child_path);
+        }
+        free(child_path);
+        if (rc != X12_OK) {
+            break;
+        }
+    }
+
+    if (closedir(dir) != 0 && rc == X12_OK) {
+        rc = X12_ERR_IO;
+    }
+    return rc;
+}
+#endif
+
+static void free_segment_paths(journal_reader_t *reader)
+{
+    size_t i;
+
+    if (reader == NULL) {
+        return;
+    }
+
+    for (i = 0u; i < reader->segment_count; i++) {
+        free(reader->segment_paths[i]);
+    }
+    free(reader->segment_paths);
+    reader->segment_paths = NULL;
+    reader->segment_count = 0u;
+    reader->segment_index = 0u;
+    reader->current_segment_path = NULL;
+}
+
+static int journal_reader_open_next_segment(journal_reader_t *reader)
+{
+    int rc;
+
+    if (reader == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    if (reader->fp != NULL) {
+        if (fclose(reader->fp) != 0) {
+            reader->fp = NULL;
+            return X12_ERR_IO;
+        }
+        reader->fp = NULL;
+    }
+    reader->current_segment_path = NULL;
+
+    if (reader->segment_index >= reader->segment_count) {
+        return X12_OK;
+    }
+
+    reader->current_segment_path = reader->segment_paths[reader->segment_index++];
+    reader->fp = fopen(reader->current_segment_path, "rb");
+    if (reader->fp == NULL) {
+        reader->current_segment_path = NULL;
+        return X12_ERR_IO;
+    }
+
+    rc = journal_read_header(reader->fp);
+    if (rc != X12_OK) {
+        (void)fclose(reader->fp);
+        reader->fp = NULL;
+        reader->current_segment_path = NULL;
+        return rc;
+    }
+
+    return X12_OK;
+}
+
 void journal_reader_init(journal_reader_t *reader)
 {
     if (reader != NULL) {
         reader->fp = NULL;
         reader->buffer = NULL;
         reader->buffer_cap = 0u;
+        reader->segment_paths = NULL;
+        reader->segment_count = 0u;
+        reader->segment_index = 0u;
+        reader->current_segment_path = NULL;
     }
 }
 
 int journal_reader_open(journal_reader_t *reader, const char *path)
 {
-    unsigned char magic[JOURNAL_MAGIC_LEN];
+    int rc;
 
     if (reader == NULL || path == NULL) {
         return X12_ERR_INVALID_ARGUMENT;
     }
 
     journal_reader_init(reader);
-    reader->fp = fopen(path, "rb");
-    if (reader->fp == NULL) {
-        return X12_ERR_IO;
+    if (path_is_directory(path)) {
+        rc = scan_segment_dir(reader, path);
+        if (rc != X12_OK) {
+            journal_reader_close(reader);
+            return rc;
+        }
+        sort_segment_paths(reader);
+        if (reader->segment_count == 0u) {
+            journal_reader_close(reader);
+            return X12_ERR_IO;
+        }
+    } else {
+        rc = append_segment_path(reader, path);
+        if (rc != X12_OK) {
+            journal_reader_close(reader);
+            return rc;
+        }
     }
 
-    if (fread(magic, 1u, sizeof(magic), reader->fp) != sizeof(magic)) {
+    rc = journal_reader_open_next_segment(reader);
+    if (rc != X12_OK) {
         (void)journal_reader_close(reader);
-        return X12_ERR_IO;
-    }
-    if (memcmp(magic, JOURNAL_MAGIC, sizeof(magic)) != 0) {
-        (void)journal_reader_close(reader);
-        return X12_ERR_UNSUPPORTED;
+        return rc;
     }
 
     return X12_OK;
@@ -567,76 +928,98 @@ int journal_reader_next(journal_reader_t *reader, journal_event_t *out)
     long record_offset;
 
     if (reader == NULL || reader->fp == NULL || out == NULL) {
+        if (reader != NULL && reader->fp == NULL && out != NULL &&
+            reader->segment_index >= reader->segment_count) {
+            memset(out, 0, sizeof(*out));
+            return X12_OK;
+        }
         return X12_ERR_INVALID_ARGUMENT;
     }
 
     memset(out, 0, sizeof(*out));
 
-    record_offset = ftell(reader->fp);
-    if (record_offset < 0) {
-        return X12_ERR_IO;
-    }
-
-    bytes_read = fread(encoded_len, 1u, sizeof(encoded_len), reader->fp);
-    if (bytes_read == 0u) {
-        return feof(reader->fp) ? X12_OK : X12_ERR_IO;
-    }
-    if (bytes_read != sizeof(encoded_len)) {
-        return X12_ERR_IO;
-    }
-
-    len = decode_u32_le(encoded_len);
-    if (len < 2u || len > JOURNAL_MAX_RECORD_LEN) {
-        return X12_ERR_IO;
-    }
-
-    if ((size_t)len > reader->buffer_cap) {
-        unsigned char *next = (unsigned char *)realloc(reader->buffer, (size_t)len);
-        if (next == NULL) {
-            return X12_ERR_NO_MEMORY;
-        }
-        reader->buffer = next;
-        reader->buffer_cap = (size_t)len;
-    }
-
-    if (fread(reader->buffer, 1u, (size_t)len, reader->fp) != (size_t)len) {
-        return X12_ERR_IO;
-    }
-
-    cursor = reader->buffer;
-    end = reader->buffer + len;
-    field_count = decode_u16_le(cursor);
-    cursor += 2u;
-    if (field_count > JOURNAL_EVENT_MAX_FIELDS) {
-        return X12_ERR_BUFFER_TOO_SMALL;
-    }
-
-    out->record = reader->buffer;
-    out->record_len = (size_t)len;
-    out->offset = (long long)record_offset;
-    out->stored_len = (long long)(JOURNAL_LEN_SIZE + (size_t)len);
-    out->field_count = field_count;
-
-    for (i = 0u; i < field_count; i++) {
-        uint32_t value_len;
-
-        if ((size_t)(end - cursor) < 7u) {
+    while (reader->fp != NULL) {
+        record_offset = ftell(reader->fp);
+        if (record_offset < 0) {
             return X12_ERR_IO;
         }
-        out->fields[i].key_id = decode_u16_le(cursor);
+
+        bytes_read = fread(encoded_len, 1u, sizeof(encoded_len), reader->fp);
+        if (bytes_read == 0u) {
+            int next_rc;
+
+            if (!feof(reader->fp)) {
+                return X12_ERR_IO;
+            }
+            next_rc = journal_reader_open_next_segment(reader);
+            if (next_rc != X12_OK) {
+                return next_rc;
+            }
+            if (reader->fp == NULL) {
+                return X12_OK;
+            }
+            continue;
+        }
+        if (bytes_read != sizeof(encoded_len)) {
+            return X12_ERR_IO;
+        }
+
+        len = decode_u32_le(encoded_len);
+        if (len < 2u || len > JOURNAL_MAX_RECORD_LEN) {
+            return X12_ERR_IO;
+        }
+
+        if ((size_t)len > reader->buffer_cap) {
+            unsigned char *next = (unsigned char *)realloc(reader->buffer, (size_t)len);
+            if (next == NULL) {
+                return X12_ERR_NO_MEMORY;
+            }
+            reader->buffer = next;
+            reader->buffer_cap = (size_t)len;
+        }
+
+        if (fread(reader->buffer, 1u, (size_t)len, reader->fp) != (size_t)len) {
+            return X12_ERR_IO;
+        }
+
+        cursor = reader->buffer;
+        end = reader->buffer + len;
+        field_count = decode_u16_le(cursor);
         cursor += 2u;
-        out->fields[i].type = *cursor++;
-        value_len = decode_u32_le(cursor);
-        cursor += 4u;
-        if ((size_t)(end - cursor) < value_len) {
+        if (field_count > JOURNAL_EVENT_MAX_FIELDS) {
+            return X12_ERR_BUFFER_TOO_SMALL;
+        }
+
+        out->record = reader->buffer;
+        out->record_len = (size_t)len;
+        out->segment_path = reader->current_segment_path;
+        out->offset = (long long)record_offset;
+        out->stored_len = (long long)(JOURNAL_LEN_SIZE + (size_t)len);
+        out->field_count = field_count;
+
+        for (i = 0u; i < field_count; i++) {
+            uint32_t value_len;
+
+            if ((size_t)(end - cursor) < 7u) {
+                return X12_ERR_IO;
+            }
+            out->fields[i].key_id = decode_u16_le(cursor);
+            cursor += 2u;
+            out->fields[i].type = *cursor++;
+            value_len = decode_u32_le(cursor);
+            cursor += 4u;
+            if ((size_t)(end - cursor) < value_len) {
+                return X12_ERR_IO;
+            }
+            out->fields[i].data = cursor;
+            out->fields[i].len = value_len;
+            cursor += value_len;
+        }
+        if (cursor != end) {
             return X12_ERR_IO;
         }
-        out->fields[i].data = cursor;
-        out->fields[i].len = value_len;
-        cursor += value_len;
-    }
-    if (cursor != end) {
-        return X12_ERR_IO;
+
+        return X12_OK;
     }
 
     return X12_OK;
@@ -654,6 +1037,7 @@ int journal_reader_close(journal_reader_t *reader)
         rc = X12_ERR_IO;
     }
     free(reader->buffer);
+    free_segment_paths(reader);
     journal_reader_init(reader);
     return rc;
 }
