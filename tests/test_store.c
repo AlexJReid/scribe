@@ -29,6 +29,19 @@ static int test_store_indexes_and_aggregates(void)
     scribe_store_init(&store);
     REQUIRE_OK(scribe_store_open(&store, db_path));
     REQUIRE_OK(scribe_store_init_schema(&store));
+    REQUIRE_OK(scribe_store_begin_immediate(&store));
+    REQUIRE_OK(scribe_store_put_source_drop(
+                &store,
+                "837:rollback",
+                "837",
+                "/inbound/claims/rollback.edi",
+                "2026-09-13T00:00:00Z",
+                "sha256:rollback"
+            ));
+    REQUIRE_OK(scribe_store_rollback(&store));
+    REQUIRE(scribe_store_get_source_drop(&store, "837:rollback", &source_drop) == X12_ERR_NOT_FOUND);
+
+    REQUIRE_OK(scribe_store_begin_immediate(&store));
     REQUIRE_OK(scribe_store_put_source_drop(
                 &store,
                 "835:000000102:102:0001",
@@ -37,6 +50,7 @@ static int test_store_indexes_and_aggregates(void)
                 "2026-09-14T00:00:00Z",
                 "sha256:file"
             ));
+    REQUIRE_OK(scribe_store_commit(&store));
     REQUIRE_OK(scribe_store_get_source_drop(
                 &store,
                 "835:000000102:102:0001",

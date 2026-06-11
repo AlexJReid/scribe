@@ -3,7 +3,7 @@
 Payloads are tokenised by default. PHI fields appear only with `--include-phi`
 or when reading a PHI-resolved store.
 
-## X12 Input
+## X12 input
 
 834: `MemberReferenced`, `MemberEnrollmentChanged`, `HealthCoverageObserved`,
 `CoverageDateObserved`.

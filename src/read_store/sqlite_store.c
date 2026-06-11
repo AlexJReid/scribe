@@ -303,6 +303,36 @@ int scribe_store_init_schema(scribe_store_t *store)
     );
 }
 
+int scribe_store_begin_immediate(scribe_store_t *store)
+{
+    sqlite3 *db = store_db(store);
+
+    if (db == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+    return exec_sql(db, "BEGIN IMMEDIATE;");
+}
+
+int scribe_store_commit(scribe_store_t *store)
+{
+    sqlite3 *db = store_db(store);
+
+    if (db == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+    return exec_sql(db, "COMMIT;");
+}
+
+int scribe_store_rollback(scribe_store_t *store)
+{
+    sqlite3 *db = store_db(store);
+
+    if (db == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+    return exec_sql(db, "ROLLBACK;");
+}
+
 int scribe_store_put_source_drop(
     scribe_store_t *store,
     const char *source_drop_id,

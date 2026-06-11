@@ -1,4 +1,4 @@
-# scribe
+# Scribe
 
 `scribe` turns healthcare X12 EDI into auditable events.
 
@@ -75,9 +75,19 @@ to deliver to subscribers.
 indexes that segment, hydrates only touched aggregates from the read store, and
 emits changed versions. Omit `--incremental` for an explicit full replay/rebuild.
 
+When X12 control numbers are present, `source_drop_id` uses
+`txn:ISA13:GS06:ST02`; for example, `271:000000111:111:0001` is a 271
+source drop with ISA13 `000000111`, GS06 `111`, and ST02 `0001`.
+
 Claims match on tokenised `CLM01`/`CLP01`. Service lines are paired by procedure
 and charge, date when available, or line order, with the chosen `match_method`
 included in the aggregate output.
+
+Claim aggregates keep the selected 837 facts needed by readers without carrying
+the whole EDI document: claim envelope, subscriber/patient context, claim-level
+dates, claim/service references, diagnosis summary, healthcare-code components,
+and service lines. Other mapped facts remain journal evidence until a projection
+needs them.
 
 837 claim events expose the core `CLM` envelope directly: total charge, CLM05
 facility type/qualifier/frequency, provider signature, assignment,
@@ -189,7 +199,7 @@ details, dates, amounts, and EDI content are made up.
 
 ## More
 
-- [theory.md](./theory.md): compact model notes
+- [model.md](./model.md): compact model notes
 - [events.md](./events.md): event names
 - [tests/fixtures/stroke_encounter/README.md](./tests/fixtures/stroke_encounter/README.md): fixture map
 

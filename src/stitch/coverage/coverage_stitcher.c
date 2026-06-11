@@ -2660,6 +2660,7 @@ int coverage_stitcher_stitch(const coverage_stitcher_input_t *input)
     int owns_read_store = 0;
     int owns_phi_vault = 0;
     int reduce_pass;
+    int shuffle_txn_open = 0;
     int rc = X12_OK;
 
     if (input == NULL || input->journal_path == NULL || input->out_path == NULL) {
@@ -2772,6 +2773,13 @@ int coverage_stitcher_stitch(const coverage_stitcher_input_t *input)
                 input->journal_path
             );
         }
+        if (input->incremental && !reduce_pass && state->read_store != NULL) {
+            rc = scribe_store_begin_immediate(state->read_store);
+            if (rc != X12_OK) {
+                break;
+            }
+            shuffle_txn_open = 1;
+        }
 
         while (rc == X12_OK) {
             size_t stable_id;
@@ -2824,7 +2832,20 @@ int coverage_stitcher_stitch(const coverage_stitcher_input_t *input)
             rc = coverage_stitch_flush_update_batches(state);
         }
         if (rc != X12_OK) {
+            if (shuffle_txn_open) {
+                (void)scribe_store_rollback(state->read_store);
+                shuffle_txn_open = 0;
+            }
             break;
+        }
+        if (shuffle_txn_open) {
+            rc = scribe_store_commit(state->read_store);
+            if (rc != X12_OK) {
+                (void)scribe_store_rollback(state->read_store);
+                shuffle_txn_open = 0;
+                break;
+            }
+            shuffle_txn_open = 0;
         }
         if (!input->incremental || reduce_pass) {
             break;

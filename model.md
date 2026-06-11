@@ -1,4 +1,4 @@
-# scribe notes
+# Scribe model
 
 `scribe` joins X12 files that normally arrive apart:
 
@@ -32,6 +32,12 @@ validation model:
 - `REF`: claim/service scoped reference identifiers, tokenised by default.
 - `HI`: diagnosis summary plus per-component healthcare-code events for
   institutional condition, occurrence, value, and procedure-style components.
+
+Claim aggregate state keeps this selected 837 surface: claim envelope,
+subscriber/patient context, claim-level dates, claim/service references,
+diagnosis summary, healthcare-code components, and service lines. The aggregate
+is still not an EDI mirror; mapped facts that no reader needs can remain journal
+evidence until a projection asks for them.
 
 `ClaimServiceLineRecorded` carries the submitted line facts needed for matching
 and projection: line order, procedure qualifier/code, procedure modifiers,
@@ -79,7 +85,7 @@ service date, and service type.
 
 SQLite backs these stores in the proof of concept.
 
-### SQLite Zones
+### SQLite zones
 
 The journal is the evidence store; SQLite is the index and materialization
 surface around it. Keep the zones conceptually separate even when the proof of
@@ -108,7 +114,7 @@ The key distinction is that `event_keys` answer "which journal events mention
 this key?" while aggregate key indexes answer "which durable aggregate owns this
 key now?" Dirty routing ties the two together for incremental work.
 
-### Incremental Shuffle/Reduce
+### Incremental shuffle/reduce
 
 Normal processing should not replay the entire journal. The steady-state path is
 two pass and source-drop driven:
@@ -155,7 +161,7 @@ Treat the binary journal as the evidence store and keep durable identity out of
 arrival order or local filenames.
 
 - Journal segment: arrival date plus ingest run file.
-- Source drop: stable inbound X12 transaction identity, `type:isa13:gs06:st02`
+- Source drop: stable inbound X12 transaction identity, `txn:ISA13:GS06:ST02`
   when ISA/GS/ST controls are present.
 - Event locator: journal segment plus byte offset and stored length.
 - Aggregate partition: domain key, normally claim token for claims and member
@@ -165,6 +171,19 @@ Source drop IDs identify the file/interchange/transaction batch that should
 collapse into one aggregate version. Event locators identify the exact bytes that
 produced a fact, so renamed files or reordered ingest do not change evidence
 references.
+
+The source drop ID form is:
+
+```text
+txn:ISA13:GS06:ST02
+```
+
+For `271:000000111:111:0001`:
+
+- `271`: X12 transaction type (`txn`).
+- `000000111`: ISA13 interchange control number.
+- `111`: GS06 functional group control number.
+- `0001`: ST02 transaction set control number.
 
 Worked example, as used by the stroke demo:
 
@@ -217,7 +236,7 @@ Each execution should have a `run_id`.
 - Aggregate/notification `run_id`: stitch execution.
 - `source_run_id`: ingest run copied from reduced journal events.
 - `source_drop_id`: stable inbound X12 transaction identity when controls are
-  available, formatted as `type:isa13:gs06:st02`.
+  available, formatted as `txn:ISA13:GS06:ST02`.
 - `updated_by_*`: last journal event and locator that changed the batch.
 
 The stitcher records new aggregate versions and writes notification facts for

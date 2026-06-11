@@ -36,6 +36,9 @@ void scribe_store_init(scribe_store_t *store);
 int scribe_store_open(scribe_store_t *store, const char *path);
 int scribe_store_close(scribe_store_t *store);
 int scribe_store_init_schema(scribe_store_t *store);
+int scribe_store_begin_immediate(scribe_store_t *store);
+int scribe_store_commit(scribe_store_t *store);
+int scribe_store_rollback(scribe_store_t *store);
 
 int scribe_store_put_source_drop(
     scribe_store_t *store,

@@ -3,7 +3,7 @@
 - C proof of concept for parsing synthetic healthcare EDI into journals, PHI
   vaults, read stores, aggregates, and balance projections.
 - Core code is in `src/`; tests and synthetic fixtures are in `tests/`.
-- Start with `README.md`; use `theory.md` for EDI, tokenisation, PHI, and run
+- Start with `README.md`; use `model.md` for EDI, tokenisation, PHI, and run
   metadata notes.
 - Keep changes small and C-style: explicit ownership, simple structs/functions,
   no broad refactors unless required.

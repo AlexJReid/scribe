@@ -181,6 +181,10 @@ static int test_claim_envelope_and_party_context_in_ndjson(void)
     REQUIRE(strstr(output, "\"reference_scope\":\"claim\"") != NULL);
     REQUIRE(strstr(output, "\"reference_qualifier\":\"D9\"") != NULL);
     REQUIRE(strstr(output, "\"reference_identification\":\"SYNTHCLEARING001\"") == NULL);
+    REQUIRE(strstr(output, "\"reference_scope\":\"service_line\"") != NULL);
+    REQUIRE(strstr(output, "\"reference_qualifier\":\"6R\"") != NULL);
+    REQUIRE(strstr(output, "\"service_line_number\":\"1\"") != NULL);
+    REQUIRE(strstr(output, "\"reference_identification\":\"LINECTRL1\"") == NULL);
     return 0;
 }
 

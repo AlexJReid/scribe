@@ -1,4 +1,4 @@
-# Full EDI Support Roadmap
+# Full EDI support roadmap
 
 ## Goal
 
@@ -11,11 +11,11 @@ Evolve scribe from a healthcare-focused X12 event extraction tool into a robust 
 
 Reference sources include CMS documentation, companion guides, and Stedi healthcare documentation. These are used to prioritise transaction coverage and validate behaviour, not as implementation dependencies.
 
-## Phase 1 - Complete 837 Claim Coverage
+## Phase 1 - complete 837 claim coverage
 
 The immediate priority is to make 837 support useful enough to drive claim stitching, 835 matching, and downstream projections. That means supporting both professional and institutional claim shapes.
 
-### Current Progress
+### Current progress
 
 As of the current implementation pass:
 
@@ -32,7 +32,7 @@ As of the current implementation pass:
   supervising, facility, attending, operating, and other provider references,
   with `reference_scope` distinguishing claim and service-line context.
 - Binary journal key support includes the new 837 line fields.
-- `README.md`, `theory.md`, and `events.md` describe the current event surface.
+- `README.md`, `model.md`, and `events.md` describe the current event surface.
 - Tests have started moving out of `tests/test_parser.c`: shared helpers live in
   `tests/test_support.h`, low-level parser checks in `tests/test_x12_parser.c`,
   JSON/token checks in `tests/test_core.c`, store checks in `tests/test_store.c`,
@@ -48,7 +48,7 @@ Next logical implementation slices:
 - Continue 837I-specific claim facts: admission/discharge dates, patient status,
   occurrence codes, value codes, and DRG.
 
-### 837 Professional (837P)
+### 837 professional (837P)
 
 Current support should be expanded from basic claim extraction into richer claim, provider, diagnosis, and service-line events.
 
@@ -83,7 +83,7 @@ Minimum fixtures:
 - Claim with rendering provider.
 - Claim with multiple diagnoses and diagnosis pointers.
 
-### 837 Institutional (837I)
+### 837 institutional (837I)
 
 837I needs explicit support rather than treating it as a slightly different 837P. Institutional claims introduce facility, admission, discharge, bill type, revenue code, and inpatient/outpatient concepts.
 
@@ -125,7 +125,7 @@ Minimum fixtures:
 - Institutional claim with value and occurrence codes.
 - Institutional claim with DRG.
 
-### 837 Shared Matching Requirements
+### 837 shared matching requirements
 
 Both 837P and 837I must emit enough detail to make later 835 stitching reliable.
 
@@ -139,58 +139,58 @@ Shared requirements:
 
 The stitcher should not have to infer everything from weak claim-level facts. The 837 event stream must carry the facts needed to pair submitted claim lines with remittance lines.
 
-## Phase 2 - Complete Other Core Healthcare Coverage
+## Phase 2 - complete other core healthcare coverage
 
-### 835 Remittance
+### 835 remittance
 - Full CAS adjustment extraction.
 - Service-level remittance modelling.
 - Denial reason modelling.
 - Payment balancing validation.
 - Trace and payment reconciliation.
 
-### 270/271 Eligibility
+### 270/271 eligibility
 - Coverage status modelling.
 - Benefit extraction.
 - Service-type support.
 - Eligibility timelines.
 
-### 834 Enrollment
+### 834 enrollment
 - Member lifecycle events.
 - Coverage effective dates.
 - Dependent modelling.
 - Plan transitions.
 
-## Phase 3 - Claim Lifecycle Coverage
+## Phase 3 - claim lifecycle coverage
 
-### 277CA Claim Acknowledgements
+### 277CA claim acknowledgements
 - Parse acknowledgements.
 - Link acknowledgements to submitted claims.
 - Generate ClaimAccepted events.
 - Generate ClaimRejected events.
 - Generate ClaimPending events.
 
-### 276/277 Claim Status
+### 276/277 claim status
 - Parse claim status requests.
 - Parse claim status responses.
 - Generate ClaimStatusChanged events.
 - Build claim lifecycle timelines.
 
-### Future Transactions
+### Future transactions
 - 837D dental claims.
 - 278 authorisation requests.
 - 999 acknowledgements.
 - TA1 acknowledgements.
 
-## Phase 4 - Validation Engine
+## Phase 4 - validation engine
 
-### Syntax Validation
+### Syntax validation
 - Segment ordering.
 - Required segment presence.
 - Loop cardinality.
 - Element count validation.
 - Delimiter validation.
 
-### Semantic Validation
+### Semantic validation
 - Cross-segment consistency checks.
 - Claim balancing.
 - Subscriber/dependent relationships.
@@ -203,42 +203,42 @@ Emit structured validation events:
 - ValidationFailed
 - ValidationPassed
 
-## Phase 5 - Generic X12 Infrastructure
+## Phase 5 - generic X12 infrastructure
 
-### Schema Registry
+### Schema registry
 - Versioned transaction definitions.
 - Loop definitions.
 - Segment definitions.
 - Element metadata.
 
-### Transaction Plugin Model
+### Transaction plugin model
 - Independent transaction mappers.
 - Version-specific mappings.
 - Test fixture packs.
 
-## Phase 6 - Streaming Operation
+## Phase 6 - streaming operation
 
-### Streaming Parse API
+### Streaming parse API
 - Parse from memory.
 - Parse from stdin.
 - Parse from sockets.
 - Parse from message queues.
 
-### Large File Support
+### Large file support
 - Incremental parsing.
 - Reduced memory usage.
 - Streaming journal generation.
 
-## Phase 7 - Interoperability
+## Phase 7 - interoperability
 
-### Output Formats
+### Output formats
 - NDJSON.
 - Journal.
 - Parquet.
 - Arrow.
 - SQLite.
 
-### Cloud Patterns
+### Cloud patterns
 - Lambda + S3.
 - Azure Functions + Blob Storage.
 - GCP Cloud Run.
@@ -246,22 +246,22 @@ Emit structured validation events:
 - Airflow.
 - Synapse/Fabric ingestion.
 
-## Phase 8 - Testing
+## Phase 8 - testing
 
-### Fixture Expansion
+### Fixture expansion
 - CMS examples.
 - Companion guide examples.
 - Edge cases.
 - Invalid files.
 - 837P and 837I fixture packs.
 
-### Differential Testing
+### Differential testing
 Compare output against:
 - Stedi references.
 - Commercial parsers.
 - CMS examples.
 
-## Reference Material
+## Reference material
 
 Primary sources:
 - CMS HIPAA 5010 documentation.
@@ -270,7 +270,7 @@ Primary sources:
 - Stedi X12 reference browser.
 - Stedi healthcare documentation.
 
-## Non-Goals
+## Non-goals
 
 - Becoming a full EDI gateway.
 - Replacing clearinghouses.

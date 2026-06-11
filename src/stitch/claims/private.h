@@ -21,9 +21,62 @@
 #define STITCH_MAX_SOURCE_EVENTS 512u
 #define STITCH_MAX_UPDATE_BATCHES 128u
 #define STITCH_MAX_LINES_PER_CLAIM 64u
+#define STITCH_MAX_REFERENCES_PER_CLAIM 32u
+#define STITCH_MAX_REFERENCES_PER_LINE 16u
+#define STITCH_MAX_CLAIM_DATES 16u
+#define STITCH_MAX_DIAGNOSES 32u
+#define STITCH_MAX_HEALTHCARE_CODES 64u
+#define STITCH_MAX_HEALTHCARE_CODE_COMPONENTS 8u
 #define STITCH_MAX_ADJUSTMENTS_PER_LINE 8u
 #define STITCH_MAX_ADJUSTMENT_VALUES 8u
 #define STITCH_STATE_JSON_MAX 131072u
+
+typedef struct {
+    char reference_scope[32];
+    char service_line_number[32];
+    char reference_qualifier[32];
+    char reference_identification[STITCH_ID_MAX];
+    char reference_identification_token[TOKENISE_MAX_TOKEN_LEN];
+} stitched_claim_reference_t;
+
+typedef struct {
+    char date_qualifier[32];
+    char date_format[16];
+    char date_value[64];
+} stitched_claim_date_t;
+
+typedef struct {
+    char healthcare_code_qualifier[32];
+    char healthcare_code[64];
+    char healthcare_code_date_format[16];
+    char healthcare_code_date_value[64];
+    char healthcare_code_components[STITCH_MAX_HEALTHCARE_CODE_COMPONENTS][64];
+    size_t healthcare_code_component_count;
+} stitched_healthcare_code_t;
+
+typedef struct {
+    char total_charge_amount[32];
+    char facility_type_code[32];
+    char facility_code_qualifier[32];
+    char claim_frequency_type_code[32];
+    char provider_signature_indicator[32];
+    char assignment_or_plan_participation_code[32];
+    char benefits_assignment_certification_indicator[32];
+    char release_of_information_code[32];
+    char patient_signature_source_code[32];
+} stitched_claim_envelope_t;
+
+typedef struct {
+    char payer_responsibility_sequence_number_code[32];
+    char individual_relationship_code[32];
+    char insured_group_or_policy_number[STITCH_ID_MAX];
+    char insured_group_or_policy_number_token[TOKENISE_MAX_TOKEN_LEN];
+    char claim_filing_indicator_code[32];
+    char date_format[16];
+    char date_of_birth[32];
+    char date_of_birth_token[TOKENISE_MAX_TOKEN_LEN];
+    char gender_code[32];
+} stitched_party_context_t;
 
 typedef struct {
     char adjustment_group_code[32];
@@ -55,6 +108,8 @@ typedef struct {
     char remittance_line_paid_amount[32];
     char remittance_paid_unit_count[32];
     char remittance_service_date[32];
+    stitched_claim_reference_t references[STITCH_MAX_REFERENCES_PER_LINE];
+    size_t reference_count;
     stitched_line_adjustment_t adjustments[STITCH_MAX_ADJUSTMENTS_PER_LINE];
     size_t adjustment_count;
 } stitched_service_line_t;
@@ -76,6 +131,18 @@ typedef struct {
     char patient_name_token[TOKENISE_MAX_TOKEN_LEN];
     char claim_type[64];
     char claim_status_code[32];
+    stitched_claim_envelope_t claim_envelope;
+    stitched_party_context_t subscriber;
+    stitched_party_context_t patient;
+    stitched_claim_date_t claim_dates[STITCH_MAX_CLAIM_DATES];
+    size_t claim_date_count;
+    stitched_claim_reference_t claim_references[STITCH_MAX_REFERENCES_PER_CLAIM];
+    size_t claim_reference_count;
+    char principal_diagnosis_code[64];
+    char other_diagnosis_codes[STITCH_MAX_DIAGNOSES][64];
+    size_t other_diagnosis_count;
+    stitched_healthcare_code_t healthcare_codes[STITCH_MAX_HEALTHCARE_CODES];
+    size_t healthcare_code_count;
     size_t version;
     int has_837;
     int has_835;

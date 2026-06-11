@@ -51,6 +51,112 @@ static int snapshot_add_string_array32(
     return X12_OK;
 }
 
+static int snapshot_add_string_array64(
+    json_writer_t *writer,
+    yyjson_mut_val *obj,
+    const char *key,
+    const char values[][64],
+    size_t value_count
+)
+{
+    yyjson_mut_val *arr;
+    size_t i;
+    int rc;
+
+    arr = json_writer_add_array(writer, obj, key);
+    if (arr == NULL) {
+        return X12_ERR_NO_MEMORY;
+    }
+
+    for (i = 0u; i < value_count; i++) {
+        rc = json_writer_array_add_string(writer, arr, values[i]);
+        if (rc != X12_OK) {
+            return rc;
+        }
+    }
+
+    return X12_OK;
+}
+
+static int snapshot_add_reference(
+    json_writer_t *writer,
+    yyjson_mut_val *obj,
+    const stitch_state_t *state,
+    const stitched_claim_reference_t *reference
+)
+{
+    int rc;
+
+    rc = json_writer_add_string(writer, obj, "reference_scope", reference->reference_scope);
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(writer, obj, "service_line_number", reference->service_line_number);
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(writer, obj, "reference_qualifier", reference->reference_qualifier);
+    }
+    if (rc == X12_OK && state != NULL && state->include_phi &&
+        reference->reference_identification[0] != '\0') {
+        rc = json_writer_add_string(
+            writer,
+            obj,
+            "reference_identification",
+            reference->reference_identification
+        );
+        if (rc == X12_OK && reference->reference_identification_token[0] != '\0') {
+            rc = json_writer_add_string(
+                writer,
+                obj,
+                "reference_identification_token",
+                reference->reference_identification_token
+            );
+        }
+    } else if (rc == X12_OK) {
+        rc = json_writer_add_string(
+            writer,
+            obj,
+            "reference_identification",
+            reference->reference_identification_token[0] != '\0' ?
+                reference->reference_identification_token :
+                reference->reference_identification
+        );
+    }
+
+    return rc;
+}
+
+static int snapshot_add_references(
+    json_writer_t *writer,
+    yyjson_mut_val *obj,
+    const char *key,
+    const stitch_state_t *state,
+    const stitched_claim_reference_t *references,
+    size_t reference_count
+)
+{
+    yyjson_mut_val *arr;
+    yyjson_mut_val *ref_obj;
+    size_t i;
+    int rc;
+
+    arr = json_writer_add_array(writer, obj, key);
+    if (arr == NULL) {
+        return X12_ERR_NO_MEMORY;
+    }
+
+    for (i = 0u; i < reference_count; i++) {
+        ref_obj = json_writer_array_add_object(writer, arr);
+        if (ref_obj == NULL) {
+            return X12_ERR_NO_MEMORY;
+        }
+        rc = snapshot_add_reference(writer, ref_obj, state, &references[i]);
+        if (rc != X12_OK) {
+            return rc;
+        }
+    }
+
+    return X12_OK;
+}
+
 static int snapshot_add_adjustments(
     json_writer_t *writer,
     yyjson_mut_val *line_obj,
@@ -238,6 +344,7 @@ static int snapshot_add_remittance_line(
 static int snapshot_add_service_lines(
     json_writer_t *writer,
     yyjson_mut_val *root,
+    const stitch_state_t *state,
     const claim_aggregate_t *aggregate
 )
 {
@@ -287,7 +394,284 @@ static int snapshot_add_service_lines(
             rc = snapshot_add_remittance_line(writer, line_obj, line);
         }
         if (rc == X12_OK) {
+            rc = snapshot_add_references(
+                writer,
+                line_obj,
+                "references",
+                state,
+                line->references,
+                line->reference_count
+            );
+        }
+        if (rc == X12_OK) {
             rc = snapshot_add_adjustments(writer, line_obj, line);
+        }
+        if (rc != X12_OK) {
+            return rc;
+        }
+    }
+
+    return X12_OK;
+}
+
+static int snapshot_add_claim_envelope(
+    json_writer_t *writer,
+    yyjson_mut_val *state_obj,
+    const claim_aggregate_t *aggregate
+)
+{
+    yyjson_mut_val *obj;
+    const stitched_claim_envelope_t *envelope = &aggregate->claim_envelope;
+    int rc;
+
+    obj = json_writer_add_object(writer, state_obj, "claim_envelope");
+    if (obj == NULL) {
+        return X12_ERR_NO_MEMORY;
+    }
+
+    rc = json_writer_add_string(writer, obj, "total_charge_amount", envelope->total_charge_amount);
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(writer, obj, "facility_type_code", envelope->facility_type_code);
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(writer, obj, "facility_code_qualifier", envelope->facility_code_qualifier);
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(writer, obj, "claim_frequency_type_code", envelope->claim_frequency_type_code);
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(writer, obj, "provider_signature_indicator", envelope->provider_signature_indicator);
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(
+            writer,
+            obj,
+            "assignment_or_plan_participation_code",
+            envelope->assignment_or_plan_participation_code
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(
+            writer,
+            obj,
+            "benefits_assignment_certification_indicator",
+            envelope->benefits_assignment_certification_indicator
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(writer, obj, "release_of_information_code", envelope->release_of_information_code);
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(writer, obj, "patient_signature_source_code", envelope->patient_signature_source_code);
+    }
+
+    return rc;
+}
+
+static int snapshot_add_party_context(
+    json_writer_t *writer,
+    yyjson_mut_val *state_obj,
+    const char *key,
+    const stitch_state_t *state,
+    const stitched_party_context_t *party
+)
+{
+    yyjson_mut_val *obj;
+    int rc;
+
+    obj = json_writer_add_object(writer, state_obj, key);
+    if (obj == NULL) {
+        return X12_ERR_NO_MEMORY;
+    }
+
+    rc = json_writer_add_string(
+        writer,
+        obj,
+        "payer_responsibility_sequence_number_code",
+        party->payer_responsibility_sequence_number_code
+    );
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(
+            writer,
+            obj,
+            "individual_relationship_code",
+            party->individual_relationship_code
+        );
+    }
+    if (rc == X12_OK && state != NULL && state->include_phi &&
+        party->insured_group_or_policy_number[0] != '\0') {
+        rc = json_writer_add_string(
+            writer,
+            obj,
+            "insured_group_or_policy_number",
+            party->insured_group_or_policy_number
+        );
+        if (rc == X12_OK && party->insured_group_or_policy_number_token[0] != '\0') {
+            rc = json_writer_add_string(
+                writer,
+                obj,
+                "insured_group_or_policy_number_token",
+                party->insured_group_or_policy_number_token
+            );
+        }
+    } else if (rc == X12_OK) {
+        rc = json_writer_add_string(
+            writer,
+            obj,
+            "insured_group_or_policy_number",
+            party->insured_group_or_policy_number_token[0] != '\0' ?
+                party->insured_group_or_policy_number_token :
+                party->insured_group_or_policy_number
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(writer, obj, "claim_filing_indicator_code", party->claim_filing_indicator_code);
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(writer, obj, "date_format", party->date_format);
+    }
+    if (rc == X12_OK && state != NULL && state->include_phi && party->date_of_birth[0] != '\0') {
+        rc = json_writer_add_string(writer, obj, "date_of_birth", party->date_of_birth);
+        if (rc == X12_OK && party->date_of_birth_token[0] != '\0') {
+            rc = json_writer_add_string(writer, obj, "date_of_birth_token", party->date_of_birth_token);
+        }
+    } else if (rc == X12_OK) {
+        rc = json_writer_add_string(
+            writer,
+            obj,
+            "date_of_birth",
+            party->date_of_birth_token[0] != '\0' ? party->date_of_birth_token : party->date_of_birth
+        );
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(writer, obj, "gender_code", party->gender_code);
+    }
+
+    return rc;
+}
+
+static int snapshot_add_claim_dates(
+    json_writer_t *writer,
+    yyjson_mut_val *state_obj,
+    const claim_aggregate_t *aggregate
+)
+{
+    yyjson_mut_val *arr;
+    yyjson_mut_val *obj;
+    const stitched_claim_date_t *date;
+    size_t i;
+    int rc;
+
+    arr = json_writer_add_array(writer, state_obj, "claim_dates");
+    if (arr == NULL) {
+        return X12_ERR_NO_MEMORY;
+    }
+
+    for (i = 0u; i < aggregate->claim_date_count; i++) {
+        date = &aggregate->claim_dates[i];
+        obj = json_writer_array_add_object(writer, arr);
+        if (obj == NULL) {
+            return X12_ERR_NO_MEMORY;
+        }
+        rc = json_writer_add_string(writer, obj, "date_qualifier", date->date_qualifier);
+        if (rc == X12_OK) {
+            rc = json_writer_add_string(writer, obj, "date_format", date->date_format);
+        }
+        if (rc == X12_OK) {
+            rc = json_writer_add_string(writer, obj, "date_value", date->date_value);
+        }
+        if (rc != X12_OK) {
+            return rc;
+        }
+    }
+
+    return X12_OK;
+}
+
+static int snapshot_add_diagnoses(
+    json_writer_t *writer,
+    yyjson_mut_val *state_obj,
+    const claim_aggregate_t *aggregate
+)
+{
+    yyjson_mut_val *obj;
+    int rc;
+
+    obj = json_writer_add_object(writer, state_obj, "diagnoses");
+    if (obj == NULL) {
+        return X12_ERR_NO_MEMORY;
+    }
+
+    rc = json_writer_add_string(
+        writer,
+        obj,
+        "principal_diagnosis_code",
+        aggregate->principal_diagnosis_code
+    );
+    if (rc == X12_OK) {
+        rc = snapshot_add_string_array64(
+            writer,
+            obj,
+            "other_diagnosis_codes",
+            aggregate->other_diagnosis_codes,
+            aggregate->other_diagnosis_count
+        );
+    }
+
+    return rc;
+}
+
+static int snapshot_add_healthcare_codes(
+    json_writer_t *writer,
+    yyjson_mut_val *state_obj,
+    const claim_aggregate_t *aggregate
+)
+{
+    yyjson_mut_val *arr;
+    yyjson_mut_val *obj;
+    const stitched_healthcare_code_t *code;
+    size_t i;
+    int rc;
+
+    arr = json_writer_add_array(writer, state_obj, "healthcare_codes");
+    if (arr == NULL) {
+        return X12_ERR_NO_MEMORY;
+    }
+
+    for (i = 0u; i < aggregate->healthcare_code_count; i++) {
+        code = &aggregate->healthcare_codes[i];
+        obj = json_writer_array_add_object(writer, arr);
+        if (obj == NULL) {
+            return X12_ERR_NO_MEMORY;
+        }
+        rc = json_writer_add_string(writer, obj, "healthcare_code_qualifier", code->healthcare_code_qualifier);
+        if (rc == X12_OK) {
+            rc = json_writer_add_string(writer, obj, "healthcare_code", code->healthcare_code);
+        }
+        if (rc == X12_OK) {
+            rc = json_writer_add_string(
+                writer,
+                obj,
+                "healthcare_code_date_format",
+                code->healthcare_code_date_format
+            );
+        }
+        if (rc == X12_OK) {
+            rc = json_writer_add_string(
+                writer,
+                obj,
+                "healthcare_code_date_value",
+                code->healthcare_code_date_value
+            );
+        }
+        if (rc == X12_OK) {
+            rc = snapshot_add_string_array64(
+                writer,
+                obj,
+                "healthcare_code_components",
+                code->healthcare_code_components,
+                code->healthcare_code_component_count
+            );
         }
         if (rc != X12_OK) {
             return rc;
@@ -612,7 +996,35 @@ static int build_snapshot_doc(
         );
     }
     if (rc == X12_OK) {
-        rc = snapshot_add_service_lines(writer, root, aggregate);
+        rc = snapshot_add_claim_envelope(writer, snapshot_state, aggregate);
+    }
+    if (rc == X12_OK) {
+        rc = snapshot_add_party_context(writer, snapshot_state, "subscriber", state, &aggregate->subscriber);
+    }
+    if (rc == X12_OK) {
+        rc = snapshot_add_party_context(writer, snapshot_state, "patient", state, &aggregate->patient);
+    }
+    if (rc == X12_OK) {
+        rc = snapshot_add_claim_dates(writer, snapshot_state, aggregate);
+    }
+    if (rc == X12_OK) {
+        rc = snapshot_add_references(
+            writer,
+            snapshot_state,
+            "claim_references",
+            state,
+            aggregate->claim_references,
+            aggregate->claim_reference_count
+        );
+    }
+    if (rc == X12_OK) {
+        rc = snapshot_add_diagnoses(writer, snapshot_state, aggregate);
+    }
+    if (rc == X12_OK) {
+        rc = snapshot_add_healthcare_codes(writer, snapshot_state, aggregate);
+    }
+    if (rc == X12_OK) {
+        rc = snapshot_add_service_lines(writer, root, state, aggregate);
     }
     if (rc != X12_OK) {
         return rc;
@@ -1074,6 +1486,289 @@ static int hydrate_applied_event_ids(claim_aggregate_t *aggregate, yyjson_val *r
     return X12_OK;
 }
 
+static int hydrate_reference(stitched_claim_reference_t *reference, yyjson_val *obj)
+{
+    int rc;
+
+    if (reference == NULL || obj == NULL || !yyjson_is_obj(obj)) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    rc = snapshot_get_string(obj, "reference_scope", reference->reference_scope, sizeof(reference->reference_scope));
+    if (rc == X12_OK) {
+        rc = snapshot_get_string(
+            obj,
+            "service_line_number",
+            reference->service_line_number,
+            sizeof(reference->service_line_number)
+        );
+    }
+    if (rc == X12_OK) {
+        rc = snapshot_get_string(
+            obj,
+            "reference_qualifier",
+            reference->reference_qualifier,
+            sizeof(reference->reference_qualifier)
+        );
+    }
+    if (rc == X12_OK) {
+        rc = snapshot_get_string(
+            obj,
+            "reference_identification",
+            reference->reference_identification,
+            sizeof(reference->reference_identification)
+        );
+    }
+    if (rc == X12_OK) {
+        rc = snapshot_get_string(
+            obj,
+            "reference_identification_token",
+            reference->reference_identification_token,
+            sizeof(reference->reference_identification_token)
+        );
+    }
+    if (rc == X12_OK && reference->reference_identification_token[0] == '\0') {
+        snapshot_copy_cstr(
+            reference->reference_identification_token,
+            sizeof(reference->reference_identification_token),
+            reference->reference_identification
+        );
+        reference->reference_identification[0] = '\0';
+    }
+
+    return rc;
+}
+
+static int hydrate_reference_array(
+    stitched_claim_reference_t *references,
+    size_t reference_cap,
+    size_t *reference_count,
+    yyjson_val *parent,
+    const char *key
+)
+{
+    yyjson_val *arr;
+    yyjson_val *item;
+    size_t idx;
+    size_t max;
+    int rc;
+
+    if (references == NULL || reference_count == NULL || parent == NULL || key == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    arr = yyjson_obj_get(parent, key);
+    if (arr == NULL || !yyjson_is_arr(arr)) {
+        return X12_OK;
+    }
+
+    *reference_count = 0u;
+    yyjson_arr_foreach(arr, idx, max, item) {
+        if (!yyjson_is_obj(item)) {
+            continue;
+        }
+        if (*reference_count >= reference_cap) {
+            return X12_ERR_NO_MEMORY;
+        }
+        rc = hydrate_reference(&references[*reference_count], item);
+        if (rc != X12_OK) {
+            return rc;
+        }
+        (*reference_count)++;
+    }
+
+    return X12_OK;
+}
+
+static int hydrate_claim_envelope(claim_aggregate_t *aggregate, yyjson_val *state_obj)
+{
+    yyjson_val *obj;
+
+    obj = yyjson_obj_get(state_obj, "claim_envelope");
+    if (obj == NULL || !yyjson_is_obj(obj)) {
+        return X12_OK;
+    }
+
+    (void)snapshot_get_string(obj, "total_charge_amount", aggregate->claim_envelope.total_charge_amount, sizeof(aggregate->claim_envelope.total_charge_amount));
+    (void)snapshot_get_string(obj, "facility_type_code", aggregate->claim_envelope.facility_type_code, sizeof(aggregate->claim_envelope.facility_type_code));
+    (void)snapshot_get_string(obj, "facility_code_qualifier", aggregate->claim_envelope.facility_code_qualifier, sizeof(aggregate->claim_envelope.facility_code_qualifier));
+    (void)snapshot_get_string(obj, "claim_frequency_type_code", aggregate->claim_envelope.claim_frequency_type_code, sizeof(aggregate->claim_envelope.claim_frequency_type_code));
+    (void)snapshot_get_string(obj, "provider_signature_indicator", aggregate->claim_envelope.provider_signature_indicator, sizeof(aggregate->claim_envelope.provider_signature_indicator));
+    (void)snapshot_get_string(obj, "assignment_or_plan_participation_code", aggregate->claim_envelope.assignment_or_plan_participation_code, sizeof(aggregate->claim_envelope.assignment_or_plan_participation_code));
+    (void)snapshot_get_string(obj, "benefits_assignment_certification_indicator", aggregate->claim_envelope.benefits_assignment_certification_indicator, sizeof(aggregate->claim_envelope.benefits_assignment_certification_indicator));
+    (void)snapshot_get_string(obj, "release_of_information_code", aggregate->claim_envelope.release_of_information_code, sizeof(aggregate->claim_envelope.release_of_information_code));
+    (void)snapshot_get_string(obj, "patient_signature_source_code", aggregate->claim_envelope.patient_signature_source_code, sizeof(aggregate->claim_envelope.patient_signature_source_code));
+
+    return X12_OK;
+}
+
+static int hydrate_party_context(stitched_party_context_t *party, yyjson_val *state_obj, const char *key)
+{
+    yyjson_val *obj;
+
+    obj = yyjson_obj_get(state_obj, key);
+    if (obj == NULL || !yyjson_is_obj(obj)) {
+        return X12_OK;
+    }
+
+    (void)snapshot_get_string(obj, "payer_responsibility_sequence_number_code", party->payer_responsibility_sequence_number_code, sizeof(party->payer_responsibility_sequence_number_code));
+    (void)snapshot_get_string(obj, "individual_relationship_code", party->individual_relationship_code, sizeof(party->individual_relationship_code));
+    (void)snapshot_get_string(obj, "insured_group_or_policy_number", party->insured_group_or_policy_number, sizeof(party->insured_group_or_policy_number));
+    (void)snapshot_get_string(obj, "insured_group_or_policy_number_token", party->insured_group_or_policy_number_token, sizeof(party->insured_group_or_policy_number_token));
+    if (party->insured_group_or_policy_number_token[0] == '\0') {
+        snapshot_copy_cstr(
+            party->insured_group_or_policy_number_token,
+            sizeof(party->insured_group_or_policy_number_token),
+            party->insured_group_or_policy_number
+        );
+        party->insured_group_or_policy_number[0] = '\0';
+    }
+    (void)snapshot_get_string(obj, "claim_filing_indicator_code", party->claim_filing_indicator_code, sizeof(party->claim_filing_indicator_code));
+    (void)snapshot_get_string(obj, "date_format", party->date_format, sizeof(party->date_format));
+    (void)snapshot_get_string(obj, "date_of_birth", party->date_of_birth, sizeof(party->date_of_birth));
+    (void)snapshot_get_string(obj, "date_of_birth_token", party->date_of_birth_token, sizeof(party->date_of_birth_token));
+    if (party->date_of_birth_token[0] == '\0') {
+        snapshot_copy_cstr(
+            party->date_of_birth_token,
+            sizeof(party->date_of_birth_token),
+            party->date_of_birth
+        );
+        party->date_of_birth[0] = '\0';
+    }
+    (void)snapshot_get_string(obj, "gender_code", party->gender_code, sizeof(party->gender_code));
+
+    return X12_OK;
+}
+
+static int hydrate_claim_dates(claim_aggregate_t *aggregate, yyjson_val *state_obj)
+{
+    yyjson_val *arr;
+    yyjson_val *item;
+    size_t idx;
+    size_t max;
+
+    arr = yyjson_obj_get(state_obj, "claim_dates");
+    if (arr == NULL || !yyjson_is_arr(arr)) {
+        return X12_OK;
+    }
+
+    aggregate->claim_date_count = 0u;
+    yyjson_arr_foreach(arr, idx, max, item) {
+        stitched_claim_date_t *date;
+
+        if (!yyjson_is_obj(item)) {
+            continue;
+        }
+        if (aggregate->claim_date_count >= STITCH_MAX_CLAIM_DATES) {
+            return X12_ERR_NO_MEMORY;
+        }
+        date = &aggregate->claim_dates[aggregate->claim_date_count++];
+        (void)snapshot_get_string(item, "date_qualifier", date->date_qualifier, sizeof(date->date_qualifier));
+        (void)snapshot_get_string(item, "date_format", date->date_format, sizeof(date->date_format));
+        (void)snapshot_get_string(item, "date_value", date->date_value, sizeof(date->date_value));
+    }
+
+    return X12_OK;
+}
+
+static int hydrate_diagnoses(claim_aggregate_t *aggregate, yyjson_val *state_obj)
+{
+    yyjson_val *obj;
+    yyjson_val *arr;
+    yyjson_val *item;
+    size_t idx;
+    size_t max;
+
+    obj = yyjson_obj_get(state_obj, "diagnoses");
+    if (obj == NULL || !yyjson_is_obj(obj)) {
+        return X12_OK;
+    }
+
+    (void)snapshot_get_string(
+        obj,
+        "principal_diagnosis_code",
+        aggregate->principal_diagnosis_code,
+        sizeof(aggregate->principal_diagnosis_code)
+    );
+    arr = yyjson_obj_get(obj, "other_diagnosis_codes");
+    if (arr == NULL || !yyjson_is_arr(arr)) {
+        return X12_OK;
+    }
+
+    aggregate->other_diagnosis_count = 0u;
+    yyjson_arr_foreach(arr, idx, max, item) {
+        if (!yyjson_is_str(item)) {
+            continue;
+        }
+        if (aggregate->other_diagnosis_count >= STITCH_MAX_DIAGNOSES) {
+            return X12_ERR_NO_MEMORY;
+        }
+        snapshot_copy_cstr(
+            aggregate->other_diagnosis_codes[aggregate->other_diagnosis_count],
+            sizeof(aggregate->other_diagnosis_codes[aggregate->other_diagnosis_count]),
+            yyjson_get_str(item)
+        );
+        aggregate->other_diagnosis_count++;
+    }
+
+    return X12_OK;
+}
+
+static int hydrate_healthcare_codes(claim_aggregate_t *aggregate, yyjson_val *state_obj)
+{
+    yyjson_val *arr;
+    yyjson_val *item;
+    size_t idx;
+    size_t max;
+
+    arr = yyjson_obj_get(state_obj, "healthcare_codes");
+    if (arr == NULL || !yyjson_is_arr(arr)) {
+        return X12_OK;
+    }
+
+    aggregate->healthcare_code_count = 0u;
+    yyjson_arr_foreach(arr, idx, max, item) {
+        stitched_healthcare_code_t *code;
+        yyjson_val *components;
+        yyjson_val *component;
+        size_t component_idx;
+        size_t component_max;
+
+        if (!yyjson_is_obj(item)) {
+            continue;
+        }
+        if (aggregate->healthcare_code_count >= STITCH_MAX_HEALTHCARE_CODES) {
+            return X12_ERR_NO_MEMORY;
+        }
+
+        code = &aggregate->healthcare_codes[aggregate->healthcare_code_count++];
+        (void)snapshot_get_string(item, "healthcare_code_qualifier", code->healthcare_code_qualifier, sizeof(code->healthcare_code_qualifier));
+        (void)snapshot_get_string(item, "healthcare_code", code->healthcare_code, sizeof(code->healthcare_code));
+        (void)snapshot_get_string(item, "healthcare_code_date_format", code->healthcare_code_date_format, sizeof(code->healthcare_code_date_format));
+        (void)snapshot_get_string(item, "healthcare_code_date_value", code->healthcare_code_date_value, sizeof(code->healthcare_code_date_value));
+
+        components = yyjson_obj_get(item, "healthcare_code_components");
+        if (components != NULL && yyjson_is_arr(components)) {
+            yyjson_arr_foreach(components, component_idx, component_max, component) {
+                if (!yyjson_is_str(component)) {
+                    continue;
+                }
+                if (code->healthcare_code_component_count >= STITCH_MAX_HEALTHCARE_CODE_COMPONENTS) {
+                    break;
+                }
+                snapshot_copy_cstr(
+                    code->healthcare_code_components[code->healthcare_code_component_count],
+                    sizeof(code->healthcare_code_components[code->healthcare_code_component_count]),
+                    yyjson_get_str(component)
+                );
+                code->healthcare_code_component_count++;
+            }
+        }
+    }
+
+    return X12_OK;
+}
+
 static int hydrate_adjustments(
     stitched_service_line_t *line,
     yyjson_val *line_obj
@@ -1249,7 +1944,16 @@ static int hydrate_service_lines(claim_aggregate_t *aggregate, yyjson_val *root)
             (void)snapshot_get_string(remittance, "service_date", line->remittance_service_date, sizeof(line->remittance_service_date));
         }
 
-        rc = hydrate_adjustments(line, item);
+        rc = hydrate_reference_array(
+            line->references,
+            STITCH_MAX_REFERENCES_PER_LINE,
+            &line->reference_count,
+            item,
+            "references"
+        );
+        if (rc == X12_OK) {
+            rc = hydrate_adjustments(line, item);
+        }
         if (rc != X12_OK) {
             return rc;
         }
@@ -1320,6 +2024,36 @@ int claim_stitch_hydrate_snapshot(
         snapshot_get_size(snapshot_state, "submitted_service_line_count", &aggregate->submitted_service_line_count);
         snapshot_get_size(snapshot_state, "remittance_service_line_count", &aggregate->remittance_service_line_count);
         snapshot_get_size(snapshot_state, "adjustment_count", &aggregate->adjustment_count);
+        rc = hydrate_claim_envelope(aggregate, snapshot_state);
+        if (rc == X12_OK) {
+            rc = hydrate_party_context(&aggregate->subscriber, snapshot_state, "subscriber");
+        }
+        if (rc == X12_OK) {
+            rc = hydrate_party_context(&aggregate->patient, snapshot_state, "patient");
+        }
+        if (rc == X12_OK) {
+            rc = hydrate_claim_dates(aggregate, snapshot_state);
+        }
+        if (rc == X12_OK) {
+            rc = hydrate_reference_array(
+                aggregate->claim_references,
+                STITCH_MAX_REFERENCES_PER_CLAIM,
+                &aggregate->claim_reference_count,
+                snapshot_state,
+                "claim_references"
+            );
+        }
+        if (rc == X12_OK) {
+            rc = hydrate_diagnoses(aggregate, snapshot_state);
+        }
+        if (rc == X12_OK) {
+            rc = hydrate_healthcare_codes(aggregate, snapshot_state);
+        }
+        if (rc != X12_OK) {
+            yyjson_doc_free(doc);
+            state->aggregate_count--;
+            return rc;
+        }
     }
 
     rc = hydrate_applied_event_ids(aggregate, root);

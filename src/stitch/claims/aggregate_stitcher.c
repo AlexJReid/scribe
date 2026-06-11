@@ -837,6 +837,347 @@ static void update_service_line_date(stitched_service_line_t *line)
     }
 }
 
+static void copy_journal_string_if_present(
+    const journal_event_t *journal_line,
+    const char *field,
+    char *out,
+    size_t out_len
+)
+{
+    char value[STITCH_VALUE_MAX];
+
+    if (json_get_string(journal_line, field, value, sizeof(value))) {
+        copy_cstr(out, out_len, value);
+    }
+}
+
+static int apply_claim_observed(claim_aggregate_t *aggregate, const journal_event_t *journal_line)
+{
+    copy_journal_string_if_present(
+        journal_line,
+        "total_charge_amount",
+        aggregate->claim_envelope.total_charge_amount,
+        sizeof(aggregate->claim_envelope.total_charge_amount)
+    );
+    copy_journal_string_if_present(
+        journal_line,
+        "facility_type_code",
+        aggregate->claim_envelope.facility_type_code,
+        sizeof(aggregate->claim_envelope.facility_type_code)
+    );
+    copy_journal_string_if_present(
+        journal_line,
+        "facility_code_qualifier",
+        aggregate->claim_envelope.facility_code_qualifier,
+        sizeof(aggregate->claim_envelope.facility_code_qualifier)
+    );
+    copy_journal_string_if_present(
+        journal_line,
+        "claim_frequency_type_code",
+        aggregate->claim_envelope.claim_frequency_type_code,
+        sizeof(aggregate->claim_envelope.claim_frequency_type_code)
+    );
+    copy_journal_string_if_present(
+        journal_line,
+        "provider_signature_indicator",
+        aggregate->claim_envelope.provider_signature_indicator,
+        sizeof(aggregate->claim_envelope.provider_signature_indicator)
+    );
+    copy_journal_string_if_present(
+        journal_line,
+        "assignment_or_plan_participation_code",
+        aggregate->claim_envelope.assignment_or_plan_participation_code,
+        sizeof(aggregate->claim_envelope.assignment_or_plan_participation_code)
+    );
+    copy_journal_string_if_present(
+        journal_line,
+        "benefits_assignment_certification_indicator",
+        aggregate->claim_envelope.benefits_assignment_certification_indicator,
+        sizeof(aggregate->claim_envelope.benefits_assignment_certification_indicator)
+    );
+    copy_journal_string_if_present(
+        journal_line,
+        "release_of_information_code",
+        aggregate->claim_envelope.release_of_information_code,
+        sizeof(aggregate->claim_envelope.release_of_information_code)
+    );
+    copy_journal_string_if_present(
+        journal_line,
+        "patient_signature_source_code",
+        aggregate->claim_envelope.patient_signature_source_code,
+        sizeof(aggregate->claim_envelope.patient_signature_source_code)
+    );
+    if (aggregate->claim_type[0] == '\0' && aggregate->claim_envelope.facility_type_code[0] != '\0') {
+        copy_cstr(aggregate->claim_type, sizeof(aggregate->claim_type), aggregate->claim_envelope.facility_type_code);
+    }
+
+    return X12_OK;
+}
+
+static int apply_subscriber_information(
+    stitch_state_t *state,
+    claim_aggregate_t *aggregate,
+    const journal_event_t *journal_line
+)
+{
+    int rc;
+
+    copy_journal_string_if_present(
+        journal_line,
+        "payer_responsibility_sequence_number_code",
+        aggregate->subscriber.payer_responsibility_sequence_number_code,
+        sizeof(aggregate->subscriber.payer_responsibility_sequence_number_code)
+    );
+    copy_journal_string_if_present(
+        journal_line,
+        "individual_relationship_code",
+        aggregate->subscriber.individual_relationship_code,
+        sizeof(aggregate->subscriber.individual_relationship_code)
+    );
+    copy_journal_string_if_present(
+        journal_line,
+        "claim_filing_indicator_code",
+        aggregate->subscriber.claim_filing_indicator_code,
+        sizeof(aggregate->subscriber.claim_filing_indicator_code)
+    );
+
+    rc = extract_value_token_pair(
+        state,
+        journal_line,
+        "insured_group_or_policy_number",
+        "insured_group_or_policy_number_token",
+        "reference_id",
+        aggregate->subscriber.insured_group_or_policy_number,
+        sizeof(aggregate->subscriber.insured_group_or_policy_number),
+        aggregate->subscriber.insured_group_or_policy_number_token,
+        sizeof(aggregate->subscriber.insured_group_or_policy_number_token)
+    );
+
+    return rc;
+}
+
+static int apply_patient_information(claim_aggregate_t *aggregate, const journal_event_t *journal_line)
+{
+    copy_journal_string_if_present(
+        journal_line,
+        "individual_relationship_code",
+        aggregate->patient.individual_relationship_code,
+        sizeof(aggregate->patient.individual_relationship_code)
+    );
+
+    return X12_OK;
+}
+
+static int apply_demographics(
+    stitch_state_t *state,
+    claim_aggregate_t *aggregate,
+    const journal_event_t *journal_line
+)
+{
+    stitched_party_context_t *party = &aggregate->subscriber;
+    char party_scope[32];
+    int rc;
+
+    party_scope[0] = '\0';
+    (void)json_get_string(journal_line, "party_scope", party_scope, sizeof(party_scope));
+    if (strcmp(party_scope, "patient") == 0) {
+        party = &aggregate->patient;
+    }
+
+    copy_journal_string_if_present(journal_line, "date_format", party->date_format, sizeof(party->date_format));
+    copy_journal_string_if_present(journal_line, "gender_code", party->gender_code, sizeof(party->gender_code));
+    rc = extract_value_token_pair(
+        state,
+        journal_line,
+        "date_of_birth",
+        "date_of_birth_token",
+        "member_dob",
+        party->date_of_birth,
+        sizeof(party->date_of_birth),
+        party->date_of_birth_token,
+        sizeof(party->date_of_birth_token)
+    );
+
+    return rc;
+}
+
+static int apply_claim_date(claim_aggregate_t *aggregate, const journal_event_t *journal_line)
+{
+    stitched_claim_date_t *date;
+
+    if (aggregate->claim_date_count >= STITCH_MAX_CLAIM_DATES) {
+        return X12_OK;
+    }
+
+    date = &aggregate->claim_dates[aggregate->claim_date_count++];
+    memset(date, 0, sizeof(*date));
+    copy_journal_string_if_present(journal_line, "date_qualifier", date->date_qualifier, sizeof(date->date_qualifier));
+    copy_journal_string_if_present(journal_line, "date_format", date->date_format, sizeof(date->date_format));
+    copy_journal_string_if_present(journal_line, "date_value", date->date_value, sizeof(date->date_value));
+
+    return X12_OK;
+}
+
+static int copy_reference_from_event(
+    stitch_state_t *state,
+    stitched_claim_reference_t *reference,
+    const journal_event_t *journal_line
+)
+{
+    int rc;
+
+    memset(reference, 0, sizeof(*reference));
+    copy_journal_string_if_present(
+        journal_line,
+        "reference_scope",
+        reference->reference_scope,
+        sizeof(reference->reference_scope)
+    );
+    copy_journal_string_if_present(
+        journal_line,
+        "service_line_number",
+        reference->service_line_number,
+        sizeof(reference->service_line_number)
+    );
+    copy_journal_string_if_present(
+        journal_line,
+        "reference_qualifier",
+        reference->reference_qualifier,
+        sizeof(reference->reference_qualifier)
+    );
+    rc = extract_value_token_pair(
+        state,
+        journal_line,
+        "reference_identification",
+        "reference_identification_token",
+        "reference_id",
+        reference->reference_identification,
+        sizeof(reference->reference_identification),
+        reference->reference_identification_token,
+        sizeof(reference->reference_identification_token)
+    );
+
+    return rc;
+}
+
+static int apply_claim_reference(
+    stitch_state_t *state,
+    claim_aggregate_t *aggregate,
+    const journal_event_t *journal_line
+)
+{
+    char reference_scope[32];
+    char service_line_number[32];
+    stitched_service_line_t *line;
+
+    reference_scope[0] = '\0';
+    service_line_number[0] = '\0';
+    (void)json_get_string(journal_line, "reference_scope", reference_scope, sizeof(reference_scope));
+    (void)json_get_string(journal_line, "service_line_number", service_line_number, sizeof(service_line_number));
+
+    if (strcmp(reference_scope, "service_line") == 0) {
+        line = find_or_add_service_line_by_number(aggregate, service_line_number);
+        if (line == NULL) {
+            return X12_ERR_NO_MEMORY;
+        }
+        if (line->reference_count >= STITCH_MAX_REFERENCES_PER_LINE) {
+            return X12_OK;
+        }
+        return copy_reference_from_event(
+            state,
+            &line->references[line->reference_count++],
+            journal_line
+        );
+    }
+
+    if (aggregate->claim_reference_count >= STITCH_MAX_REFERENCES_PER_CLAIM) {
+        return X12_OK;
+    }
+    return copy_reference_from_event(
+        state,
+        &aggregate->claim_references[aggregate->claim_reference_count++],
+        journal_line
+    );
+}
+
+static int apply_diagnoses(claim_aggregate_t *aggregate, const journal_event_t *journal_line)
+{
+    size_t i;
+
+    copy_journal_string_if_present(
+        journal_line,
+        "principal_diagnosis_code",
+        aggregate->principal_diagnosis_code,
+        sizeof(aggregate->principal_diagnosis_code)
+    );
+    aggregate->other_diagnosis_count = 0u;
+    for (i = 0u; i < STITCH_MAX_DIAGNOSES; i++) {
+        if (!json_get_array_string_at(
+                journal_line,
+                "other_diagnosis_codes",
+                i,
+                aggregate->other_diagnosis_codes[i],
+                sizeof(aggregate->other_diagnosis_codes[i])
+            )) {
+            break;
+        }
+        aggregate->other_diagnosis_count++;
+    }
+
+    return X12_OK;
+}
+
+static int apply_healthcare_code(claim_aggregate_t *aggregate, const journal_event_t *journal_line)
+{
+    stitched_healthcare_code_t *code;
+    size_t i;
+
+    if (aggregate->healthcare_code_count >= STITCH_MAX_HEALTHCARE_CODES) {
+        return X12_OK;
+    }
+
+    code = &aggregate->healthcare_codes[aggregate->healthcare_code_count++];
+    memset(code, 0, sizeof(*code));
+    copy_journal_string_if_present(
+        journal_line,
+        "healthcare_code_qualifier",
+        code->healthcare_code_qualifier,
+        sizeof(code->healthcare_code_qualifier)
+    );
+    copy_journal_string_if_present(
+        journal_line,
+        "healthcare_code",
+        code->healthcare_code,
+        sizeof(code->healthcare_code)
+    );
+    copy_journal_string_if_present(
+        journal_line,
+        "healthcare_code_date_format",
+        code->healthcare_code_date_format,
+        sizeof(code->healthcare_code_date_format)
+    );
+    copy_journal_string_if_present(
+        journal_line,
+        "healthcare_code_date_value",
+        code->healthcare_code_date_value,
+        sizeof(code->healthcare_code_date_value)
+    );
+    for (i = 0u; i < STITCH_MAX_HEALTHCARE_CODE_COMPONENTS; i++) {
+        if (!json_get_array_string_at(
+                journal_line,
+                "healthcare_code_components",
+                i,
+                code->healthcare_code_components[i],
+                sizeof(code->healthcare_code_components[i])
+            )) {
+            break;
+        }
+        code->healthcare_code_component_count++;
+    }
+
+    return X12_OK;
+}
+
 static int apply_submitted_service_line(claim_aggregate_t *aggregate, const journal_event_t *journal_line)
 {
     char line_no[32];
@@ -1092,6 +1433,9 @@ static int make_fingerprint(
     char service_line_number[32] = "";
     char procedure_code[32] = "";
     char adjustment_group_code[32] = "";
+    char reference_qualifier[32] = "";
+    char healthcare_code_qualifier[32] = "";
+    char healthcare_code[64] = "";
     int written;
 
     (void)json_get_string(journal_line, "source_file", source_file, sizeof(source_file));
@@ -1099,18 +1443,29 @@ static int make_fingerprint(
     (void)json_get_string(journal_line, "service_line_number", service_line_number, sizeof(service_line_number));
     (void)json_get_string(journal_line, "procedure_code", procedure_code, sizeof(procedure_code));
     (void)json_get_string(journal_line, "adjustment_group_code", adjustment_group_code, sizeof(adjustment_group_code));
+    (void)json_get_string(journal_line, "reference_qualifier", reference_qualifier, sizeof(reference_qualifier));
+    (void)json_get_string(
+        journal_line,
+        "healthcare_code_qualifier",
+        healthcare_code_qualifier,
+        sizeof(healthcare_code_qualifier)
+    );
+    (void)json_get_string(journal_line, "healthcare_code", healthcare_code, sizeof(healthcare_code));
 
     written = snprintf(
         out,
         out_len,
-        "%s|%s|%s|%s|%s|%s|%s",
+        "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s",
         event_type,
         source_file,
         segment_index,
         aggregate_key,
         service_line_number,
         procedure_code,
-        adjustment_group_code
+        adjustment_group_code,
+        reference_qualifier,
+        healthcare_code_qualifier,
+        healthcare_code
     );
     if (written < 0 || (size_t)written >= out_len) {
         return X12_ERR_BUFFER_TOO_SMALL;
@@ -1605,16 +1960,61 @@ static int apply_claim_event(
         strcmp(event_type, "ClaimReferencedSubscriber") == 0 ||
         strcmp(event_type, "ClaimReferencedPatient") == 0 ||
         strcmp(event_type, "ClaimReferencedRenderingProvider") == 0 ||
+        strcmp(event_type, "ClaimSubscriberInformationRecorded") == 0 ||
+        strcmp(event_type, "ClaimPatientInformationRecorded") == 0 ||
+        strcmp(event_type, "ClaimDemographicsRecorded") == 0 ||
+        strcmp(event_type, "ClaimReferenceRecorded") == 0 ||
         strcmp(event_type, "ClaimDateRecorded") == 0 ||
         strcmp(event_type, "ClaimLineDateRecorded") == 0 ||
         strcmp(event_type, "ClaimDiagnosesRecorded") == 0 ||
+        strcmp(event_type, "ClaimHealthcareCodeRecorded") == 0 ||
         strcmp(event_type, "ClaimServiceLineRecorded") == 0) {
         aggregate->has_837 = 1;
         rc = capture_reference_patient_context(state, aggregate, journal_line, event_type);
         if (rc != X12_OK) {
             return rc;
         }
-        if (strcmp(event_type, "ClaimServiceLineRecorded") == 0) {
+        if (strcmp(event_type, "ClaimObserved") == 0) {
+            rc = apply_claim_observed(aggregate, journal_line);
+            if (rc != X12_OK) {
+                return rc;
+            }
+        } else if (strcmp(event_type, "ClaimSubscriberInformationRecorded") == 0) {
+            rc = apply_subscriber_information(state, aggregate, journal_line);
+            if (rc != X12_OK) {
+                return rc;
+            }
+        } else if (strcmp(event_type, "ClaimPatientInformationRecorded") == 0) {
+            rc = apply_patient_information(aggregate, journal_line);
+            if (rc != X12_OK) {
+                return rc;
+            }
+        } else if (strcmp(event_type, "ClaimDemographicsRecorded") == 0) {
+            rc = apply_demographics(state, aggregate, journal_line);
+            if (rc != X12_OK) {
+                return rc;
+            }
+        } else if (strcmp(event_type, "ClaimReferenceRecorded") == 0) {
+            rc = apply_claim_reference(state, aggregate, journal_line);
+            if (rc != X12_OK) {
+                return rc;
+            }
+        } else if (strcmp(event_type, "ClaimDateRecorded") == 0) {
+            rc = apply_claim_date(aggregate, journal_line);
+            if (rc != X12_OK) {
+                return rc;
+            }
+        } else if (strcmp(event_type, "ClaimDiagnosesRecorded") == 0) {
+            rc = apply_diagnoses(aggregate, journal_line);
+            if (rc != X12_OK) {
+                return rc;
+            }
+        } else if (strcmp(event_type, "ClaimHealthcareCodeRecorded") == 0) {
+            rc = apply_healthcare_code(aggregate, journal_line);
+            if (rc != X12_OK) {
+                return rc;
+            }
+        } else if (strcmp(event_type, "ClaimServiceLineRecorded") == 0) {
             aggregate->submitted_service_line_count++;
             rc = apply_submitted_service_line(aggregate, journal_line);
             if (rc != X12_OK) {
@@ -1712,6 +2112,7 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
     int owns_read_store = 0;
     int owns_phi_vault = 0;
     int reduce_pass;
+    int shuffle_txn_open = 0;
     int rc = X12_OK;
 
     if (input == NULL || input->journal_path == NULL || input->out_path == NULL) {
@@ -1855,6 +2256,13 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
                 input->journal_path
             );
         }
+        if (input->incremental && !reduce_pass && state->read_store != NULL) {
+            rc = scribe_store_begin_immediate(state->read_store);
+            if (rc != X12_OK) {
+                break;
+            }
+            shuffle_txn_open = 1;
+        }
 
         while (rc == X12_OK) {
             size_t stable_id;
@@ -1919,7 +2327,20 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
         }
 
         if (rc != X12_OK) {
+            if (shuffle_txn_open) {
+                (void)scribe_store_rollback(state->read_store);
+                shuffle_txn_open = 0;
+            }
             break;
+        }
+        if (shuffle_txn_open) {
+            rc = scribe_store_commit(state->read_store);
+            if (rc != X12_OK) {
+                (void)scribe_store_rollback(state->read_store);
+                shuffle_txn_open = 0;
+                break;
+            }
+            shuffle_txn_open = 0;
         }
         if (!input->incremental || reduce_pass) {
             break;
