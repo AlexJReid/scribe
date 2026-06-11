@@ -119,13 +119,6 @@ facility, attending, operating, and other provider roles, with
 `reference_scope` indicating claim or service-line scope. Provider `PRV`
 segments emit taxonomy/specialty facts through `ClaimProviderTaxonomyRecorded`.
 
-Project a balance from the journal:
-
-```bash
-scribe project balance \
-  --journal journal.scribe
-```
-
 `scribe` is a small C binary. Run it interactively, in shell pipelines, as a
 serverless trigger when files arrive in S3, as a cron/batch job, as a K8S job, or
 inside common schedulers.
