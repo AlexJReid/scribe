@@ -6,6 +6,7 @@
 #include "phi_vault.h"
 #include "projection.h"
 #include "run_id.h"
+#include "scribe_version.h"
 #include "x12_mapper_270_271.h"
 #include "x12_mapper_834.h"
 #include "x12_mapper_835.h"
@@ -30,19 +31,17 @@ static void usage(FILE *fp)
         "  scribe project balance --journal journal.scribe [--out balance.json] [--include-phi]\n"
         "  scribe vault resolve --phi-vault phi.sqlite --namespace ns --token token [--actor user] [--purpose reason]\n"
         "  scribe dump input.edi\n"
+        "  scribe --version\n"
         "\n"
-        "compatibility aliases:\n"
-        "  scribe journal ...\n"
-        "  scribe stitch --journal ...\n"
-        "  scribe coverage ...\n"
-        "  scribe project --projection balance ...\n"
-        "  scribe project-balance ...\n"
-        "  scribe vault-resolve ...\n"
-        "\n"
-        "For parse/stitch/project, --out may be '-' or omitted for stdout. ingest/journal requires a journal file path.\n",
+        "For parse/stitch/project, --out may be '-' or omitted for stdout. ingest requires a journal file path.\n",
         fp
     );
     projection_write_usage(fp);
+}
+
+static void version(void)
+{
+    printf("scribe %s (%s)\n", SCRIBE_VERSION, SCRIBE_BUILD_INFO);
 }
 
 static int dump_segment(const x12_segment_t *seg, void *user)
@@ -217,40 +216,11 @@ static int project_balance_command(int argc, char **argv, const char *command_na
 
 static int project_command(int argc, char **argv)
 {
-    const projection_plugin_t *plugin;
-    const char *projection_name = NULL;
-    int i;
-    int rc;
-
     if (argc >= 3 && strcmp(argv[2], "balance") == 0) {
         return project_balance_command(argc - 1, argv + 1, "project balance");
     }
 
-    for (i = 2; i < argc; i++) {
-        if (strcmp(argv[i], "--projection") == 0) {
-            if (i + 1 >= argc) {
-                return -1;
-            }
-            projection_name = argv[++i];
-        }
-    }
-
-    if (projection_name == NULL) {
-        return -1;
-    }
-
-    plugin = projection_find(projection_name);
-    if (plugin == NULL) {
-        fprintf(stderr, "unknown projection: %s\n", projection_name);
-        projection_write_usage(stderr);
-        return -1;
-    }
-
-    rc = plugin->run_cli(argc, argv);
-    if (rc < 0 && rc != -1) {
-        fprintf(stderr, "project %s: %s\n", projection_name, x12_error_message(rc));
-    }
-    return rc;
+    return -1;
 }
 
 static int stitch_claims_command(int argc, char **argv, const char *command_name)
@@ -277,24 +247,18 @@ static int stitch_coverage_command(int argc, char **argv, const char *command_na
 
 static int stitch_command(int argc, char **argv)
 {
-    if (argc >= 3) {
-        if (strcmp(argv[2], "claims") == 0) {
-            return stitch_claims_command(argc - 1, argv + 1, "stitch claims");
-        }
-        if (strcmp(argv[2], "coverage") == 0) {
-            return stitch_coverage_command(argc - 1, argv + 1, "stitch coverage");
-        }
-        if (argv[2][0] != '-') {
-            return -1;
-        }
+    if (argc < 3) {
+        return -1;
     }
 
-    return stitch_claims_command(argc, argv, "stitch");
-}
+    if (strcmp(argv[2], "claims") == 0) {
+        return stitch_claims_command(argc - 1, argv + 1, "stitch claims");
+    }
+    if (strcmp(argv[2], "coverage") == 0) {
+        return stitch_coverage_command(argc - 1, argv + 1, "stitch coverage");
+    }
 
-static int coverage_command(int argc, char **argv)
-{
-    return stitch_coverage_command(argc, argv, "coverage");
+    return -1;
 }
 
 static int vault_resolve_command(int argc, char **argv);
@@ -392,6 +356,11 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0) {
+        version();
+        return 0;
+    }
+
     if (strcmp(argv[1], "dump") == 0) {
         if (argc != 3) {
             usage(stderr);
@@ -409,7 +378,7 @@ int main(int argc, char **argv)
         return rc;
     }
 
-    if (strcmp(argv[1], "ingest") == 0 || strcmp(argv[1], "journal") == 0) {
+    if (strcmp(argv[1], "ingest") == 0) {
         int rc = ingest_command(argc, argv, argv[1]);
         if (rc < 0) {
             usage(stderr);
@@ -427,15 +396,6 @@ int main(int argc, char **argv)
         return 0;
     }
 
-    if (strcmp(argv[1], "coverage") == 0) {
-        int rc = coverage_command(argc, argv);
-        if (rc < 0) {
-            usage(stderr);
-            return 1;
-        }
-        return 0;
-    }
-
     if (strcmp(argv[1], "vault") == 0) {
         int rc = vault_command(argc, argv);
         if (rc == -1) {
@@ -445,26 +405,8 @@ int main(int argc, char **argv)
         return rc == X12_OK ? 0 : 1;
     }
 
-    if (strcmp(argv[1], "vault-resolve") == 0) {
-        int rc = vault_resolve_command(argc, argv);
-        if (rc == -1) {
-            usage(stderr);
-            return 1;
-        }
-        return rc == X12_OK ? 0 : 1;
-    }
-
     if (strcmp(argv[1], "project") == 0) {
         int rc = project_command(argc, argv);
-        if (rc < 0) {
-            usage(stderr);
-            return 1;
-        }
-        return 0;
-    }
-
-    if (strcmp(argv[1], "project-balance") == 0) {
-        int rc = project_balance_command(argc, argv, "project balance");
         if (rc < 0) {
             usage(stderr);
             return 1;

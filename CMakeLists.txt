@@ -1,12 +1,44 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(scribe C)
+set(SCRIBE_FALLBACK_VERSION "0.0.0")
+set(SCRIBE_DETECTED_VERSION "${SCRIBE_FALLBACK_VERSION}")
+find_package(Git QUIET)
+if(GIT_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
+    execute_process(
+        COMMAND "${GIT_EXECUTABLE}" describe --tags --exact-match HEAD
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        RESULT_VARIABLE SCRIBE_GIT_TAG_RESULT
+        OUTPUT_VARIABLE SCRIBE_GIT_TAG
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    if(SCRIBE_GIT_TAG_RESULT EQUAL 0)
+        string(REGEX REPLACE "^v" "" SCRIBE_GIT_TAG_VERSION "${SCRIBE_GIT_TAG}")
+        if(SCRIBE_GIT_TAG_VERSION MATCHES "^[0-9]+(\\.[0-9]+){0,3}$")
+            set(SCRIBE_DETECTED_VERSION "${SCRIBE_GIT_TAG_VERSION}")
+        endif()
+    endif()
+endif()
+set(SCRIBE_VERSION "${SCRIBE_DETECTED_VERSION}" CACHE STRING "scribe version")
+
+project(scribe VERSION "${SCRIBE_VERSION}" LANGUAGES C)
 
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
 find_package(SQLite3 REQUIRED)
+
+set(SCRIBE_BUILD_PLATFORM "${CMAKE_SYSTEM_NAME}")
+set(SCRIBE_BUILD_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
+set(SCRIBE_BUILD_COMPILER "${CMAKE_C_COMPILER_ID} ${CMAKE_C_COMPILER_VERSION}")
+set(SCRIBE_BUILD_TYPE "${CMAKE_BUILD_TYPE}")
+if(NOT SCRIBE_BUILD_TYPE)
+    set(SCRIBE_BUILD_TYPE "multi-config/unspecified")
+endif()
+set(SCRIBE_BUILD_INFO "${SCRIBE_BUILD_PLATFORM}/${SCRIBE_BUILD_ARCH} ${SCRIBE_BUILD_COMPILER} ${SCRIBE_BUILD_TYPE}")
+file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/generated)
+configure_file(src/scribe_version.h.in generated/scribe_version.h @ONLY)
 
 function(scribe_enable_warnings target)
     if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
@@ -62,12 +94,18 @@ target_link_libraries(scribe_core PUBLIC SQLite::SQLite3 yyjson)
 scribe_enable_warnings(scribe_core)
 
 add_executable(scribe src/main.c)
+target_include_directories(scribe PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
 target_link_libraries(scribe PRIVATE scribe_core)
 scribe_enable_warnings(scribe)
 
 enable_testing()
 
 file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test-output)
+
+add_test(NAME scribe_version COMMAND scribe --version)
+set_tests_properties(scribe_version PROPERTIES
+    PASS_REGULAR_EXPRESSION "^scribe [0-9][0-9]*(\\.[0-9][0-9]*)*"
+)
 
 add_executable(test_parser tests/test_parser.c)
 target_link_libraries(test_parser PRIVATE scribe_core)

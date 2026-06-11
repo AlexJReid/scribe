@@ -945,12 +945,7 @@ int balance_projector_run_cli(int argc, char **argv)
     balance_projector_input_init(&input);
 
     for (i = 2; i < argc; i++) {
-        if (strcmp(argv[i], "--projection") == 0) {
-            if (i + 1 >= argc) {
-                return -1;
-            }
-            i++;
-        } else if (strcmp(argv[i], "--journal") == 0) {
+        if (strcmp(argv[i], "--journal") == 0) {
             if (i + 1 >= argc) {
                 return -1;
             }

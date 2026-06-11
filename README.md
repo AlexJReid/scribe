@@ -81,7 +81,8 @@ For more advanced usage see [scripts/stroke-demo.sh](./scripts/stroke-demo.sh),
 
 ## Build
 
-No releases yet, but binaries are attached to each Action run.
+Release binaries are attached to
+[the latest GitHub release](https://github.com/AlexJReid/scribe/releases/latest).
 
 The case study will build if needed. On Linux and Windows you'll need sqlite3. See [CI](./.github/workflows) for exact packages. macOS has it already.
 
