@@ -58,8 +58,8 @@ static int test_service_line_fields_in_ndjson(void)
     REQUIRE(strstr(output, "\"charge_amount\":\"40\"") != NULL);
     REQUIRE(strstr(output, "\"unit_measure_code\":\"UN\"") != NULL);
     REQUIRE(strstr(output, "\"unit_count\":\"1\"") != NULL);
-    REQUIRE(strstr(output, "\"diagnosis_pointers\":\"1\"") != NULL);
-    REQUIRE(strstr(output, "\"diagnosis_pointers\":\"2\"") != NULL);
+    REQUIRE(strstr(output, "\"diagnosis_pointers\":[\"1\"]") != NULL);
+    REQUIRE(strstr(output, "\"diagnosis_pointers\":[\"2\"]") != NULL);
     REQUIRE(strstr(output, "\"raw_elements\":[\"HC:99213\",\"40\",\"UN\",\"1\",\"\",\"\",\"1\"]") != NULL);
     return 0;
 }
@@ -91,7 +91,7 @@ static int test_revenue_line_fields_in_ndjson(void)
     REQUIRE(strstr(output, "\"charge_amount\":\"950.00\"") != NULL);
     REQUIRE(strstr(output, "\"unit_measure_code\":\"UN\"") != NULL);
     REQUIRE(strstr(output, "\"unit_count\":\"1\"") != NULL);
-    REQUIRE(strstr(output, "\"diagnosis_pointers\":\"\"") != NULL);
+    REQUIRE(strstr(output, "\"diagnosis_pointers\":[]") != NULL);
     return 0;
 }
 
@@ -120,6 +120,13 @@ static int test_modifiers_and_provider_roles_in_ndjson(void)
     REQUIRE(strstr(output, "\"event_type\":\"ClaimReferencedOperatingProvider\"") != NULL);
     REQUIRE(strstr(output, "\"event_type\":\"ClaimReferencedOtherProvider\"") != NULL);
     REQUIRE(strstr(output, "\"event_type\":\"ClaimReferencedRenderingProvider\"") != NULL);
+    REQUIRE(strstr(output, "\"event_type\":\"ClaimProviderTaxonomyRecorded\"") != NULL);
+    REQUIRE(strstr(output, "\"provider_context\":\"referring_provider\"") != NULL);
+    REQUIRE(strstr(output, "\"provider_role_code\":\"RF\"") != NULL);
+    REQUIRE(strstr(output, "\"provider_taxonomy_code\":\"207Q00000X\"") != NULL);
+    REQUIRE(strstr(output, "\"provider_context\":\"rendering_provider\"") != NULL);
+    REQUIRE(strstr(output, "\"reference_scope\":\"service_line\"") != NULL);
+    REQUIRE(strstr(output, "\"provider_taxonomy_code\":\"207R00000X\"") != NULL);
     REQUIRE(strstr(output, "\"procedure_code\":\"99213\"") != NULL);
     REQUIRE(strstr(output, "\"procedure_modifiers\":[\"25\",\"59\"]") != NULL);
     REQUIRE(count_substring(output, "\"reference_scope\":\"claim\"") >= 6u);
@@ -160,6 +167,11 @@ static int test_claim_envelope_and_party_context_in_ndjson(void)
     REQUIRE(strstr(output, "\"assignment_or_plan_participation_code\":\"A\"") != NULL);
     REQUIRE(strstr(output, "\"benefits_assignment_certification_indicator\":\"Y\"") != NULL);
     REQUIRE(strstr(output, "\"release_of_information_code\":\"I\"") != NULL);
+    REQUIRE(strstr(output, "\"event_type\":\"ClaimProviderTaxonomyRecorded\"") != NULL);
+    REQUIRE(strstr(output, "\"provider_context\":\"billing_provider\"") != NULL);
+    REQUIRE(strstr(output, "\"provider_role_code\":\"BI\"") != NULL);
+    REQUIRE(strstr(output, "\"reference_identification_qualifier\":\"PXC\"") != NULL);
+    REQUIRE(strstr(output, "\"provider_taxonomy_code\":\"203BF0100Y\"") != NULL);
 
     REQUIRE(strstr(output, "\"event_type\":\"ClaimSubscriberInformationRecorded\"") != NULL);
     REQUIRE(strstr(output, "\"party_scope\":\"subscriber\"") != NULL);
@@ -208,17 +220,33 @@ static int test_institutional_hi_components_in_ndjson(void)
 
     REQUIRE(strstr(output, "\"event_type\":\"ClaimDiagnosesRecorded\"") != NULL);
     REQUIRE(strstr(output, "\"principal_diagnosis_code\":\"R07.9\"") != NULL);
+    REQUIRE(strstr(output, "\"event_type\":\"ClaimInstitutionalInformationRecorded\"") != NULL);
+    REQUIRE(strstr(output, "\"admission_type_code\":\"1\"") != NULL);
+    REQUIRE(strstr(output, "\"admission_source_code\":\"7\"") != NULL);
+    REQUIRE(strstr(output, "\"patient_status_code\":\"30\"") != NULL);
+    REQUIRE(strstr(output, "\"date_qualifier\":\"435\"") != NULL);
+    REQUIRE(strstr(output, "\"date_value\":\"20260601\"") != NULL);
+    REQUIRE(strstr(output, "\"date_qualifier\":\"096\"") != NULL);
+    REQUIRE(strstr(output, "\"date_value\":\"20260604\"") != NULL);
     REQUIRE(strstr(output, "\"event_type\":\"ClaimHealthcareCodeRecorded\"") != NULL);
+    REQUIRE(strstr(output, "\"healthcare_code_kind\":\"condition_code\"") != NULL);
     REQUIRE(strstr(output, "\"healthcare_code_qualifier\":\"BG\"") != NULL);
     REQUIRE(strstr(output, "\"healthcare_code\":\"01\"") != NULL);
+    REQUIRE(strstr(output, "\"healthcare_code_kind\":\"occurrence_code\"") != NULL);
     REQUIRE(strstr(output, "\"healthcare_code_qualifier\":\"BH\"") != NULL);
     REQUIRE(strstr(output, "\"healthcare_code_date_format\":\"D8\"") != NULL);
     REQUIRE(strstr(output, "\"healthcare_code_date_value\":\"20260601\"") != NULL);
+    REQUIRE(strstr(output, "\"healthcare_code_kind\":\"value_code\"") != NULL);
     REQUIRE(strstr(output, "\"healthcare_code_qualifier\":\"BE\"") != NULL);
+    REQUIRE(strstr(output, "\"healthcare_code_amount\":\"2500.00\"") != NULL);
     REQUIRE(strstr(output, "\"healthcare_code_components\":[\"BE\",\"A1\",\"\",\"\",\"2500.00\"]") != NULL);
+    REQUIRE(strstr(output, "\"healthcare_code_kind\":\"institutional_procedure\"") != NULL);
     REQUIRE(strstr(output, "\"healthcare_code_qualifier\":\"BBR\"") != NULL);
     REQUIRE(strstr(output, "\"healthcare_code\":\"0WQF0ZZ\"") != NULL);
     REQUIRE(strstr(output, "\"healthcare_code_date_value\":\"20260602\"") != NULL);
+    REQUIRE(strstr(output, "\"healthcare_code_kind\":\"diagnosis_related_group\"") != NULL);
+    REQUIRE(strstr(output, "\"healthcare_code_qualifier\":\"DR\"") != NULL);
+    REQUIRE(strstr(output, "\"healthcare_code\":\"470\"") != NULL);
     return 0;
 }
 
@@ -234,7 +262,7 @@ static int test_service_line_fields_in_binary_journal(void)
     char charge_amount[32];
     char unit_measure_code[16];
     char unit_count[16];
-    char diagnosis_pointers[16];
+    char diagnosis_pointer[16];
     int saw_service_line = 0;
     int rc;
 
@@ -271,11 +299,12 @@ static int test_service_line_fields_in_binary_journal(void)
                     sizeof(unit_measure_code)
                 ));
         REQUIRE(journal_event_get_string(&event, "unit_count", unit_count, sizeof(unit_count)));
-        REQUIRE(journal_event_get_string(
+        REQUIRE(!journal_event_get_array_string_at(
                     &event,
                     "diagnosis_pointers",
-                    diagnosis_pointers,
-                    sizeof(diagnosis_pointers)
+                    0u,
+                    diagnosis_pointer,
+                    sizeof(diagnosis_pointer)
                 ));
         REQUIRE_STR(revenue_code, "0450");
         REQUIRE_STR(procedure_code, "99284");
@@ -283,7 +312,6 @@ static int test_service_line_fields_in_binary_journal(void)
         REQUIRE_STR(charge_amount, "950.00");
         REQUIRE_STR(unit_measure_code, "UN");
         REQUIRE_STR(unit_count, "1");
-        REQUIRE_STR(diagnosis_pointers, "");
         saw_service_line = 1;
     }
     REQUIRE_OK(journal_reader_close(&reader));

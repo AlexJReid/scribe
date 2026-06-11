@@ -23,8 +23,9 @@ or when reading a PHI-resolved store.
 `ClaimReferencedOperatingProvider`, `ClaimReferencedOtherProvider`,
 `ClaimSubscriberInformationRecorded`, `ClaimPatientInformationRecorded`,
 `ClaimDemographicsRecorded`, `ClaimReferenceRecorded`,
-`ClaimDiagnosesRecorded`, `ClaimHealthcareCodeRecorded`, `ClaimDateRecorded`,
-`ClaimServiceLineRecorded`, `ClaimLineDateRecorded`.
+`ClaimDiagnosesRecorded`, `ClaimHealthcareCodeRecorded`,
+`ClaimProviderTaxonomyRecorded`, `ClaimInstitutionalInformationRecorded`,
+`ClaimDateRecorded`, `ClaimServiceLineRecorded`, `ClaimLineDateRecorded`.
 
 835: `RemittanceAdviceObserved`, `RemittancePartyReferenced`,
 `RemittanceClaimPaymentObserved`, `RemittanceClaimReferencedSubscriber`,

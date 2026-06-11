@@ -17,10 +17,13 @@ typedef struct {
     x12_mapper_837_buffered_segment_t subscriber;
     x12_mapper_837_buffered_segment_t patient;
     x12_mapper_837_buffered_segment_t rendering_provider;
+    x12_mapper_837_buffered_segment_t billing_provider_taxonomy;
+    x12_mapper_837_buffered_segment_t rendering_provider_taxonomy;
     x12_mapper_837_buffered_segment_t subscriber_info;
     x12_mapper_837_buffered_segment_t subscriber_demographics;
     x12_mapper_837_buffered_segment_t patient_info;
     x12_mapper_837_buffered_segment_t patient_demographics;
+    const char *current_provider_context;
     int in_service_line;
     int current_party;
     char component_sep;

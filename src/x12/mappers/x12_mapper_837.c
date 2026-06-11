@@ -278,6 +278,107 @@ static const char *procedure_code_set(x12_str_t qualifier)
     return "";
 }
 
+static const char *healthcare_code_kind(x12_str_t qualifier)
+{
+    if (diagnosis_is_principal(qualifier)) {
+        return "principal_diagnosis";
+    }
+    if (diagnosis_is_other(qualifier)) {
+        return "other_diagnosis";
+    }
+    if (x12_str_eq_cstr(qualifier, "BG")) {
+        return "condition_code";
+    }
+    if (x12_str_eq_cstr(qualifier, "BH")) {
+        return "occurrence_code";
+    }
+    if (x12_str_eq_cstr(qualifier, "BE")) {
+        return "value_code";
+    }
+    if (x12_str_eq_cstr(qualifier, "BBR")) {
+        return "institutional_procedure";
+    }
+    if (x12_str_eq_cstr(qualifier, "DR")) {
+        return "diagnosis_related_group";
+    }
+
+    return "other";
+}
+
+static const char *provider_context_from_nm1(x12_str_t entity_identifier_code)
+{
+    if (x12_str_eq_cstr(entity_identifier_code, "85")) {
+        return "billing_provider";
+    }
+    if (x12_str_eq_cstr(entity_identifier_code, "82")) {
+        return "rendering_provider";
+    }
+    if (x12_str_eq_cstr(entity_identifier_code, "DN")) {
+        return "referring_provider";
+    }
+    if (x12_str_eq_cstr(entity_identifier_code, "DQ")) {
+        return "supervising_provider";
+    }
+    if (x12_str_eq_cstr(entity_identifier_code, "77")) {
+        return "facility";
+    }
+    if (x12_str_eq_cstr(entity_identifier_code, "71")) {
+        return "attending_provider";
+    }
+    if (x12_str_eq_cstr(entity_identifier_code, "72")) {
+        return "operating_provider";
+    }
+    if (x12_str_eq_cstr(entity_identifier_code, "ZZ")) {
+        return "other_provider";
+    }
+
+    return "";
+}
+
+static const char *provider_context_from_prv(x12_str_t provider_code)
+{
+    if (x12_str_eq_cstr(provider_code, "BI")) {
+        return "billing_provider";
+    }
+    if (x12_str_eq_cstr(provider_code, "PE")) {
+        return "rendering_provider";
+    }
+    if (x12_str_eq_cstr(provider_code, "RF")) {
+        return "referring_provider";
+    }
+    if (x12_str_eq_cstr(provider_code, "SU")) {
+        return "supervising_provider";
+    }
+    if (x12_str_eq_cstr(provider_code, "AT")) {
+        return "attending_provider";
+    }
+    if (x12_str_eq_cstr(provider_code, "OP")) {
+        return "operating_provider";
+    }
+    if (x12_str_eq_cstr(provider_code, "FA")) {
+        return "facility";
+    }
+    if (x12_str_eq_cstr(provider_code, "OT")) {
+        return "other_provider";
+    }
+
+    return "";
+}
+
+static const char *provider_context_for_prv(
+    const x12_mapper_837_t *mapper,
+    x12_str_t provider_code
+)
+{
+    if (mapper != NULL &&
+        mapper->current_provider_context != NULL &&
+        mapper->current_provider_context[0] != '\0') {
+        return mapper->current_provider_context;
+    }
+
+    return provider_context_from_prv(provider_code);
+}
+
 static const char *current_loop_scope(const x12_mapper_837_t *mapper)
 {
     if (mapper->current_claim_id.len == 0u) {
@@ -308,6 +409,8 @@ static void clear_claim_position(x12_mapper_837_t *mapper)
     mapper->current_service_line_number = empty_str();
     mapper->in_service_line = 0;
     mapper->rendering_provider.present = 0;
+    mapper->rendering_provider_taxonomy.present = 0;
+    mapper->current_provider_context = "";
 }
 
 static void buffer_segment(
@@ -321,6 +424,7 @@ static void buffer_segment(
 
 static int flush_claim_context_references(x12_mapper_837_t *mapper);
 static int flush_claim_party_context(x12_mapper_837_t *mapper);
+static int flush_claim_context_taxonomies(x12_mapper_837_t *mapper);
 
 static const char *current_date_event_type(const x12_mapper_837_t *mapper)
 {
@@ -489,7 +593,13 @@ static int write_claim_observed(
     if (rc != X12_OK) {
         return rc;
     }
-    return flush_claim_context_references(mapper);
+    rc = flush_claim_context_references(mapper);
+    if (rc != X12_OK) {
+        return rc;
+    }
+    rc = flush_claim_context_taxonomies(mapper);
+    mapper->current_provider_context = "";
+    return rc;
 }
 
 static int write_nm1_reference(
@@ -665,6 +775,103 @@ static int flush_claim_context_references(x12_mapper_837_t *mapper)
         &mapper->rendering_provider,
         "ClaimReferencedRenderingProvider",
         TOK_PROVIDER_ID,
+        1
+    );
+}
+
+static int write_provider_taxonomy_recorded(
+    x12_mapper_837_t *mapper,
+    const x12_segment_t *seg,
+    const char *provider_context
+)
+{
+    FILE *fp = event_writer_stream(mapper->writer);
+    int rc;
+
+    if (mapper->current_claim_id.len == 0u) {
+        return X12_OK;
+    }
+    if (provider_context == NULL || provider_context[0] == '\0') {
+        provider_context = provider_context_from_prv(element_or_empty(seg, 0));
+    }
+
+    rc = event_writer_begin_event(mapper->writer, "ClaimProviderTaxonomyRecorded", seg);
+    if (rc != X12_OK) {
+        return rc;
+    }
+    if (write_payload_start(fp) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (write_current_claim_fields(mapper, fp, 0) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_cstring_field(fp, "reference_scope", current_loop_scope(mapper), 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(fp, "service_line_number", mapper->current_service_line_number, 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_cstring_field(fp, "provider_context", provider_context, 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(fp, "provider_role_code", element_or_empty(seg, 0), 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(fp, "reference_identification_qualifier", element_or_empty(seg, 1), 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(fp, "provider_taxonomy_code", element_or_empty(seg, 2), 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (write_payload_end(fp) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    return event_writer_end_event(mapper->writer);
+}
+
+static int flush_buffered_provider_taxonomy(
+    x12_mapper_837_t *mapper,
+    x12_mapper_837_buffered_segment_t *buffer,
+    const char *provider_context,
+    int clear_after_flush
+)
+{
+    int rc;
+
+    if (!buffer->present) {
+        return X12_OK;
+    }
+
+    rc = write_provider_taxonomy_recorded(mapper, &buffer->segment, provider_context);
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    if (clear_after_flush) {
+        buffer->present = 0;
+    }
+
+    return X12_OK;
+}
+
+static int flush_claim_context_taxonomies(x12_mapper_837_t *mapper)
+{
+    int rc;
+
+    rc = flush_buffered_provider_taxonomy(
+        mapper,
+        &mapper->billing_provider_taxonomy,
+        "billing_provider",
+        0
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    return flush_buffered_provider_taxonomy(
+        mapper,
+        &mapper->rendering_provider_taxonomy,
+        "rendering_provider",
         1
     );
 }
@@ -948,6 +1155,46 @@ static int write_claim_reference_recorded(
     return event_writer_end_event(mapper->writer);
 }
 
+static int write_institutional_information_recorded(
+    x12_mapper_837_t *mapper,
+    const x12_segment_t *seg
+)
+{
+    FILE *fp = event_writer_stream(mapper->writer);
+    int rc;
+
+    if (mapper->current_claim_id.len == 0u) {
+        return X12_OK;
+    }
+
+    rc = event_writer_begin_event(mapper->writer, "ClaimInstitutionalInformationRecorded", seg);
+    if (rc != X12_OK) {
+        return rc;
+    }
+    if (write_payload_start(fp) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (write_current_claim_fields(mapper, fp, 0) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(fp, "admission_type_code", element_or_empty(seg, 0), 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(fp, "admission_source_code", element_or_empty(seg, 1), 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(fp, "patient_status_code", element_or_empty(seg, 2), 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_str_array_field(fp, "raw_elements", seg->elements, seg->element_count, 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (write_payload_end(fp) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    return event_writer_end_event(mapper->writer);
+}
+
 static int write_date_observed(
     x12_mapper_837_t *mapper,
     const x12_segment_t *seg
@@ -1141,6 +1388,9 @@ static int write_healthcare_code_recorded(
     if (write_current_claim_fields(mapper, fp, 0) != X12_OK) {
         return X12_ERR_IO;
     }
+    if (event_writer_write_cstring_field(fp, "healthcare_code_kind", healthcare_code_kind(components[0]), 1) != X12_OK) {
+        return X12_ERR_IO;
+    }
     if (event_writer_write_string_field(fp, "healthcare_code_qualifier", components[0], 1) != X12_OK) {
         return X12_ERR_IO;
     }
@@ -1159,6 +1409,14 @@ static int write_healthcare_code_recorded(
             fp,
             "healthcare_code_date_value",
             component_count > 3u ? components[3] : empty_str(),
+            1
+        ) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (event_writer_write_string_field(
+            fp,
+            "healthcare_code_amount",
+            component_count > 4u ? components[4] : empty_str(),
             1
         ) != X12_OK) {
         return X12_ERR_IO;
@@ -1212,6 +1470,8 @@ static int write_service_line_observed(
     x12_str_t unit_measure_code = element_or_empty(seg, 2);
     x12_str_t unit_count = element_or_empty(seg, 3);
     x12_str_t diagnosis_pointers = element_or_empty(seg, 6);
+    x12_str_t diagnosis_pointer_values[4];
+    size_t diagnosis_pointer_count = 0u;
     int rc;
 
     if (x12_str_eq_cstr(seg->tag, "SV2")) {
@@ -1221,6 +1481,15 @@ static int write_service_line_observed(
         unit_measure_code = element_or_empty(seg, 3);
         unit_count = element_or_empty(seg, 4);
         diagnosis_pointers = empty_str();
+    }
+
+    if (diagnosis_pointers.len > 0u) {
+        diagnosis_pointer_count = split_components(
+            diagnosis_pointers,
+            mapper->component_sep,
+            diagnosis_pointer_values,
+            sizeof(diagnosis_pointer_values) / sizeof(diagnosis_pointer_values[0])
+        );
     }
 
     split_procedure_components(
@@ -1296,7 +1565,13 @@ static int write_service_line_observed(
     if (event_writer_write_string_field(fp, "unit_count", unit_count, 1) != X12_OK) {
         return X12_ERR_IO;
     }
-    if (event_writer_write_string_field(fp, "diagnosis_pointers", diagnosis_pointers, 1) != X12_OK) {
+    if (event_writer_write_str_array_field(
+            fp,
+            "diagnosis_pointers",
+            diagnosis_pointer_values,
+            diagnosis_pointer_count,
+            1
+        ) != X12_OK) {
         return X12_ERR_IO;
     }
     if (event_writer_write_str_array_field(fp, "raw_elements", seg->elements, seg->element_count, 1) != X12_OK) {
@@ -1321,6 +1596,7 @@ void x12_mapper_837_init(x12_mapper_837_t *mapper, event_writer_t *writer)
     mapper->current_service_line_number = empty_str();
     mapper->in_service_line = 0;
     mapper->current_party = X12_837_PARTY_NONE;
+    mapper->current_provider_context = "";
     mapper->component_sep = ':';
 }
 
@@ -1358,12 +1634,14 @@ int x12_mapper_837_on_segment(const x12_segment_t *seg, void *user)
             mapper->patient_info.present = 0;
             mapper->patient_demographics.present = 0;
             mapper->current_party = X12_837_PARTY_SUBSCRIBER;
+            mapper->current_provider_context = "";
             return X12_OK;
         }
         if (x12_str_eq_cstr(seg->elements[0], "QC")) {
             clear_claim_position(mapper);
             buffer_segment(&mapper->patient, seg);
             mapper->current_party = X12_837_PARTY_PATIENT;
+            mapper->current_provider_context = "";
             return X12_OK;
         }
         if (x12_str_eq_cstr(seg->elements[0], "85")) {
@@ -1376,9 +1654,11 @@ int x12_mapper_837_on_segment(const x12_segment_t *seg, void *user)
             mapper->patient_info.present = 0;
             mapper->patient_demographics.present = 0;
             mapper->current_party = X12_837_PARTY_NONE;
+            mapper->current_provider_context = provider_context_from_nm1(seg->elements[0]);
             return X12_OK;
         }
         if (x12_str_eq_cstr(seg->elements[0], "82")) {
+            mapper->current_provider_context = provider_context_from_nm1(seg->elements[0]);
             if (mapper->current_claim_id.len > 0u) {
                 return write_nm1_reference(mapper, seg, "ClaimReferencedRenderingProvider", TOK_PROVIDER_ID);
             }
@@ -1387,6 +1667,7 @@ int x12_mapper_837_on_segment(const x12_segment_t *seg, void *user)
             return X12_OK;
         }
         if (x12_str_eq_cstr(seg->elements[0], "DN")) {
+            mapper->current_provider_context = provider_context_from_nm1(seg->elements[0]);
             return write_claim_scoped_nm1_reference(
                 mapper,
                 seg,
@@ -1395,6 +1676,7 @@ int x12_mapper_837_on_segment(const x12_segment_t *seg, void *user)
             );
         }
         if (x12_str_eq_cstr(seg->elements[0], "DQ")) {
+            mapper->current_provider_context = provider_context_from_nm1(seg->elements[0]);
             return write_claim_scoped_nm1_reference(
                 mapper,
                 seg,
@@ -1403,9 +1685,11 @@ int x12_mapper_837_on_segment(const x12_segment_t *seg, void *user)
             );
         }
         if (x12_str_eq_cstr(seg->elements[0], "77")) {
+            mapper->current_provider_context = provider_context_from_nm1(seg->elements[0]);
             return write_claim_scoped_nm1_reference(mapper, seg, "ClaimReferencedFacility", TOK_PROVIDER_ID);
         }
         if (x12_str_eq_cstr(seg->elements[0], "71")) {
+            mapper->current_provider_context = provider_context_from_nm1(seg->elements[0]);
             return write_claim_scoped_nm1_reference(
                 mapper,
                 seg,
@@ -1414,6 +1698,7 @@ int x12_mapper_837_on_segment(const x12_segment_t *seg, void *user)
             );
         }
         if (x12_str_eq_cstr(seg->elements[0], "72")) {
+            mapper->current_provider_context = provider_context_from_nm1(seg->elements[0]);
             return write_claim_scoped_nm1_reference(
                 mapper,
                 seg,
@@ -1422,6 +1707,7 @@ int x12_mapper_837_on_segment(const x12_segment_t *seg, void *user)
             );
         }
         if (x12_str_eq_cstr(seg->elements[0], "ZZ")) {
+            mapper->current_provider_context = provider_context_from_nm1(seg->elements[0]);
             return write_claim_scoped_nm1_reference(mapper, seg, "ClaimReferencedOtherProvider", TOK_PROVIDER_ID);
         }
     }
@@ -1433,6 +1719,7 @@ int x12_mapper_837_on_segment(const x12_segment_t *seg, void *user)
         mapper->patient_info.present = 0;
         mapper->patient_demographics.present = 0;
         mapper->current_party = X12_837_PARTY_SUBSCRIBER;
+        mapper->current_provider_context = "";
         return X12_OK;
     }
 
@@ -1441,7 +1728,24 @@ int x12_mapper_837_on_segment(const x12_segment_t *seg, void *user)
         buffer_segment(&mapper->patient_info, seg);
         mapper->patient_demographics.present = 0;
         mapper->current_party = X12_837_PARTY_PATIENT;
+        mapper->current_provider_context = "";
         return X12_OK;
+    }
+
+    if (x12_str_eq_cstr(seg->tag, "PRV")) {
+        const char *provider_context = provider_context_for_prv(mapper, element_or_empty(seg, 0));
+
+        if (mapper->current_claim_id.len == 0u) {
+            if (strcmp(provider_context, "billing_provider") == 0) {
+                buffer_segment(&mapper->billing_provider_taxonomy, seg);
+            } else if (strcmp(provider_context, "rendering_provider") == 0) {
+                buffer_segment(&mapper->rendering_provider_taxonomy, seg);
+            }
+            mapper->current_provider_context = provider_context;
+            return X12_OK;
+        }
+
+        return write_provider_taxonomy_recorded(mapper, seg, provider_context);
     }
 
     if (x12_str_eq_cstr(seg->tag, "DMG")) {
@@ -1459,6 +1763,10 @@ int x12_mapper_837_on_segment(const x12_segment_t *seg, void *user)
 
     if (x12_str_eq_cstr(seg->tag, "REF")) {
         return write_claim_reference_recorded(mapper, seg);
+    }
+
+    if (x12_str_eq_cstr(seg->tag, "CL1")) {
+        return write_institutional_information_recorded(mapper, seg);
     }
 
     if (x12_str_eq_cstr(seg->tag, "HI")) {

@@ -1014,6 +1014,19 @@ static int apply_claim_date(claim_aggregate_t *aggregate, const journal_event_t 
     copy_journal_string_if_present(journal_line, "date_qualifier", date->date_qualifier, sizeof(date->date_qualifier));
     copy_journal_string_if_present(journal_line, "date_format", date->date_format, sizeof(date->date_format));
     copy_journal_string_if_present(journal_line, "date_value", date->date_value, sizeof(date->date_value));
+    if (strcmp(date->date_qualifier, "435") == 0) {
+        copy_cstr(
+            aggregate->institutional_claim.admission_date,
+            sizeof(aggregate->institutional_claim.admission_date),
+            date->date_value
+        );
+    } else if (strcmp(date->date_qualifier, "096") == 0) {
+        copy_cstr(
+            aggregate->institutional_claim.discharge_date,
+            sizeof(aggregate->institutional_claim.discharge_date),
+            date->date_value
+        );
+    }
 
     return X12_OK;
 }
@@ -1140,6 +1153,12 @@ static int apply_healthcare_code(claim_aggregate_t *aggregate, const journal_eve
     memset(code, 0, sizeof(*code));
     copy_journal_string_if_present(
         journal_line,
+        "healthcare_code_kind",
+        code->healthcare_code_kind,
+        sizeof(code->healthcare_code_kind)
+    );
+    copy_journal_string_if_present(
+        journal_line,
         "healthcare_code_qualifier",
         code->healthcare_code_qualifier,
         sizeof(code->healthcare_code_qualifier)
@@ -1162,6 +1181,12 @@ static int apply_healthcare_code(claim_aggregate_t *aggregate, const journal_eve
         code->healthcare_code_date_value,
         sizeof(code->healthcare_code_date_value)
     );
+    copy_journal_string_if_present(
+        journal_line,
+        "healthcare_code_amount",
+        code->healthcare_code_amount,
+        sizeof(code->healthcare_code_amount)
+    );
     for (i = 0u; i < STITCH_MAX_HEALTHCARE_CODE_COMPONENTS; i++) {
         if (!json_get_array_string_at(
                 journal_line,
@@ -1174,6 +1199,91 @@ static int apply_healthcare_code(claim_aggregate_t *aggregate, const journal_eve
         }
         code->healthcare_code_component_count++;
     }
+    if (strcmp(code->healthcare_code_kind, "diagnosis_related_group") == 0 ||
+        strcmp(code->healthcare_code_qualifier, "DR") == 0) {
+        copy_cstr(
+            aggregate->institutional_claim.diagnosis_related_group_code,
+            sizeof(aggregate->institutional_claim.diagnosis_related_group_code),
+            code->healthcare_code
+        );
+    }
+
+    return X12_OK;
+}
+
+static int apply_provider_taxonomy(claim_aggregate_t *aggregate, const journal_event_t *journal_line)
+{
+    stitched_provider_taxonomy_t *taxonomy;
+
+    if (aggregate->provider_taxonomy_count >= STITCH_MAX_PROVIDER_TAXONOMIES) {
+        return X12_OK;
+    }
+
+    taxonomy = &aggregate->provider_taxonomies[aggregate->provider_taxonomy_count++];
+    memset(taxonomy, 0, sizeof(*taxonomy));
+    copy_journal_string_if_present(
+        journal_line,
+        "reference_scope",
+        taxonomy->reference_scope,
+        sizeof(taxonomy->reference_scope)
+    );
+    copy_journal_string_if_present(
+        journal_line,
+        "service_line_number",
+        taxonomy->service_line_number,
+        sizeof(taxonomy->service_line_number)
+    );
+    copy_journal_string_if_present(
+        journal_line,
+        "provider_context",
+        taxonomy->provider_context,
+        sizeof(taxonomy->provider_context)
+    );
+    copy_journal_string_if_present(
+        journal_line,
+        "provider_role_code",
+        taxonomy->provider_role_code,
+        sizeof(taxonomy->provider_role_code)
+    );
+    copy_journal_string_if_present(
+        journal_line,
+        "reference_identification_qualifier",
+        taxonomy->reference_identification_qualifier,
+        sizeof(taxonomy->reference_identification_qualifier)
+    );
+    copy_journal_string_if_present(
+        journal_line,
+        "provider_taxonomy_code",
+        taxonomy->provider_taxonomy_code,
+        sizeof(taxonomy->provider_taxonomy_code)
+    );
+
+    return X12_OK;
+}
+
+static int apply_institutional_information(
+    claim_aggregate_t *aggregate,
+    const journal_event_t *journal_line
+)
+{
+    copy_journal_string_if_present(
+        journal_line,
+        "admission_type_code",
+        aggregate->institutional_claim.admission_type_code,
+        sizeof(aggregate->institutional_claim.admission_type_code)
+    );
+    copy_journal_string_if_present(
+        journal_line,
+        "admission_source_code",
+        aggregate->institutional_claim.admission_source_code,
+        sizeof(aggregate->institutional_claim.admission_source_code)
+    );
+    copy_journal_string_if_present(
+        journal_line,
+        "patient_status_code",
+        aggregate->institutional_claim.patient_status_code,
+        sizeof(aggregate->institutional_claim.patient_status_code)
+    );
 
     return X12_OK;
 }
@@ -1968,6 +2078,8 @@ static int apply_claim_event(
         strcmp(event_type, "ClaimLineDateRecorded") == 0 ||
         strcmp(event_type, "ClaimDiagnosesRecorded") == 0 ||
         strcmp(event_type, "ClaimHealthcareCodeRecorded") == 0 ||
+        strcmp(event_type, "ClaimProviderTaxonomyRecorded") == 0 ||
+        strcmp(event_type, "ClaimInstitutionalInformationRecorded") == 0 ||
         strcmp(event_type, "ClaimServiceLineRecorded") == 0) {
         aggregate->has_837 = 1;
         rc = capture_reference_patient_context(state, aggregate, journal_line, event_type);
@@ -2011,6 +2123,16 @@ static int apply_claim_event(
             }
         } else if (strcmp(event_type, "ClaimHealthcareCodeRecorded") == 0) {
             rc = apply_healthcare_code(aggregate, journal_line);
+            if (rc != X12_OK) {
+                return rc;
+            }
+        } else if (strcmp(event_type, "ClaimProviderTaxonomyRecorded") == 0) {
+            rc = apply_provider_taxonomy(aggregate, journal_line);
+            if (rc != X12_OK) {
+                return rc;
+            }
+        } else if (strcmp(event_type, "ClaimInstitutionalInformationRecorded") == 0) {
+            rc = apply_institutional_information(aggregate, journal_line);
             if (rc != X12_OK) {
                 return rc;
             }

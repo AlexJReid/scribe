@@ -644,7 +644,10 @@ static int snapshot_add_healthcare_codes(
         if (obj == NULL) {
             return X12_ERR_NO_MEMORY;
         }
-        rc = json_writer_add_string(writer, obj, "healthcare_code_qualifier", code->healthcare_code_qualifier);
+        rc = json_writer_add_string(writer, obj, "healthcare_code_kind", code->healthcare_code_kind);
+        if (rc == X12_OK) {
+            rc = json_writer_add_string(writer, obj, "healthcare_code_qualifier", code->healthcare_code_qualifier);
+        }
         if (rc == X12_OK) {
             rc = json_writer_add_string(writer, obj, "healthcare_code", code->healthcare_code);
         }
@@ -665,6 +668,14 @@ static int snapshot_add_healthcare_codes(
             );
         }
         if (rc == X12_OK) {
+            rc = json_writer_add_string(
+                writer,
+                obj,
+                "healthcare_code_amount",
+                code->healthcare_code_amount
+            );
+        }
+        if (rc == X12_OK) {
             rc = snapshot_add_string_array64(
                 writer,
                 obj,
@@ -679,6 +690,99 @@ static int snapshot_add_healthcare_codes(
     }
 
     return X12_OK;
+}
+
+static int snapshot_add_provider_taxonomies(
+    json_writer_t *writer,
+    yyjson_mut_val *state_obj,
+    const claim_aggregate_t *aggregate
+)
+{
+    yyjson_mut_val *arr;
+    yyjson_mut_val *obj;
+    const stitched_provider_taxonomy_t *taxonomy;
+    size_t i;
+    int rc;
+
+    arr = json_writer_add_array(writer, state_obj, "provider_taxonomies");
+    if (arr == NULL) {
+        return X12_ERR_NO_MEMORY;
+    }
+
+    for (i = 0u; i < aggregate->provider_taxonomy_count; i++) {
+        taxonomy = &aggregate->provider_taxonomies[i];
+        obj = json_writer_array_add_object(writer, arr);
+        if (obj == NULL) {
+            return X12_ERR_NO_MEMORY;
+        }
+
+        rc = json_writer_add_string(writer, obj, "reference_scope", taxonomy->reference_scope);
+        if (rc == X12_OK) {
+            rc = json_writer_add_string(writer, obj, "service_line_number", taxonomy->service_line_number);
+        }
+        if (rc == X12_OK) {
+            rc = json_writer_add_string(writer, obj, "provider_context", taxonomy->provider_context);
+        }
+        if (rc == X12_OK) {
+            rc = json_writer_add_string(writer, obj, "provider_role_code", taxonomy->provider_role_code);
+        }
+        if (rc == X12_OK) {
+            rc = json_writer_add_string(
+                writer,
+                obj,
+                "reference_identification_qualifier",
+                taxonomy->reference_identification_qualifier
+            );
+        }
+        if (rc == X12_OK) {
+            rc = json_writer_add_string(writer, obj, "provider_taxonomy_code", taxonomy->provider_taxonomy_code);
+        }
+        if (rc != X12_OK) {
+            return rc;
+        }
+    }
+
+    return X12_OK;
+}
+
+static int snapshot_add_institutional_claim(
+    json_writer_t *writer,
+    yyjson_mut_val *state_obj,
+    const claim_aggregate_t *aggregate
+)
+{
+    yyjson_mut_val *obj;
+    const stitched_institutional_claim_t *institutional = &aggregate->institutional_claim;
+    int rc;
+
+    obj = json_writer_add_object(writer, state_obj, "institutional_claim");
+    if (obj == NULL) {
+        return X12_ERR_NO_MEMORY;
+    }
+
+    rc = json_writer_add_string(writer, obj, "admission_type_code", institutional->admission_type_code);
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(writer, obj, "admission_source_code", institutional->admission_source_code);
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(writer, obj, "patient_status_code", institutional->patient_status_code);
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(writer, obj, "admission_date", institutional->admission_date);
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(writer, obj, "discharge_date", institutional->discharge_date);
+    }
+    if (rc == X12_OK) {
+        rc = json_writer_add_string(
+            writer,
+            obj,
+            "diagnosis_related_group_code",
+            institutional->diagnosis_related_group_code
+        );
+    }
+
+    return rc;
 }
 
 static int snapshot_add_source_event_ids(
@@ -1022,6 +1126,12 @@ static int build_snapshot_doc(
     }
     if (rc == X12_OK) {
         rc = snapshot_add_healthcare_codes(writer, snapshot_state, aggregate);
+    }
+    if (rc == X12_OK) {
+        rc = snapshot_add_provider_taxonomies(writer, snapshot_state, aggregate);
+    }
+    if (rc == X12_OK) {
+        rc = snapshot_add_institutional_claim(writer, snapshot_state, aggregate);
     }
     if (rc == X12_OK) {
         rc = snapshot_add_service_lines(writer, root, state, aggregate);
@@ -1742,10 +1852,12 @@ static int hydrate_healthcare_codes(claim_aggregate_t *aggregate, yyjson_val *st
         }
 
         code = &aggregate->healthcare_codes[aggregate->healthcare_code_count++];
+        (void)snapshot_get_string(item, "healthcare_code_kind", code->healthcare_code_kind, sizeof(code->healthcare_code_kind));
         (void)snapshot_get_string(item, "healthcare_code_qualifier", code->healthcare_code_qualifier, sizeof(code->healthcare_code_qualifier));
         (void)snapshot_get_string(item, "healthcare_code", code->healthcare_code, sizeof(code->healthcare_code));
         (void)snapshot_get_string(item, "healthcare_code_date_format", code->healthcare_code_date_format, sizeof(code->healthcare_code_date_format));
         (void)snapshot_get_string(item, "healthcare_code_date_value", code->healthcare_code_date_value, sizeof(code->healthcare_code_date_value));
+        (void)snapshot_get_string(item, "healthcare_code_amount", code->healthcare_code_amount, sizeof(code->healthcare_code_amount));
 
         components = yyjson_obj_get(item, "healthcare_code_components");
         if (components != NULL && yyjson_is_arr(components)) {
@@ -1765,6 +1877,60 @@ static int hydrate_healthcare_codes(claim_aggregate_t *aggregate, yyjson_val *st
             }
         }
     }
+
+    return X12_OK;
+}
+
+static int hydrate_provider_taxonomies(claim_aggregate_t *aggregate, yyjson_val *state_obj)
+{
+    yyjson_val *arr;
+    yyjson_val *item;
+    size_t idx;
+    size_t max;
+
+    arr = yyjson_obj_get(state_obj, "provider_taxonomies");
+    if (arr == NULL || !yyjson_is_arr(arr)) {
+        return X12_OK;
+    }
+
+    aggregate->provider_taxonomy_count = 0u;
+    yyjson_arr_foreach(arr, idx, max, item) {
+        stitched_provider_taxonomy_t *taxonomy;
+
+        if (!yyjson_is_obj(item)) {
+            continue;
+        }
+        if (aggregate->provider_taxonomy_count >= STITCH_MAX_PROVIDER_TAXONOMIES) {
+            return X12_ERR_NO_MEMORY;
+        }
+
+        taxonomy = &aggregate->provider_taxonomies[aggregate->provider_taxonomy_count++];
+        (void)snapshot_get_string(item, "reference_scope", taxonomy->reference_scope, sizeof(taxonomy->reference_scope));
+        (void)snapshot_get_string(item, "service_line_number", taxonomy->service_line_number, sizeof(taxonomy->service_line_number));
+        (void)snapshot_get_string(item, "provider_context", taxonomy->provider_context, sizeof(taxonomy->provider_context));
+        (void)snapshot_get_string(item, "provider_role_code", taxonomy->provider_role_code, sizeof(taxonomy->provider_role_code));
+        (void)snapshot_get_string(item, "reference_identification_qualifier", taxonomy->reference_identification_qualifier, sizeof(taxonomy->reference_identification_qualifier));
+        (void)snapshot_get_string(item, "provider_taxonomy_code", taxonomy->provider_taxonomy_code, sizeof(taxonomy->provider_taxonomy_code));
+    }
+
+    return X12_OK;
+}
+
+static int hydrate_institutional_claim(claim_aggregate_t *aggregate, yyjson_val *state_obj)
+{
+    yyjson_val *obj;
+
+    obj = yyjson_obj_get(state_obj, "institutional_claim");
+    if (obj == NULL || !yyjson_is_obj(obj)) {
+        return X12_OK;
+    }
+
+    (void)snapshot_get_string(obj, "admission_type_code", aggregate->institutional_claim.admission_type_code, sizeof(aggregate->institutional_claim.admission_type_code));
+    (void)snapshot_get_string(obj, "admission_source_code", aggregate->institutional_claim.admission_source_code, sizeof(aggregate->institutional_claim.admission_source_code));
+    (void)snapshot_get_string(obj, "patient_status_code", aggregate->institutional_claim.patient_status_code, sizeof(aggregate->institutional_claim.patient_status_code));
+    (void)snapshot_get_string(obj, "admission_date", aggregate->institutional_claim.admission_date, sizeof(aggregate->institutional_claim.admission_date));
+    (void)snapshot_get_string(obj, "discharge_date", aggregate->institutional_claim.discharge_date, sizeof(aggregate->institutional_claim.discharge_date));
+    (void)snapshot_get_string(obj, "diagnosis_related_group_code", aggregate->institutional_claim.diagnosis_related_group_code, sizeof(aggregate->institutional_claim.diagnosis_related_group_code));
 
     return X12_OK;
 }
@@ -2048,6 +2214,12 @@ int claim_stitch_hydrate_snapshot(
         }
         if (rc == X12_OK) {
             rc = hydrate_healthcare_codes(aggregate, snapshot_state);
+        }
+        if (rc == X12_OK) {
+            rc = hydrate_provider_taxonomies(aggregate, snapshot_state);
+        }
+        if (rc == X12_OK) {
+            rc = hydrate_institutional_claim(aggregate, snapshot_state);
         }
         if (rc != X12_OK) {
             yyjson_doc_free(doc);

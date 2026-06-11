@@ -968,11 +968,75 @@ static int test_837_claim_context_aggregate_state(void)
     REQUIRE(strstr(aggregates, "\"healthcare_codes\":[") != NULL);
     REQUIRE(strstr(aggregates, "\"healthcare_code_qualifier\":\"BK\"") != NULL);
     REQUIRE(strstr(aggregates, "\"healthcare_code_qualifier\":\"BF\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"provider_taxonomies\":[{\"reference_scope\":\"claim\",\"service_line_number\":\"\",\"provider_context\":\"billing_provider\",\"provider_role_code\":\"BI\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"provider_taxonomy_code\":\"203BF0100Y\"") != NULL);
     REQUIRE(strstr(aggregates, "GROUP-837P") == NULL);
     REQUIRE(strstr(aggregates, "SYNTHCLEARING001") == NULL);
     REQUIRE(strstr(aggregates, "LINECTRL1") == NULL);
     REQUIRE(strstr(aggregates, "19430501") == NULL);
     REQUIRE(strstr(aggregates, "19730501") == NULL);
+
+    (void)remove(journal_path);
+    (void)remove(aggregate_path);
+    return 0;
+}
+
+static int test_837_institutional_context_aggregate_state(void)
+{
+    char fixture_path[512];
+    char journal_path[512];
+    char aggregate_path[512];
+    char aggregates[131072];
+    journal_builder_input_t journal_input;
+    aggregate_stitcher_input_t stitch_input;
+
+    REQUIRE(make_path(
+                fixture_path,
+                sizeof(fixture_path),
+                TEST_FIXTURE_DIR,
+                "sample_837i_hi_components.edi"
+            ) == 0);
+    REQUIRE(make_path(
+                journal_path,
+                sizeof(journal_path),
+                TEST_OUTPUT_DIR,
+                "institutional_context_837.journal"
+            ) == 0);
+    REQUIRE(make_path(
+                aggregate_path,
+                sizeof(aggregate_path),
+                TEST_OUTPUT_DIR,
+                "institutional_context_aggregate.ndjson"
+            ) == 0);
+
+    (void)remove(journal_path);
+    (void)remove(aggregate_path);
+
+    journal_builder_input_init(&journal_input);
+    journal_input.run_id = "institutional-context-837";
+    REQUIRE_OK(journal_builder_input_add_837(&journal_input, fixture_path));
+    REQUIRE_OK(journal_builder_build(&journal_input, journal_path));
+
+    aggregate_stitcher_input_init(&stitch_input);
+    stitch_input.journal_path = journal_path;
+    stitch_input.out_path = aggregate_path;
+    stitch_input.run_id = "institutional-context-stitch";
+    REQUIRE_OK(aggregate_stitcher_stitch(&stitch_input));
+    REQUIRE(read_file_text(aggregate_path, aggregates, sizeof(aggregates)) == 0);
+
+    REQUIRE(strstr(aggregates, "\"event_type\":\"ClaimAggregateUpdated\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"institutional_claim\":{\"admission_type_code\":\"1\",\"admission_source_code\":\"7\",\"patient_status_code\":\"30\",\"admission_date\":\"20260601\",\"discharge_date\":\"20260604\",\"diagnosis_related_group_code\":\"470\"}") != NULL);
+    REQUIRE(strstr(aggregates, "\"healthcare_code_kind\":\"condition_code\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"healthcare_code_kind\":\"occurrence_code\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"healthcare_code_kind\":\"value_code\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"healthcare_code_amount\":\"2500.00\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"healthcare_code_kind\":\"diagnosis_related_group\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"healthcare_code\":\"470\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"claim_dates\":[") != NULL);
+    REQUIRE(strstr(aggregates, "\"date_qualifier\":\"435\"") != NULL);
+    REQUIRE(strstr(aggregates, "\"date_qualifier\":\"096\"") != NULL);
+    REQUIRE(strstr(aggregates, "CLM401") == NULL);
+    REQUIRE(strstr(aggregates, "SUB44444") == NULL);
 
     (void)remove(journal_path);
     (void)remove(aggregate_path);
@@ -1675,6 +1739,7 @@ int main(void)
     REQUIRE(test_incremental_claim_stitch_from_source_drops() == 0);
     REQUIRE(test_incremental_coverage_stitch_from_source_drops() == 0);
     REQUIRE(test_837_claim_context_aggregate_state() == 0);
+    REQUIRE(test_837_institutional_context_aggregate_state() == 0);
     REQUIRE(test_stroke_balance_projection_from_journal() == 0);
     REQUIRE(test_member_coverage_aggregate_from_journal() == 0);
 

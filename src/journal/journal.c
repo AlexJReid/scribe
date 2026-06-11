@@ -139,7 +139,16 @@ static const journal_key_def_t journal_keys[] = {
     {"healthcare_code", 114u},
     {"healthcare_code_date_format", 115u},
     {"healthcare_code_date_value", 116u},
-    {"healthcare_code_components", 117u}
+    {"healthcare_code_components", 117u},
+    {"provider_context", 118u},
+    {"provider_role_code", 119u},
+    {"reference_identification_qualifier", 120u},
+    {"provider_taxonomy_code", 121u},
+    {"healthcare_code_kind", 122u},
+    {"healthcare_code_amount", 123u},
+    {"admission_type_code", 124u},
+    {"admission_source_code", 125u},
+    {"patient_status_code", 126u}
 };
 
 static unsigned short key_id_for_name(const char *name)

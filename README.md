@@ -97,7 +97,7 @@ claim-scoped events after the claim ID is known; DOB and identifier-like values
 stay tokenised by default.
 
 837 service-line events expose submitted procedure, modifiers, charge, unit
-measure, unit count, and diagnosis pointer facts directly. Professional `SV1`
+measure, unit count, and diagnosis pointer arrays directly. Professional `SV1`
 lines and institutional `SV2` revenue lines use the same
 `ClaimServiceLineRecorded` event; `SV2` also carries `revenue_code`.
 Claim/service scoped `REF` segments become `ClaimReferenceRecorded` with
@@ -107,12 +107,15 @@ reads the named fields.
 
 837 `HI` emits both a diagnosis summary and per-component healthcare-code facts.
 That covers the common 837I condition, occurrence, value, and procedure-style
-components as journal evidence without turning the mapper into a full TR3
-validator.
+components as typed journal evidence without turning the mapper into a full TR3
+validator. `CL1` institutional claim information records admission type,
+admission source, and patient status, while claim-level `DTP` admission and
+discharge dates are retained in aggregate state.
 
 837 provider references include billing, rendering, referring, supervising,
 facility, attending, operating, and other provider roles, with
-`reference_scope` indicating claim or service-line scope.
+`reference_scope` indicating claim or service-line scope. Provider `PRV`
+segments emit taxonomy/specialty facts through `ClaimProviderTaxonomyRecorded`.
 
 Project a balance from the journal:
 

@@ -27,28 +27,34 @@ validation model:
 
 - `CLM`: claim id, total charge, CLM05 facility type/qualifier/frequency, and
   common claim indicators.
+- `CL1`: institutional admission type, admission source, and patient status.
 - `SBR`, `PAT`, `DMG`: subscriber/patient context, claim-scoped once `CLM01` is
   known. DOB and identifier-like values stay tokenised by default.
 - `REF`: claim/service scoped reference identifiers, tokenised by default.
 - `HI`: diagnosis summary plus per-component healthcare-code events for
-  institutional condition, occurrence, value, and procedure-style components.
+  institutional condition, occurrence, value, DRG, and procedure-style
+  components.
+- `PRV`: provider taxonomy/specialty facts attached to provider role context.
 
 Claim aggregate state keeps this selected 837 surface: claim envelope,
 subscriber/patient context, claim-level dates, claim/service references,
-diagnosis summary, healthcare-code components, and service lines. The aggregate
-is still not an EDI mirror; mapped facts that no reader needs can remain journal
-evidence until a projection asks for them.
+diagnosis summary, typed healthcare-code components, provider taxonomies,
+institutional claim facts, and service lines. The aggregate is still not an EDI
+mirror; mapped facts that no reader needs can remain journal evidence until a
+projection asks for them.
 
 `ClaimServiceLineRecorded` carries the submitted line facts needed for matching
 and projection: line order, procedure qualifier/code, procedure modifiers,
-charge amount, unit measure, unit count, and diagnosis pointers where present.
+charge amount, unit measure, unit count, and diagnosis pointer arrays where
+present.
 Institutional `SV2` lines also carry the revenue code. Consumers should use
 these named fields, not infer submitted amounts and units from `raw_elements`.
 
 Provider references keep their role in the event name. Current 837 provider
 roles include billing, rendering, referring, supervising, facility, attending,
 operating, and other provider references. `reference_scope` says whether the
-provider applied at claim or service-line scope.
+provider applied at claim or service-line scope. `ClaimProviderTaxonomyRecorded`
+keeps `PRV` role/taxonomy facts aligned with that context.
 
 835 says how the payer adjudicated it: status, payer control number, paid
 amount, patient responsibility, adjustments, remittance dates, service-line
