@@ -7,6 +7,7 @@
 #include "store.h"
 #include "tokenise.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,6 +21,7 @@
 #define COVERAGE_STATE_JSON_MAX 65536u
 #define COVERAGE_MAX_AGGREGATES 128u
 #define COVERAGE_MAX_SOURCE_EVENTS 512u
+#define COVERAGE_MAX_UPDATE_BATCHES 128u
 #define COVERAGE_MAX_SERVICE_REQUESTS 64u
 #define COVERAGE_MAX_BENEFITS 64u
 
@@ -91,11 +93,22 @@ typedef struct {
 } member_coverage_t;
 
 typedef struct {
+    member_coverage_t *coverage;
+    char source_drop_id[SCRIBE_STORE_ID_MAX];
+    char source_run_id[96];
+    size_t first_source_event_index;
+    size_t source_event_count;
+    coverage_source_event_t updated_by;
+} coverage_update_batch_t;
+
+typedef struct {
     FILE *out;
     scribe_store_t *read_store;
     phi_vault_t *phi_vault;
     member_coverage_t aggregates[COVERAGE_MAX_AGGREGATES];
     size_t aggregate_count;
+    coverage_update_batch_t update_batches[COVERAGE_MAX_UPDATE_BATCHES];
+    size_t update_batch_count;
     char run_id[96];
     char current_drop_key[COVERAGE_FINGERPRINT_MAX];
     char current_source_drop_id[SCRIBE_STORE_ID_MAX];
@@ -114,7 +127,9 @@ typedef struct {
     char pending_benefit_status_code[32];
     int has_pending_enrollment;
     size_t source_drop_count;
+    size_t dirty_route_count;
     int include_phi;
+    int incremental;
 } coverage_state_t;
 
 static void copy_cstr(char *dst, size_t dst_len, const char *src)
@@ -164,6 +179,86 @@ static int tokenise_cstring(token_type_t type, const char *value, char *out, siz
     raw.ptr = (char *)value;
     raw.len = strlen(value);
     return tokenise_value(type, raw, out, out_len);
+}
+
+static uint64_t stable_hash_update(uint64_t hash, const char *value)
+{
+    const unsigned char *p = (const unsigned char *)(value == NULL ? "" : value);
+
+    while (*p != '\0') {
+        hash ^= (uint64_t)*p++;
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+static uint64_t stable_hash_update_i64(uint64_t hash, long long value)
+{
+    char text[32];
+    int written;
+
+    written = snprintf(text, sizeof(text), "%lld", value);
+    if (written < 0 || (size_t)written >= sizeof(text)) {
+        return hash;
+    }
+    return stable_hash_update(hash, text);
+}
+
+static int stable_event_id(
+    const journal_event_t *event,
+    size_t fallback_event_id,
+    char *out,
+    size_t out_len
+)
+{
+    char segment_id[SCRIBE_STORE_ID_MAX];
+    uint64_t hash = 1469598103934665603ull;
+    int written;
+
+    if (event == NULL || out == NULL || out_len == 0u) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    segment_id[0] = '\0';
+    if (event->segment_path != NULL && event->segment_path[0] != '\0') {
+        copy_cstr(segment_id, sizeof(segment_id), event->segment_path);
+    } else if (!json_get_number_text(event, "source_segment_index", segment_id, sizeof(segment_id))) {
+        written = snprintf(segment_id, sizeof(segment_id), "%zu", fallback_event_id);
+        if (written < 0 || (size_t)written >= sizeof(segment_id)) {
+            return X12_ERR_BUFFER_TOO_SMALL;
+        }
+    }
+
+    hash = stable_hash_update(hash, segment_id);
+    hash = stable_hash_update(hash, ":");
+    hash = stable_hash_update_i64(hash, event->offset);
+    hash = stable_hash_update(hash, ":");
+    hash = stable_hash_update_i64(hash, event->stored_len);
+
+    written = snprintf(out, out_len, "ev:%016llx", (unsigned long long)hash);
+    if (written < 0 || (size_t)written >= out_len) {
+        return X12_ERR_BUFFER_TOO_SMALL;
+    }
+    return X12_OK;
+}
+
+static int member_coverage_id_from_key(
+    const char *key,
+    char *out,
+    size_t out_len
+)
+{
+    int written;
+
+    if (key == NULL || key[0] == '\0' || out == NULL || out_len == 0u) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    written = snprintf(out, out_len, "member_coverage:%s", key);
+    if (written < 0 || (size_t)written >= out_len) {
+        return X12_ERR_BUFFER_TOO_SMALL;
+    }
+    return X12_OK;
 }
 
 static int resolve_phi_token(
@@ -385,6 +480,299 @@ static member_coverage_t *find_coverage(coverage_state_t *state, const char *key
     return NULL;
 }
 
+static int hydrate_get_string(yyjson_val *obj, const char *key, char *out, size_t out_len)
+{
+    yyjson_val *value;
+    const char *str;
+    size_t len;
+
+    if (out == NULL || out_len == 0u) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+    out[0] = '\0';
+    if (obj == NULL || key == NULL) {
+        return X12_OK;
+    }
+
+    value = yyjson_obj_get(obj, key);
+    if (value == NULL || !yyjson_is_str(value)) {
+        return X12_OK;
+    }
+
+    str = yyjson_get_str(value);
+    len = yyjson_get_len(value);
+    if (len >= out_len) {
+        len = out_len - 1u;
+    }
+    memcpy(out, str, len);
+    out[len] = '\0';
+    return X12_OK;
+}
+
+static void hydrate_get_size(yyjson_val *obj, const char *key, size_t *out)
+{
+    yyjson_val *value;
+
+    if (out == NULL || obj == NULL || key == NULL) {
+        return;
+    }
+
+    value = yyjson_obj_get(obj, key);
+    if (value != NULL && yyjson_is_uint(value)) {
+        *out = (size_t)yyjson_get_uint(value);
+    }
+}
+
+static int hydrate_service_requests(member_coverage_t *coverage, yyjson_val *state_obj)
+{
+    yyjson_val *arr;
+    yyjson_val *item;
+    size_t idx;
+    size_t max;
+
+    arr = yyjson_obj_get(state_obj, "service_requests");
+    if (arr == NULL || !yyjson_is_arr(arr)) {
+        return X12_OK;
+    }
+
+    yyjson_arr_foreach(arr, idx, max, item) {
+        coverage_service_request_t *request;
+
+        if (!yyjson_is_obj(item)) {
+            continue;
+        }
+        if (coverage->service_request_count >= COVERAGE_MAX_SERVICE_REQUESTS) {
+            return X12_ERR_NO_MEMORY;
+        }
+
+        request = &coverage->service_requests[coverage->service_request_count++];
+        (void)hydrate_get_string(item, "eligibility_id", request->eligibility_id, sizeof(request->eligibility_id));
+        (void)hydrate_get_string(item, "payer_id", request->payer_id, sizeof(request->payer_id));
+        (void)hydrate_get_string(item, "payer_id_token", request->payer_id_token, sizeof(request->payer_id_token));
+        (void)hydrate_get_string(item, "service_type_code", request->service_type_code, sizeof(request->service_type_code));
+        (void)hydrate_get_string(item, "inquiry_date", request->inquiry_date, sizeof(request->inquiry_date));
+    }
+
+    return X12_OK;
+}
+
+static int hydrate_benefits(member_coverage_t *coverage, yyjson_val *state_obj)
+{
+    yyjson_val *arr;
+    yyjson_val *item;
+    size_t idx;
+    size_t max;
+
+    arr = yyjson_obj_get(state_obj, "benefits");
+    if (arr == NULL || !yyjson_is_arr(arr)) {
+        return X12_OK;
+    }
+
+    yyjson_arr_foreach(arr, idx, max, item) {
+        coverage_benefit_t *benefit;
+
+        if (!yyjson_is_obj(item)) {
+            continue;
+        }
+        if (coverage->benefit_count >= COVERAGE_MAX_BENEFITS) {
+            return X12_ERR_NO_MEMORY;
+        }
+
+        benefit = &coverage->benefits[coverage->benefit_count++];
+        (void)hydrate_get_string(item, "eligibility_id", benefit->eligibility_id, sizeof(benefit->eligibility_id));
+        (void)hydrate_get_string(item, "payer_id", benefit->payer_id, sizeof(benefit->payer_id));
+        (void)hydrate_get_string(item, "payer_id_token", benefit->payer_id_token, sizeof(benefit->payer_id_token));
+        (void)hydrate_get_string(item, "service_type_code", benefit->service_type_code, sizeof(benefit->service_type_code));
+        (void)hydrate_get_string(item, "eligibility_or_benefit_information_code", benefit->eligibility_or_benefit_information_code, sizeof(benefit->eligibility_or_benefit_information_code));
+        (void)hydrate_get_string(item, "coverage_level_code", benefit->coverage_level_code, sizeof(benefit->coverage_level_code));
+        (void)hydrate_get_string(item, "insurance_type_code", benefit->insurance_type_code, sizeof(benefit->insurance_type_code));
+        (void)hydrate_get_string(item, "plan_coverage_description", benefit->plan_coverage_description, sizeof(benefit->plan_coverage_description));
+        (void)hydrate_get_string(item, "time_period_qualifier", benefit->time_period_qualifier, sizeof(benefit->time_period_qualifier));
+        (void)hydrate_get_string(item, "monetary_amount", benefit->monetary_amount, sizeof(benefit->monetary_amount));
+        (void)hydrate_get_string(item, "percent", benefit->percent, sizeof(benefit->percent));
+        (void)hydrate_get_string(item, "quantity_qualifier", benefit->quantity_qualifier, sizeof(benefit->quantity_qualifier));
+        (void)hydrate_get_string(item, "quantity", benefit->quantity, sizeof(benefit->quantity));
+        (void)hydrate_get_string(item, "authorization_or_certification_indicator", benefit->authorization_or_certification_indicator, sizeof(benefit->authorization_or_certification_indicator));
+        (void)hydrate_get_string(item, "in_plan_network_indicator", benefit->in_plan_network_indicator, sizeof(benefit->in_plan_network_indicator));
+        (void)hydrate_get_string(item, "response_as_of_date", benefit->response_as_of_date, sizeof(benefit->response_as_of_date));
+        (void)hydrate_get_string(item, "effective_date", benefit->effective_date, sizeof(benefit->effective_date));
+        (void)hydrate_get_string(item, "termination_date", benefit->termination_date, sizeof(benefit->termination_date));
+    }
+
+    return X12_OK;
+}
+
+static int hydrate_applied_event_ids(member_coverage_t *coverage, yyjson_val *root)
+{
+    yyjson_val *arr;
+    yyjson_val *item;
+    size_t idx;
+    size_t max;
+
+    if (coverage == NULL || root == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    arr = yyjson_obj_get(root, "applied_event_ids");
+    if (arr == NULL || !yyjson_is_arr(arr)) {
+        return X12_OK;
+    }
+
+    coverage->source_event_count = 0u;
+    yyjson_arr_foreach(arr, idx, max, item) {
+        coverage_source_event_t *source_event;
+
+        if (!yyjson_is_uint(item)) {
+            continue;
+        }
+        if (coverage->source_event_count >= COVERAGE_MAX_SOURCE_EVENTS) {
+            return X12_ERR_NO_MEMORY;
+        }
+
+        source_event = &coverage->source_events[coverage->source_event_count++];
+        memset(source_event, 0, sizeof(*source_event));
+        source_event->event_id = (size_t)yyjson_get_uint(item);
+    }
+
+    return X12_OK;
+}
+
+static int hydrate_member_coverage_snapshot(
+    coverage_state_t *state,
+    const char *aggregate_id,
+    const char *state_json
+)
+{
+    yyjson_doc *doc;
+    yyjson_val *root;
+    yyjson_val *keys;
+    yyjson_val *state_obj;
+    yyjson_val *obj;
+    member_coverage_t *coverage;
+    const char *key;
+    int rc = X12_OK;
+
+    if (state == NULL || aggregate_id == NULL || state_json == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+    if (state->aggregate_count >= COVERAGE_MAX_AGGREGATES) {
+        return X12_ERR_NO_MEMORY;
+    }
+
+    key = strncmp(aggregate_id, "member_coverage:", 16u) == 0 ?
+        aggregate_id + 16u :
+        aggregate_id;
+    coverage = &state->aggregates[state->aggregate_count++];
+    memset(coverage, 0, sizeof(*coverage));
+    copy_cstr(coverage->key, sizeof(coverage->key), key);
+
+    doc = yyjson_read(state_json, strlen(state_json), 0);
+    if (doc == NULL) {
+        state->aggregate_count--;
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+    root = yyjson_doc_get_root(doc);
+    if (root == NULL || !yyjson_is_obj(root)) {
+        yyjson_doc_free(doc);
+        state->aggregate_count--;
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    hydrate_get_size(root, "version", &coverage->version);
+    keys = yyjson_obj_get(root, "keys");
+    if (keys != NULL && yyjson_is_obj(keys)) {
+        (void)hydrate_get_string(keys, "member_id", coverage->member_id, sizeof(coverage->member_id));
+        (void)hydrate_get_string(keys, "member_id_token", coverage->member_id_token, sizeof(coverage->member_id_token));
+        (void)hydrate_get_string(keys, "payer_id", coverage->payer_id, sizeof(coverage->payer_id));
+        (void)hydrate_get_string(keys, "payer_id_token", coverage->payer_id_token, sizeof(coverage->payer_id_token));
+        (void)hydrate_get_string(keys, "member_name_token", coverage->member_name_token, sizeof(coverage->member_name_token));
+    }
+    if (coverage->member_id_token[0] == '\0') {
+        copy_cstr(coverage->member_id_token, sizeof(coverage->member_id_token), coverage->key);
+    }
+
+    state_obj = yyjson_obj_get(root, "state");
+    if (state_obj != NULL && yyjson_is_obj(state_obj)) {
+        obj = yyjson_obj_get(state_obj, "enrollment");
+        if (obj != NULL && yyjson_is_obj(obj)) {
+            (void)hydrate_get_string(obj, "relationship_code", coverage->relationship_code, sizeof(coverage->relationship_code));
+            (void)hydrate_get_string(obj, "maintenance_type_code", coverage->enrollment_maintenance_type_code, sizeof(coverage->enrollment_maintenance_type_code));
+            (void)hydrate_get_string(obj, "benefit_status_code", coverage->benefit_status_code, sizeof(coverage->benefit_status_code));
+            (void)hydrate_get_string(obj, "coverage_effective_date", coverage->coverage_effective_date, sizeof(coverage->coverage_effective_date));
+            (void)hydrate_get_string(obj, "coverage_termination_date", coverage->coverage_termination_date, sizeof(coverage->coverage_termination_date));
+            (void)hydrate_get_string(obj, "last_coverage_date_qualifier", coverage->last_coverage_date_qualifier, sizeof(coverage->last_coverage_date_qualifier));
+            (void)hydrate_get_string(obj, "last_coverage_date", coverage->last_coverage_date, sizeof(coverage->last_coverage_date));
+        }
+        obj = yyjson_obj_get(state_obj, "demographics");
+        if (obj != NULL && yyjson_is_obj(obj)) {
+            (void)hydrate_get_string(obj, "date_of_birth", coverage->date_of_birth, sizeof(coverage->date_of_birth));
+            (void)hydrate_get_string(obj, "date_of_birth_token", coverage->date_of_birth_token, sizeof(coverage->date_of_birth_token));
+            (void)hydrate_get_string(obj, "gender_code", coverage->gender_code, sizeof(coverage->gender_code));
+        }
+        obj = yyjson_obj_get(state_obj, "health_coverage");
+        if (obj != NULL && yyjson_is_obj(obj)) {
+            (void)hydrate_get_string(obj, "maintenance_type_code", coverage->health_coverage_maintenance_type_code, sizeof(coverage->health_coverage_maintenance_type_code));
+            (void)hydrate_get_string(obj, "insurance_line_code", coverage->insurance_line_code, sizeof(coverage->insurance_line_code));
+            (void)hydrate_get_string(obj, "plan_coverage_description", coverage->plan_coverage_description, sizeof(coverage->plan_coverage_description));
+            (void)hydrate_get_string(obj, "coverage_level_code", coverage->coverage_level_code, sizeof(coverage->coverage_level_code));
+        }
+        rc = hydrate_service_requests(coverage, state_obj);
+        if (rc == X12_OK) {
+            rc = hydrate_benefits(coverage, state_obj);
+        }
+    }
+    if (rc == X12_OK) {
+        rc = hydrate_applied_event_ids(coverage, root);
+    }
+
+    yyjson_doc_free(doc);
+    if (rc != X12_OK) {
+        state->aggregate_count--;
+    }
+    return rc;
+}
+
+static int hydrate_member_coverage_if_present(coverage_state_t *state, const char *key)
+{
+    char aggregate_id[COVERAGE_ID_MAX + 32u];
+    char state_json[COVERAGE_STATE_JSON_MAX];
+    size_t version = 0u;
+    int rc;
+
+    if (state == NULL || !state->incremental || state->read_store == NULL ||
+        key == NULL || key[0] == '\0' || find_coverage(state, key) != NULL) {
+        return X12_OK;
+    }
+
+    rc = member_coverage_id_from_key(key, aggregate_id, sizeof(aggregate_id));
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    rc = scribe_store_get_latest_member_coverage(
+        state->read_store,
+        aggregate_id,
+        &version,
+        state_json,
+        sizeof(state_json)
+    );
+    if (rc == X12_ERR_NOT_FOUND) {
+        return X12_OK;
+    }
+    if (rc == X12_OK) {
+        rc = hydrate_member_coverage_snapshot(state, aggregate_id, state_json);
+    }
+    if (rc == X12_OK) {
+        fprintf(
+            stderr,
+            "scribe stitch coverage: hydrate aggregate=%s version=%zu\n",
+            aggregate_id,
+            version
+        );
+    }
+    return rc;
+}
+
 static member_coverage_t *find_or_add_coverage(
     coverage_state_t *state,
     const char *member_id,
@@ -397,6 +785,10 @@ static member_coverage_t *find_or_add_coverage(
     member_coverage_t *coverage;
 
     if (state == NULL || key == NULL || key[0] == '\0') {
+        return NULL;
+    }
+
+    if (hydrate_member_coverage_if_present(state, key) != X12_OK) {
         return NULL;
     }
 
@@ -734,12 +1126,13 @@ static int snapshot_add_applied_event_ids(
 
 static int build_snapshot_doc(
     const coverage_state_t *state,
-    const member_coverage_t *coverage,
-    const coverage_source_event_t *updated_by,
+    const coverage_update_batch_t *batch,
     const char *aggregate_id,
     json_writer_t *writer
 )
 {
+    const member_coverage_t *coverage;
+    const coverage_source_event_t *updated_by;
     yyjson_mut_val *root;
     yyjson_mut_val *keys;
     yyjson_mut_val *state_obj;
@@ -750,10 +1143,12 @@ static int build_snapshot_doc(
     int include_phi;
     int rc;
 
-    if (state == NULL || coverage == NULL || updated_by == NULL ||
+    if (state == NULL || batch == NULL || batch->coverage == NULL ||
         aggregate_id == NULL || writer == NULL) {
         return X12_ERR_INVALID_ARGUMENT;
     }
+    coverage = batch->coverage;
+    updated_by = &batch->updated_by;
     include_phi = state->include_phi;
 
     rc = json_writer_init_object(writer);
@@ -766,8 +1161,8 @@ static int build_snapshot_doc(
     if (rc == X12_OK && state->run_id[0] != '\0') {
         rc = json_writer_add_string(writer, root, "run_id", state->run_id);
     }
-    if (rc == X12_OK && state->current_source_run_id[0] != '\0') {
-        rc = json_writer_add_string(writer, root, "source_run_id", state->current_source_run_id);
+    if (rc == X12_OK && batch->source_run_id[0] != '\0') {
+        rc = json_writer_add_string(writer, root, "source_run_id", batch->source_run_id);
     }
     if (rc == X12_OK) {
         rc = json_writer_add_string(writer, root, "aggregate_type", "member_coverage");
@@ -790,7 +1185,7 @@ static int build_snapshot_doc(
         );
     }
     if (rc == X12_OK) {
-        rc = json_writer_add_string(writer, root, "source_drop_id", state->current_source_drop_id);
+        rc = json_writer_add_string(writer, root, "source_drop_id", batch->source_drop_id);
     }
     if (rc == X12_OK) {
         rc = json_writer_add_bool(writer, root, "contains_phi", include_phi);
@@ -1116,22 +1511,22 @@ static int persist_member_coverage_keys(
     return rc;
 }
 
-static int write_snapshot(
-    coverage_state_t *state,
-    member_coverage_t *coverage,
-    const coverage_source_event_t *updated_by
-)
+static int write_snapshot(coverage_state_t *state, const coverage_update_batch_t *batch)
 {
     json_writer_t writer = {0};
+    member_coverage_t *coverage;
+    const coverage_source_event_t *updated_by;
     char aggregate_id[COVERAGE_ID_MAX + 32u];
     char state_json[COVERAGE_STATE_JSON_MAX];
     char updated_by_event_id[32];
     int written;
     int rc;
 
-    if (state == NULL || coverage == NULL || updated_by == NULL) {
+    if (state == NULL || batch == NULL || batch->coverage == NULL) {
         return X12_ERR_INVALID_ARGUMENT;
     }
+    coverage = batch->coverage;
+    updated_by = &batch->updated_by;
 
     written = snprintf(
         aggregate_id,
@@ -1143,7 +1538,15 @@ static int write_snapshot(
         return X12_ERR_BUFFER_TOO_SMALL;
     }
 
-    rc = build_snapshot_doc(state, coverage, updated_by, aggregate_id, &writer);
+    fprintf(
+        stderr,
+        "scribe stitch coverage: emit aggregate=%s version=%zu source_drop=%s\n",
+        aggregate_id,
+        coverage->version,
+        batch->source_drop_id
+    );
+
+    rc = build_snapshot_doc(state, batch, aggregate_id, &writer);
     if (rc == X12_OK) {
         rc = json_writer_write_cstring(&writer, state_json, sizeof(state_json));
     }
@@ -1175,13 +1578,48 @@ static int write_snapshot(
         coverage->version,
         state_json,
         updated_by_event_id,
-        state->current_source_drop_id
+        batch->source_drop_id
     );
     if (rc != X12_OK) {
         return rc;
     }
 
-    return persist_member_coverage_keys(state, coverage, aggregate_id);
+    rc = persist_member_coverage_keys(state, coverage, aggregate_id);
+    if (rc != X12_OK) {
+        return rc;
+    }
+    if (state->incremental && state->read_store != NULL) {
+        rc = scribe_store_clear_dirty_aggregate(
+            state->read_store,
+            "member_coverage",
+            aggregate_id,
+            batch->source_drop_id
+        );
+    }
+
+    return rc;
+}
+
+static int coverage_stitch_flush_update_batches(coverage_state_t *state)
+{
+    size_t i;
+    int rc;
+
+    if (state == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    for (i = 0u; i < state->update_batch_count; i++) {
+        if (state->update_batches[i].source_event_count == 0u) {
+            continue;
+        }
+        rc = write_snapshot(state, &state->update_batches[i]);
+        if (rc != X12_OK) {
+            return rc;
+        }
+    }
+    state->update_batch_count = 0u;
+    return X12_OK;
 }
 
 static int record_coverage_update(
@@ -1193,22 +1631,53 @@ static int record_coverage_update(
     const char *event_type
 )
 {
-    coverage_source_event_t *updated_by;
+    coverage_update_batch_t *batch = NULL;
+    const char *source_drop_id;
+    int is_new_batch = 0;
+    size_t i;
     int rc;
 
     if (state == NULL || coverage == NULL || event_type == NULL) {
         return X12_ERR_INVALID_ARGUMENT;
     }
 
-    coverage->version++;
+    source_drop_id = state->current_source_drop_id;
+    for (i = 0u; i < state->update_batch_count; i++) {
+        if (state->update_batches[i].coverage == coverage &&
+            strcmp(state->update_batches[i].source_drop_id, source_drop_id) == 0) {
+            batch = &state->update_batches[i];
+            break;
+        }
+    }
+    if (batch == NULL) {
+        if (state->update_batch_count >= COVERAGE_MAX_UPDATE_BATCHES) {
+            return X12_ERR_NO_MEMORY;
+        }
+        batch = &state->update_batches[state->update_batch_count++];
+        memset(batch, 0, sizeof(*batch));
+        batch->coverage = coverage;
+        batch->first_source_event_index = coverage->source_event_count;
+        copy_cstr(batch->source_drop_id, sizeof(batch->source_drop_id), source_drop_id);
+        copy_cstr(batch->source_run_id, sizeof(batch->source_run_id), state->current_source_run_id);
+        coverage->version++;
+        is_new_batch = 1;
+    }
+
     rc = append_source_event(coverage, event_id, journal_offset, journal_length, event_type);
     if (rc != X12_OK) {
-        coverage->version--;
+        if (is_new_batch) {
+            state->update_batch_count--;
+            coverage->version--;
+        }
         return rc;
     }
-    updated_by = &coverage->source_events[coverage->source_event_count - 1u];
+    batch->source_event_count++;
+    batch->updated_by = coverage->source_events[coverage->source_event_count - 1u];
+    if (state->current_source_run_id[0] != '\0') {
+        copy_cstr(batch->source_run_id, sizeof(batch->source_run_id), state->current_source_run_id);
+    }
 
-    return write_snapshot(state, coverage, updated_by);
+    return X12_OK;
 }
 
 static int make_drop_key(
@@ -1368,6 +1837,80 @@ static int put_event_key_if_present(
     return scribe_store_put_event_key(store, key_type, key_value, event_id);
 }
 
+static int mark_member_coverage_dirty_for_key(
+    coverage_state_t *state,
+    const char *key_type,
+    const char *key_value,
+    const char *event_id
+)
+{
+    char aggregate_ids[8][SCRIBE_STORE_ID_MAX];
+    char aggregate_id[SCRIBE_STORE_ID_MAX];
+    size_t aggregate_count = 0u;
+    size_t i;
+    int rc;
+
+    if (state == NULL || !state->incremental || state->read_store == NULL ||
+        key_type == NULL || key_value == NULL || key_value[0] == '\0' ||
+        event_id == NULL || event_id[0] == '\0') {
+        return X12_OK;
+    }
+
+    rc = scribe_store_find_member_coverage_ids_by_key(
+        state->read_store,
+        key_type,
+        key_value,
+        aggregate_ids,
+        8u,
+        &aggregate_count
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    if (aggregate_count == 0u && strcmp(key_type, "member_id") == 0) {
+        rc = member_coverage_id_from_key(key_value, aggregate_id, sizeof(aggregate_id));
+        if (rc != X12_OK) {
+            return rc;
+        }
+        rc = scribe_store_put_member_coverage_key(
+            state->read_store,
+            "member_id",
+            key_value,
+            aggregate_id
+        );
+        if (rc != X12_OK) {
+            return rc;
+        }
+        copy_cstr(aggregate_ids[0], sizeof(aggregate_ids[0]), aggregate_id);
+        aggregate_count = 1u;
+    }
+
+    for (i = 0u; i < aggregate_count; i++) {
+        rc = scribe_store_put_aggregate_event_route(
+            state->read_store,
+            "member_coverage",
+            aggregate_ids[i],
+            event_id
+        );
+        if (rc == X12_OK) {
+            rc = scribe_store_mark_dirty_aggregate(
+                state->read_store,
+                "member_coverage",
+                aggregate_ids[i],
+                state->current_source_drop_id,
+                event_id
+            );
+        }
+        if (rc != X12_OK) {
+            return rc;
+        }
+        state->dirty_route_count++;
+    }
+
+    return X12_OK;
+}
+
 static int index_journal_event(
     coverage_state_t *state,
     const journal_event_t *event,
@@ -1376,7 +1919,7 @@ static int index_journal_event(
     long long event_length
 )
 {
-    char event_id[32];
+    char event_id[SCRIBE_STORE_ID_MAX];
     char event_type[96];
     char segment_id[SCRIBE_STORE_ID_MAX];
     char member_id[COVERAGE_ID_MAX];
@@ -1400,9 +1943,9 @@ static int index_journal_event(
         return X12_OK;
     }
 
-    written = snprintf(event_id, sizeof(event_id), "%zu", numeric_event_id);
-    if (written < 0 || (size_t)written >= sizeof(event_id)) {
-        return X12_ERR_BUFFER_TOO_SMALL;
+    rc = stable_event_id(event, numeric_event_id, event_id, sizeof(event_id));
+    if (rc != X12_OK) {
+        return rc;
     }
     if (event->segment_path != NULL && event->segment_path[0] != '\0') {
         copy_cstr(segment_id, sizeof(segment_id), event->segment_path);
@@ -1429,6 +1972,7 @@ static int index_journal_event(
 
     member_id[0] = '\0';
     member_id_token[0] = '\0';
+    service_type_code[0] = '\0';
     (void)json_get_string(event, "member_id", member_id, sizeof(member_id));
     (void)json_get_string(event, "member_id_token", member_id_token, sizeof(member_id_token));
     if (member_id[0] == '\0') {
@@ -1437,6 +1981,10 @@ static int index_journal_event(
     }
     member_key = member_id_token[0] != '\0' ? member_id_token : member_id;
     rc = put_event_key_if_present(state->read_store, "member_id", member_key, event_id);
+    if (rc != X12_OK) {
+        return rc;
+    }
+    rc = mark_member_coverage_dirty_for_key(state, "member_id", member_key, event_id);
     if (rc != X12_OK) {
         return rc;
     }
@@ -1450,6 +1998,10 @@ static int index_journal_event(
     if (rc != X12_OK) {
         return rc;
     }
+    rc = mark_member_coverage_dirty_for_key(state, "payer_id", payer_key, event_id);
+    if (rc != X12_OK) {
+        return rc;
+    }
 
     if (json_get_string(event, "eligibility_id", eligibility_id, sizeof(eligibility_id))) {
         rc = put_event_key_if_present(state->read_store, "eligibility_id", eligibility_id, event_id);
@@ -1458,6 +2010,14 @@ static int index_journal_event(
         json_get_string(event, "service_type_code", service_type_code, sizeof(service_type_code))) {
         rc = put_event_key_if_present(
             state->read_store,
+            "service_type_code",
+            service_type_code,
+            event_id
+        );
+    }
+    if (rc == X12_OK) {
+        rc = mark_member_coverage_dirty_for_key(
+            state,
             "service_type_code",
             service_type_code,
             event_id
@@ -2068,9 +2628,13 @@ int coverage_stitcher_stitch(const coverage_stitcher_input_t *input)
     int owns_out = 0;
     int owns_read_store = 0;
     int owns_phi_vault = 0;
+    int reduce_pass;
     int rc = X12_OK;
 
     if (input == NULL || input->journal_path == NULL || input->out_path == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+    if (input->incremental && input->read_store_path == NULL) {
         return X12_ERR_INVALID_ARGUMENT;
     }
 
@@ -2102,6 +2666,15 @@ int coverage_stitcher_stitch(const coverage_stitcher_input_t *input)
 
     state->out = out;
     state->include_phi = input->include_phi;
+    state->incremental = input->incremental;
+    fprintf(
+        stderr,
+        "scribe stitch coverage: start mode=%s journal=%s read_store=%s out=%s\n",
+        input->incremental ? "incremental" : "replay",
+        input->journal_path,
+        input->read_store_path == NULL ? "(none)" : input->read_store_path,
+        input->out_path
+    );
     if (input->run_id != NULL && input->run_id[0] != '\0') {
         copy_cstr(state->run_id, sizeof(state->run_id), input->run_id);
     } else {
@@ -2158,27 +2731,83 @@ int coverage_stitcher_stitch(const coverage_stitcher_input_t *input)
         owns_read_store = 1;
     }
 
+    reduce_pass = input->incremental ? 0 : 1;
     while (rc == X12_OK) {
-        rc = journal_reader_next(&journal, &record);
-        if (rc != X12_OK || record.record_len == 0u) {
-            break;
+        if (input->incremental) {
+            fprintf(
+                stderr,
+                "scribe stitch coverage: %s pass journal=%s\n",
+                reduce_pass ? "reduce" : "shuffle",
+                input->journal_path
+            );
         }
-        event_id++;
-        rc = make_drop_key(&record, drop_key, sizeof(drop_key));
-        if (rc != X12_OK) {
-            break;
-        }
-        if (drop_key[0] != '\0' && strcmp(state->current_drop_key, drop_key) != 0) {
-            rc = set_current_source_drop(state, drop_key, &record);
+
+        while (rc == X12_OK) {
+            rc = journal_reader_next(&journal, &record);
+            if (rc != X12_OK || record.record_len == 0u) {
+                break;
+            }
+            event_id++;
+            rc = make_drop_key(&record, drop_key, sizeof(drop_key));
             if (rc != X12_OK) {
                 break;
             }
-            capture_current_source_run_id(state, &record);
+            if (drop_key[0] != '\0' && strcmp(state->current_drop_key, drop_key) != 0) {
+                rc = coverage_stitch_flush_update_batches(state);
+                if (rc != X12_OK) {
+                    break;
+                }
+                rc = set_current_source_drop(state, drop_key, &record);
+                if (rc != X12_OK) {
+                    break;
+                }
+                capture_current_source_run_id(state, &record);
+                fprintf(
+                    stderr,
+                    "scribe stitch coverage: source_drop=%s source_run=%s\n",
+                    state->current_source_drop_id,
+                    state->current_source_run_id[0] == '\0' ? "(none)" : state->current_source_run_id
+                );
+            }
+            if (!input->incremental || !reduce_pass) {
+                rc = index_journal_event(state, &record, event_id, record.offset, record.stored_len);
+                if (rc != X12_OK) {
+                    break;
+                }
+            }
+            if (!input->incremental || reduce_pass) {
+                rc = apply_coverage_event(state, &record, event_id, record.offset, record.stored_len);
+                if (rc != X12_OK) {
+                    break;
+                }
+            }
         }
-        rc = index_journal_event(state, &record, event_id, record.offset, record.stored_len);
+
         if (rc == X12_OK) {
-            rc = apply_coverage_event(state, &record, event_id, record.offset, record.stored_len);
+            rc = coverage_stitch_flush_update_batches(state);
         }
+        if (rc != X12_OK) {
+            break;
+        }
+        if (!input->incremental || reduce_pass) {
+            break;
+        }
+
+        if (journal_reader_close(&journal) != X12_OK) {
+            rc = X12_ERR_IO;
+            break;
+        }
+        journal_reader_init(&journal);
+        rc = journal_reader_open(&journal, input->journal_path);
+        if (rc != X12_OK) {
+            break;
+        }
+        state->current_drop_key[0] = '\0';
+        state->current_source_drop_id[0] = '\0';
+        state->current_source_run_id[0] = '\0';
+        state->source_drop_count = 0u;
+        event_id = 0u;
+        reduce_pass = 1;
     }
 
     if (journal_reader_close(&journal) != X12_OK && rc == X12_OK) {
@@ -2197,6 +2826,14 @@ int coverage_stitcher_stitch(const coverage_stitcher_input_t *input)
         rc = X12_ERR_IO;
     }
 
+    fprintf(
+        stderr,
+        "scribe stitch coverage: done events=%zu dirty_routes=%zu aggregates=%zu status=%s\n",
+        event_id,
+        state->dirty_route_count,
+        state->aggregate_count,
+        x12_error_message(rc)
+    );
     free(state);
     return rc;
 }
@@ -2232,6 +2869,8 @@ int coverage_stitcher_run_cli(int argc, char **argv)
             input.phi_vault_path = argv[++i];
         } else if (strcmp(argv[i], "--include-phi") == 0) {
             input.include_phi = 1;
+        } else if (strcmp(argv[i], "--incremental") == 0) {
+            input.incremental = 1;
         } else if (strcmp(argv[i], "--run-id") == 0) {
             if (i + 1 >= argc) {
                 return -1;

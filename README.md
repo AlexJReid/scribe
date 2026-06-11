@@ -43,8 +43,12 @@ Write source drops into partitioned journal segments:
 
 ```bash
 scribe ingest --out journal.d/20260617/drop-001.journal --run-id drop-001 --837 claims.edi
+scribe stitch claims --journal journal.d/20260617/drop-001.journal \
+  --incremental --read-store read_store.sqlite --out changed_claims.ndjson
+
 scribe ingest --out journal.d/20260720/drop-002.journal --run-id drop-002 --835 remit.edi
-scribe stitch claims --journal journal.d --out claim_aggregates.ndjson
+scribe stitch claims --journal journal.d/20260720/drop-002.journal \
+  --incremental --read-store read_store.sqlite --out changed_claims.ndjson
 ```
 
 Stitch claim versions by matching 837 claim facts with 835 remittance facts,
@@ -57,6 +61,10 @@ scribe stitch claims \
   --out claim_aggregates.ndjson \
   --notify-out notifications.ndjson
 ```
+
+`--incremental` treats `--journal` as the new source-drop segment: the stitcher
+indexes that segment, hydrates only touched aggregates from the read store, and
+emits changed versions. Omit `--incremental` for an explicit full replay/rebuild.
 
 Claims match on tokenised `CLM01`/`CLP01`. Service lines are paired by procedure
 and charge, date when available, or line order, with the chosen `match_method`

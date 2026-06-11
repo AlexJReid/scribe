@@ -10,6 +10,7 @@ typedef struct {
     const char *phi_vault_path;
     const char *run_id;
     int include_phi;
+    int incremental;
 } coverage_stitcher_input_t;
 
 void coverage_stitcher_input_init(coverage_stitcher_input_t *input);

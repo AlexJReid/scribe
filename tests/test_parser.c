@@ -717,6 +717,194 @@ static int test_stroke_encounter_fixture_set(void)
     return 0;
 }
 
+static int test_incremental_claim_stitch_from_source_drops(void)
+{
+    char facility_837_path[512];
+    char facility_835_path[512];
+    char journal_837_path[512];
+    char journal_835_path[512];
+    char read_store_path[512];
+    char read_store_wal_path[560];
+    char read_store_shm_path[560];
+    char first_out_path[512];
+    char second_out_path[512];
+    char first_out[64000];
+    char second_out[64000];
+    journal_builder_input_t journal_input;
+    aggregate_stitcher_input_t stitch_input;
+
+    REQUIRE(make_path(facility_837_path, sizeof(facility_837_path), TEST_FIXTURE_DIR, "stroke_encounter/facility_837.edi") == 0);
+    REQUIRE(make_path(facility_835_path, sizeof(facility_835_path), TEST_FIXTURE_DIR, "stroke_encounter/facility_835.edi") == 0);
+    REQUIRE(make_path(journal_837_path, sizeof(journal_837_path), TEST_OUTPUT_DIR, "incremental_facility_837.journal") == 0);
+    REQUIRE(make_path(journal_835_path, sizeof(journal_835_path), TEST_OUTPUT_DIR, "incremental_facility_835.journal") == 0);
+    REQUIRE(make_path(read_store_path, sizeof(read_store_path), TEST_OUTPUT_DIR, "incremental_claim_store.sqlite") == 0);
+    REQUIRE(make_path(first_out_path, sizeof(first_out_path), TEST_OUTPUT_DIR, "incremental_claim_first.ndjson") == 0);
+    REQUIRE(make_path(second_out_path, sizeof(second_out_path), TEST_OUTPUT_DIR, "incremental_claim_second.ndjson") == 0);
+    REQUIRE(snprintf(read_store_wal_path, sizeof(read_store_wal_path), "%s-wal", read_store_path) > 0);
+    REQUIRE(snprintf(read_store_shm_path, sizeof(read_store_shm_path), "%s-shm", read_store_path) > 0);
+
+    (void)remove(journal_837_path);
+    (void)remove(journal_835_path);
+    (void)remove(read_store_path);
+    (void)remove(read_store_wal_path);
+    (void)remove(read_store_shm_path);
+
+    journal_builder_input_init(&journal_input);
+    journal_input.run_id = "incremental-837-drop";
+    REQUIRE_OK(journal_builder_input_add_837(&journal_input, facility_837_path));
+    REQUIRE_OK(journal_builder_build(&journal_input, journal_837_path));
+
+    journal_builder_input_init(&journal_input);
+    journal_input.run_id = "incremental-835-drop";
+    REQUIRE_OK(journal_builder_input_add_835(&journal_input, facility_835_path));
+    REQUIRE_OK(journal_builder_build(&journal_input, journal_835_path));
+
+    aggregate_stitcher_input_init(&stitch_input);
+    stitch_input.journal_path = journal_837_path;
+    stitch_input.read_store_path = read_store_path;
+    stitch_input.out_path = first_out_path;
+    stitch_input.incremental = 1;
+    stitch_input.run_id = "incremental-stitch-837";
+    REQUIRE_OK(aggregate_stitcher_stitch(&stitch_input));
+    REQUIRE(read_file_text(first_out_path, first_out, sizeof(first_out)) == 0);
+    REQUIRE(strstr(first_out, "\"aggregate_id\":\"claim:8259c238232f9585e95fc8f45b0bb410\"") != NULL);
+    REQUIRE(strstr(first_out, "\"version\":1") != NULL);
+    REQUIRE(strstr(first_out, "\"has_837\":true") != NULL);
+    REQUIRE(strstr(first_out, "\"has_835\":true") == NULL);
+
+    aggregate_stitcher_input_init(&stitch_input);
+    stitch_input.journal_path = journal_835_path;
+    stitch_input.read_store_path = read_store_path;
+    stitch_input.out_path = second_out_path;
+    stitch_input.incremental = 1;
+    stitch_input.run_id = "incremental-stitch-835";
+    REQUIRE_OK(aggregate_stitcher_stitch(&stitch_input));
+    REQUIRE(read_file_text(second_out_path, second_out, sizeof(second_out)) == 0);
+    REQUIRE(strstr(second_out, "\"aggregate_id\":\"claim:8259c238232f9585e95fc8f45b0bb410\"") != NULL);
+    REQUIRE(strstr(second_out, "\"version\":2") != NULL);
+    REQUIRE(strstr(second_out, "\"has_837\":true") != NULL);
+    REQUIRE(strstr(second_out, "\"has_835\":true") != NULL);
+    REQUIRE(strstr(second_out, "\"submitted_service_line_count\":3") != NULL);
+    REQUIRE(strstr(second_out, "\"remittance_service_line_count\":3") != NULL);
+    REQUIRE(count_substring(second_out, "\"event_type\":\"ClaimAggregateUpdated\"") == 1u);
+
+    (void)remove(journal_837_path);
+    (void)remove(journal_835_path);
+    (void)remove(read_store_path);
+    (void)remove(read_store_wal_path);
+    (void)remove(read_store_shm_path);
+
+    return 0;
+}
+
+static int test_incremental_coverage_stitch_from_source_drops(void)
+{
+    char coverage_834_path[512];
+    char eligibility_270_path[512];
+    char journal_834_path[512];
+    char journal_270_path[512];
+    char read_store_path[512];
+    char read_store_wal_path[560];
+    char read_store_shm_path[560];
+    char first_out_path[512];
+    char second_out_path[512];
+    char aggregate_id[160];
+    char member_token[TOKENISE_MAX_TOKEN_LEN];
+    char latest_coverage[65536];
+    char *first_out = NULL;
+    char *second_out = NULL;
+    x12_str_t raw;
+    journal_builder_input_t journal_input;
+    coverage_stitcher_input_t stitch_input;
+    scribe_store_t store;
+    size_t latest_version = 0u;
+
+    REQUIRE_ALLOC(first_out, 64000u);
+    REQUIRE_ALLOC(second_out, 64000u);
+
+    raw.ptr = "SUB-STROKE-001";
+    raw.len = strlen(raw.ptr);
+    REQUIRE_OK(tokenise_value(TOK_MEMBER_ID, raw, member_token, sizeof(member_token)));
+    REQUIRE(snprintf(aggregate_id, sizeof(aggregate_id), "member_coverage:%s", member_token) > 0);
+
+    REQUIRE(make_path(coverage_834_path, sizeof(coverage_834_path), TEST_FIXTURE_DIR, "stroke_encounter/coverage_834.edi") == 0);
+    REQUIRE(make_path(eligibility_270_path, sizeof(eligibility_270_path), TEST_FIXTURE_DIR, "stroke_encounter/eligibility_270.edi") == 0);
+    REQUIRE(make_path(journal_834_path, sizeof(journal_834_path), TEST_OUTPUT_DIR, "incremental_coverage_834.journal") == 0);
+    REQUIRE(make_path(journal_270_path, sizeof(journal_270_path), TEST_OUTPUT_DIR, "incremental_coverage_270.journal") == 0);
+    REQUIRE(make_path(read_store_path, sizeof(read_store_path), TEST_OUTPUT_DIR, "incremental_coverage_store.sqlite") == 0);
+    REQUIRE(make_path(first_out_path, sizeof(first_out_path), TEST_OUTPUT_DIR, "incremental_coverage_first.ndjson") == 0);
+    REQUIRE(make_path(second_out_path, sizeof(second_out_path), TEST_OUTPUT_DIR, "incremental_coverage_second.ndjson") == 0);
+    REQUIRE(snprintf(read_store_wal_path, sizeof(read_store_wal_path), "%s-wal", read_store_path) > 0);
+    REQUIRE(snprintf(read_store_shm_path, sizeof(read_store_shm_path), "%s-shm", read_store_path) > 0);
+
+    (void)remove(journal_834_path);
+    (void)remove(journal_270_path);
+    (void)remove(read_store_path);
+    (void)remove(read_store_wal_path);
+    (void)remove(read_store_shm_path);
+
+    journal_builder_input_init(&journal_input);
+    journal_input.run_id = "incremental-834-drop";
+    REQUIRE_OK(journal_builder_input_add_834(&journal_input, coverage_834_path));
+    REQUIRE_OK(journal_builder_build(&journal_input, journal_834_path));
+
+    journal_builder_input_init(&journal_input);
+    journal_input.run_id = "incremental-270-drop";
+    REQUIRE_OK(journal_builder_input_add_270(&journal_input, eligibility_270_path));
+    REQUIRE_OK(journal_builder_build(&journal_input, journal_270_path));
+
+    coverage_stitcher_input_init(&stitch_input);
+    stitch_input.journal_path = journal_834_path;
+    stitch_input.read_store_path = read_store_path;
+    stitch_input.out_path = first_out_path;
+    stitch_input.incremental = 1;
+    stitch_input.run_id = "incremental-coverage-834";
+    REQUIRE_OK(coverage_stitcher_stitch(&stitch_input));
+    REQUIRE(read_file_text(first_out_path, first_out, 64000u) == 0);
+    REQUIRE(count_substring(first_out, "\"event_type\":\"MemberCoverageUpdated\"") == 1u);
+    REQUIRE(strstr(first_out, aggregate_id) != NULL);
+    REQUIRE(strstr(first_out, "\"version\":1") != NULL);
+    REQUIRE(strstr(first_out, "\"source_event_count\":3") != NULL);
+    REQUIRE(strstr(first_out, "\"health_coverage\"") != NULL);
+
+    coverage_stitcher_input_init(&stitch_input);
+    stitch_input.journal_path = journal_270_path;
+    stitch_input.read_store_path = read_store_path;
+    stitch_input.out_path = second_out_path;
+    stitch_input.incremental = 1;
+    stitch_input.run_id = "incremental-coverage-270";
+    REQUIRE_OK(coverage_stitcher_stitch(&stitch_input));
+    REQUIRE(read_file_text(second_out_path, second_out, 64000u) == 0);
+    REQUIRE(count_substring(second_out, "\"event_type\":\"MemberCoverageUpdated\"") == 1u);
+    REQUIRE(strstr(second_out, aggregate_id) != NULL);
+    REQUIRE(strstr(second_out, "\"version\":2") != NULL);
+    REQUIRE(strstr(second_out, "\"source_event_count\":9") != NULL);
+    REQUIRE(strstr(second_out, "\"service_request_count\":3") != NULL);
+
+    scribe_store_init(&store);
+    REQUIRE_OK(scribe_store_open(&store, read_store_path));
+    REQUIRE_OK(scribe_store_init_schema(&store));
+    REQUIRE_OK(scribe_store_get_latest_member_coverage(
+                &store,
+                aggregate_id,
+                &latest_version,
+                latest_coverage,
+                sizeof(latest_coverage)
+            ));
+    REQUIRE(latest_version == 2u);
+    REQUIRE(strstr(latest_coverage, "\"source_event_count\":9") != NULL);
+    REQUIRE_OK(scribe_store_close(&store));
+
+    (void)remove(journal_834_path);
+    (void)remove(journal_270_path);
+    (void)remove(read_store_path);
+    (void)remove(read_store_wal_path);
+    (void)remove(read_store_shm_path);
+
+    TEST_FREE_ALLOCATIONS();
+    return 0;
+}
+
 static int test_stroke_balance_projection_from_journal(void)
 {
     char coverage_834_path[512];
@@ -1272,7 +1460,7 @@ static int test_member_coverage_aggregate_from_journal(void)
     REQUIRE_OK(coverage_stitcher_stitch(&coverage_input));
     REQUIRE(read_file_text(aggregate_path, aggregates, COVERAGE_AGGREGATES_LEN) == 0);
 
-    REQUIRE(strstr(aggregates, "\"event_type\":\"MemberCoverageUpdated\"") != NULL);
+    REQUIRE(count_substring(aggregates, "\"event_type\":\"MemberCoverageUpdated\"") == 3u);
     REQUIRE(strstr(aggregates, "\"run_id\":\"coverage-stitch-test\"") != NULL);
     REQUIRE(strstr(aggregates, "\"source_run_id\":\"coverage-ingest-test\"") != NULL);
     REQUIRE(strstr(aggregates, "\"aggregate_type\":\"member_coverage\"") != NULL);
@@ -1304,7 +1492,7 @@ static int test_member_coverage_aggregate_from_journal(void)
                 latest_coverage,
                 LATEST_COVERAGE_LEN
             ));
-    REQUIRE(latest_version > 0u);
+    REQUIRE(latest_version == 3u);
     REQUIRE(strstr(latest_coverage, "\"contains_phi\":false") != NULL);
     REQUIRE(strstr(latest_coverage, "\"benefit_count\":3") != NULL);
     REQUIRE_OK(scribe_store_find_member_coverage_ids_by_key(
@@ -1349,6 +1537,7 @@ static int test_member_coverage_aggregate_from_journal(void)
     REQUIRE_OK(coverage_stitcher_stitch(&coverage_input));
     REQUIRE(read_file_text(phi_aggregate_path, phi_aggregates, COVERAGE_PHI_AGGREGATES_LEN) == 0);
 
+    REQUIRE(count_substring(phi_aggregates, "\"event_type\":\"MemberCoverageUpdated\"") == 3u);
     REQUIRE(strstr(phi_aggregates, "\"contains_phi\":true") != NULL);
     REQUIRE(strstr(phi_aggregates, "\"member_id\":\"SUB-STROKE-001\"") != NULL);
     REQUIRE(strstr(phi_aggregates, "\"member_id_token\":\"") != NULL);
@@ -1372,7 +1561,7 @@ static int test_member_coverage_aggregate_from_journal(void)
                 latest_coverage,
                 LATEST_COVERAGE_LEN
             ));
-    REQUIRE(latest_version > 0u);
+    REQUIRE(latest_version == 3u);
     REQUIRE(strstr(latest_coverage, "\"contains_phi\":true") != NULL);
     REQUIRE(strstr(latest_coverage, "\"member_id\":\"SUB-STROKE-001\"") != NULL);
     REQUIRE_OK(scribe_store_find_member_coverage_ids_by_key(
@@ -1410,6 +1599,8 @@ int main(void)
     REQUIRE(test_270_271_eligibility_events() == 0);
     REQUIRE(test_835_remittance_events() == 0);
     REQUIRE(test_stroke_encounter_fixture_set() == 0);
+    REQUIRE(test_incremental_claim_stitch_from_source_drops() == 0);
+    REQUIRE(test_incremental_coverage_stitch_from_source_drops() == 0);
     REQUIRE(test_stroke_balance_projection_from_journal() == 0);
     REQUIRE(test_member_coverage_aggregate_from_journal() == 0);
 

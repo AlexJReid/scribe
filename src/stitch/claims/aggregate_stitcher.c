@@ -3,6 +3,7 @@
 
 #include "run_id.h"
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -62,6 +63,86 @@ static void extract_claim_keys(
     claim_id_token[0] = '\0';
     (void)json_get_string(journal_line, "claim_id", claim_id, claim_id_len);
     (void)json_get_string(journal_line, "claim_id_token", claim_id_token, token_len);
+}
+
+static uint64_t stable_hash_update(uint64_t hash, const char *value)
+{
+    const unsigned char *p = (const unsigned char *)(value == NULL ? "" : value);
+
+    while (*p != '\0') {
+        hash ^= (uint64_t)*p++;
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+static uint64_t stable_hash_update_i64(uint64_t hash, long long value)
+{
+    char text[32];
+    int written;
+
+    written = snprintf(text, sizeof(text), "%lld", value);
+    if (written < 0 || (size_t)written >= sizeof(text)) {
+        return hash;
+    }
+    return stable_hash_update(hash, text);
+}
+
+static int stable_event_id(
+    const journal_event_t *journal_line,
+    size_t fallback_event_id,
+    char *out,
+    size_t out_len
+)
+{
+    char segment_id[SCRIBE_STORE_ID_MAX];
+    uint64_t hash = 1469598103934665603ull;
+    int written;
+
+    if (journal_line == NULL || out == NULL || out_len == 0u) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    segment_id[0] = '\0';
+    if (journal_line->segment_path != NULL && journal_line->segment_path[0] != '\0') {
+        copy_cstr(segment_id, sizeof(segment_id), journal_line->segment_path);
+    } else if (!json_get_number_text(journal_line, "source_segment_index", segment_id, sizeof(segment_id))) {
+        written = snprintf(segment_id, sizeof(segment_id), "%zu", fallback_event_id);
+        if (written < 0 || (size_t)written >= sizeof(segment_id)) {
+            return X12_ERR_BUFFER_TOO_SMALL;
+        }
+    }
+
+    hash = stable_hash_update(hash, segment_id);
+    hash = stable_hash_update(hash, ":");
+    hash = stable_hash_update_i64(hash, journal_line->offset);
+    hash = stable_hash_update(hash, ":");
+    hash = stable_hash_update_i64(hash, journal_line->stored_len);
+
+    written = snprintf(out, out_len, "ev:%016llx", (unsigned long long)hash);
+    if (written < 0 || (size_t)written >= out_len) {
+        return X12_ERR_BUFFER_TOO_SMALL;
+    }
+    return X12_OK;
+}
+
+static int claim_aggregate_id_from_key(
+    const char *key,
+    char *out,
+    size_t out_len
+)
+{
+    int written;
+
+    if (key == NULL || key[0] == '\0' || out == NULL || out_len == 0u) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    written = snprintf(out, out_len, "claim:%s", key);
+    if (written < 0 || (size_t)written >= out_len) {
+        return X12_ERR_BUFFER_TOO_SMALL;
+    }
+    return X12_OK;
 }
 
 static int tokenise_cstring(token_type_t type, const char *value, char *out, size_t out_len)
@@ -480,6 +561,54 @@ static claim_aggregate_t *find_aggregate(stitch_state_t *state, const char *key)
     return NULL;
 }
 
+static int hydrate_claim_aggregate_if_present(stitch_state_t *state, const char *key)
+{
+    char aggregate_id[STITCH_ID_MAX + 16u];
+    char *state_json;
+    size_t version = 0u;
+    int rc;
+
+    if (state == NULL || !state->incremental || state->read_store == NULL ||
+        key == NULL || key[0] == '\0' || find_aggregate(state, key) != NULL) {
+        return X12_OK;
+    }
+
+    rc = claim_aggregate_id_from_key(key, aggregate_id, sizeof(aggregate_id));
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    state_json = (char *)malloc(STITCH_STATE_JSON_MAX);
+    if (state_json == NULL) {
+        return X12_ERR_NO_MEMORY;
+    }
+
+    rc = scribe_store_get_latest_claim_aggregate(
+        state->read_store,
+        aggregate_id,
+        &version,
+        state_json,
+        STITCH_STATE_JSON_MAX
+    );
+    if (rc == X12_ERR_NOT_FOUND) {
+        free(state_json);
+        return X12_OK;
+    }
+    if (rc == X12_OK) {
+        rc = claim_stitch_hydrate_snapshot(state, aggregate_id, state_json);
+    }
+    if (rc == X12_OK) {
+        fprintf(
+            stderr,
+            "scribe stitch claims: hydrate aggregate=%s version=%zu\n",
+            aggregate_id,
+            version
+        );
+    }
+    free(state_json);
+    return rc;
+}
+
 static claim_aggregate_t *find_or_add_aggregate(
     stitch_state_t *state,
     const char *claim_id,
@@ -488,6 +617,10 @@ static claim_aggregate_t *find_or_add_aggregate(
 {
     const char *key = claim_key(claim_id, claim_id_token);
     claim_aggregate_t *aggregate;
+
+    if (hydrate_claim_aggregate_if_present(state, key) != X12_OK) {
+        return NULL;
+    }
 
     aggregate = find_aggregate(state, key);
     if (aggregate != NULL) {
@@ -1146,6 +1279,80 @@ static int put_event_key_if_present(
     return scribe_store_put_event_key(store, key_type, key_value, event_id);
 }
 
+static int mark_claim_dirty_for_key(
+    stitch_state_t *state,
+    const char *key_type,
+    const char *key_value,
+    const char *event_id
+)
+{
+    char aggregate_ids[8][SCRIBE_STORE_ID_MAX];
+    char aggregate_id[SCRIBE_STORE_ID_MAX];
+    size_t aggregate_count = 0u;
+    size_t i;
+    int rc;
+
+    if (state == NULL || !state->incremental || state->read_store == NULL ||
+        key_type == NULL || key_value == NULL || key_value[0] == '\0' ||
+        event_id == NULL || event_id[0] == '\0') {
+        return X12_OK;
+    }
+
+    rc = scribe_store_find_claim_aggregate_ids_by_key(
+        state->read_store,
+        key_type,
+        key_value,
+        aggregate_ids,
+        8u,
+        &aggregate_count
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    if (aggregate_count == 0u && strcmp(key_type, "claim_id") == 0) {
+        rc = claim_aggregate_id_from_key(key_value, aggregate_id, sizeof(aggregate_id));
+        if (rc != X12_OK) {
+            return rc;
+        }
+        rc = scribe_store_put_claim_aggregate_key(
+            state->read_store,
+            "claim_id",
+            key_value,
+            aggregate_id
+        );
+        if (rc != X12_OK) {
+            return rc;
+        }
+        copy_cstr(aggregate_ids[0], sizeof(aggregate_ids[0]), aggregate_id);
+        aggregate_count = 1u;
+    }
+
+    for (i = 0u; i < aggregate_count; i++) {
+        rc = scribe_store_put_aggregate_event_route(
+            state->read_store,
+            "claim",
+            aggregate_ids[i],
+            event_id
+        );
+        if (rc == X12_OK) {
+            rc = scribe_store_mark_dirty_aggregate(
+                state->read_store,
+                "claim",
+                aggregate_ids[i],
+                state->current_source_drop_id,
+                event_id
+            );
+        }
+        if (rc != X12_OK) {
+            return rc;
+        }
+        state->dirty_route_count++;
+    }
+
+    return X12_OK;
+}
+
 static int index_journal_event(
     stitch_state_t *state,
     const journal_event_t *journal_line,
@@ -1154,7 +1361,7 @@ static int index_journal_event(
     long long event_length
 )
 {
-    char event_id[32];
+    char event_id[SCRIBE_STORE_ID_MAX];
     char event_type[96];
     char segment_id[SCRIBE_STORE_ID_MAX];
     char claim_id[STITCH_ID_MAX];
@@ -1180,9 +1387,9 @@ static int index_journal_event(
         return X12_OK;
     }
 
-    written = snprintf(event_id, sizeof(event_id), "%zu", numeric_event_id);
-    if (written < 0 || (size_t)written >= sizeof(event_id)) {
-        return X12_ERR_BUFFER_TOO_SMALL;
+    rc = stable_event_id(journal_line, numeric_event_id, event_id, sizeof(event_id));
+    if (rc != X12_OK) {
+        return rc;
     }
     if (journal_line->segment_path != NULL && journal_line->segment_path[0] != '\0') {
         copy_cstr(segment_id, sizeof(segment_id), journal_line->segment_path);
@@ -1219,6 +1426,10 @@ static int index_journal_event(
     if (rc != X12_OK) {
         return rc;
     }
+    rc = mark_claim_dirty_for_key(state, "claim_id", claim_index_key, event_id);
+    if (rc != X12_OK) {
+        return rc;
+    }
     if (state->include_phi) {
         rc = claim_stitch_resolve_identifier_output_pair(
             state,
@@ -1232,6 +1443,9 @@ static int index_journal_event(
         );
         if (rc == X12_OK) {
             rc = put_event_key_if_present(state->read_store, "claim_id_raw", claim_id_raw, event_id);
+        }
+        if (rc == X12_OK) {
+            rc = mark_claim_dirty_for_key(state, "claim_id_raw", claim_id_raw, event_id);
         }
         if (rc != X12_OK) {
             return rc;
@@ -1262,6 +1476,15 @@ static int index_journal_event(
     if (rc != X12_OK) {
         return rc;
     }
+    rc = mark_claim_dirty_for_key(
+        state,
+        "payer_claim_control_number",
+        payer_index_key,
+        event_id
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
     if (state->include_phi) {
         rc = claim_stitch_resolve_identifier_output_pair(
             state,
@@ -1276,6 +1499,14 @@ static int index_journal_event(
         if (rc == X12_OK) {
             rc = put_event_key_if_present(
                 state->read_store,
+                "payer_claim_control_number_raw",
+                payer_control_raw,
+                event_id
+            );
+        }
+        if (rc == X12_OK) {
+            rc = mark_claim_dirty_for_key(
+                state,
                 "payer_claim_control_number_raw",
                 payer_control_raw,
                 event_id
@@ -1449,9 +1680,13 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
     int owns_notify_out = 0;
     int owns_read_store = 0;
     int owns_phi_vault = 0;
+    int reduce_pass;
     int rc = X12_OK;
 
     if (input == NULL || input->journal_path == NULL || input->out_path == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+    if (input->incremental && input->read_store_path == NULL) {
         return X12_ERR_INVALID_ARGUMENT;
     }
     if (input->notify_out_path != NULL &&
@@ -1507,6 +1742,15 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
     state->out = out;
     state->notify_out = notify_out;
     state->include_phi = input->include_phi;
+    state->incremental = input->incremental;
+    fprintf(
+        stderr,
+        "scribe stitch claims: start mode=%s journal=%s read_store=%s out=%s\n",
+        input->incremental ? "incremental" : "replay",
+        input->journal_path,
+        input->read_store_path == NULL ? "(none)" : input->read_store_path,
+        input->out_path
+    );
     if (input->run_id != NULL && input->run_id[0] != '\0') {
         copy_cstr(state->run_id, sizeof(state->run_id), input->run_id);
     } else {
@@ -1570,50 +1814,95 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
         owns_read_store = 1;
     }
 
+    reduce_pass = input->incremental ? 0 : 1;
     while (rc == X12_OK) {
-        rc = journal_reader_next(&journal, &record);
-        if (rc != X12_OK || record.record_len == 0u) {
-            break;
+        if (input->incremental) {
+            fprintf(
+                stderr,
+                "scribe stitch claims: %s pass journal=%s\n",
+                reduce_pass ? "reduce" : "shuffle",
+                input->journal_path
+            );
         }
-        event_id++;
-        rc = make_drop_key(&record, drop_key, sizeof(drop_key));
-        if (rc != X12_OK) {
-            break;
-        }
-        if (drop_key[0] != '\0' && strcmp(state->current_drop_key, drop_key) != 0) {
-            rc = claim_stitch_flush_update_batches(state);
+
+        while (rc == X12_OK) {
+            rc = journal_reader_next(&journal, &record);
+            if (rc != X12_OK || record.record_len == 0u) {
+                break;
+            }
+            event_id++;
+            rc = make_drop_key(&record, drop_key, sizeof(drop_key));
             if (rc != X12_OK) {
                 break;
             }
-            rc = set_current_source_drop(state, drop_key, &record);
-            if (rc != X12_OK) {
-                break;
+            if (drop_key[0] != '\0' && strcmp(state->current_drop_key, drop_key) != 0) {
+                rc = claim_stitch_flush_update_batches(state);
+                if (rc != X12_OK) {
+                    break;
+                }
+                rc = set_current_source_drop(state, drop_key, &record);
+                if (rc != X12_OK) {
+                    break;
+                }
+                capture_current_source_run_id(state, &record);
+                fprintf(
+                    stderr,
+                    "scribe stitch claims: source_drop=%s source_run=%s\n",
+                    state->current_source_drop_id,
+                    state->current_source_run_id[0] == '\0' ? "(none)" : state->current_source_run_id
+                );
             }
-            capture_current_source_run_id(state, &record);
+
+            if (!input->incremental || !reduce_pass) {
+                rc = index_journal_event(
+                    state,
+                    &record,
+                    event_id,
+                    record.offset,
+                    record.stored_len
+                );
+                if (rc != X12_OK) {
+                    break;
+                }
+            }
+
+            if (!input->incremental || reduce_pass) {
+                rc = apply_claim_event(
+                    state,
+                    &record,
+                    event_id,
+                    record.offset,
+                    record.stored_len,
+                    drop_key
+                );
+                if (rc != X12_OK) {
+                    break;
+                }
+            }
         }
 
-        rc = index_journal_event(
-            state,
-            &record,
-            event_id,
-            record.offset,
-            record.stored_len
-        );
         if (rc != X12_OK) {
             break;
         }
+        if (!input->incremental || reduce_pass) {
+            break;
+        }
 
-        rc = apply_claim_event(
-            state,
-            &record,
-            event_id,
-            record.offset,
-            record.stored_len,
-            drop_key
-        );
+        if (journal_reader_close(&journal) != X12_OK) {
+            rc = X12_ERR_IO;
+            break;
+        }
+        journal_reader_init(&journal);
+        rc = journal_reader_open(&journal, input->journal_path);
         if (rc != X12_OK) {
             break;
         }
+        state->current_drop_key[0] = '\0';
+        state->current_source_drop_id[0] = '\0';
+        state->current_source_run_id[0] = '\0';
+        state->source_drop_count = 0u;
+        event_id = 0u;
+        reduce_pass = 1;
     }
 
     if (rc == X12_OK) {
@@ -1642,6 +1931,14 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
         rc = X12_ERR_IO;
     }
 
+    fprintf(
+        stderr,
+        "scribe stitch claims: done events=%zu dirty_routes=%zu aggregates=%zu status=%s\n",
+        event_id,
+        state->dirty_route_count,
+        state->aggregate_count,
+        x12_error_message(rc)
+    );
     free(state);
     return rc;
 }
@@ -1682,6 +1979,8 @@ int aggregate_stitcher_run_cli(int argc, char **argv)
             input.phi_vault_path = argv[++i];
         } else if (strcmp(argv[i], "--include-phi") == 0) {
             input.include_phi = 1;
+        } else if (strcmp(argv[i], "--incremental") == 0) {
+            input.incremental = 1;
         } else if (strcmp(argv[i], "--run-id") == 0) {
             if (i + 1 >= argc) {
                 return -1;

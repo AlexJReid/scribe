@@ -288,7 +288,7 @@ static int write_eligibility_observed(
     return event_writer_end_event(mapper->writer);
 }
 
-static int write_party_id_alias(
+static int write_party_key_fields(
     x12_mapper_270_271_t *mapper,
     FILE *fp,
     token_type_t id_token_type,
@@ -436,7 +436,7 @@ static int write_party_referenced(
                event_writer_write_string_field(fp, "id_value", id_value, 1) != X12_OK) {
         return X12_ERR_IO;
     }
-    if (write_party_id_alias(mapper, fp, id_token_type, id_value) != X12_OK) {
+    if (write_party_key_fields(mapper, fp, id_token_type, id_value) != X12_OK) {
         return X12_ERR_IO;
     }
     if (write_payload_end(fp) != X12_OK) {

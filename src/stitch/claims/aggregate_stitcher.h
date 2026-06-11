@@ -11,6 +11,7 @@ typedef struct {
     const char *notify_out_path;
     const char *run_id;
     int include_phi;
+    int incremental;
 } aggregate_stitcher_input_t;
 
 void aggregate_stitcher_input_init(aggregate_stitcher_input_t *input);

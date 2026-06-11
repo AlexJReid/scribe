@@ -254,6 +254,14 @@ int scribe_store_init_schema(scribe_store_t *store)
         "  updated_by_event_id TEXT NOT NULL,"
         "  source_drop_id TEXT NOT NULL"
         ");"
+        "CREATE TABLE IF NOT EXISTS claim_aggregate_keys ("
+        "  key_type TEXT NOT NULL,"
+        "  key_value TEXT NOT NULL,"
+        "  aggregate_id TEXT NOT NULL,"
+        "  PRIMARY KEY (key_type, key_value, aggregate_id)"
+        ");"
+        "CREATE INDEX IF NOT EXISTS claim_aggregate_keys_lookup "
+        "ON claim_aggregate_keys(key_type, key_value);"
         "CREATE TABLE IF NOT EXISTS member_coverage_versions ("
         "  aggregate_id TEXT NOT NULL,"
         "  version INTEGER NOT NULL,"
@@ -272,11 +280,26 @@ int scribe_store_init_schema(scribe_store_t *store)
         "CREATE TABLE IF NOT EXISTS member_coverage_keys ("
         "  key_type TEXT NOT NULL,"
         "  key_value TEXT NOT NULL,"
-        "  aggregate_id TEXT NOT NULL REFERENCES member_coverage_latest(aggregate_id),"
+        "  aggregate_id TEXT NOT NULL,"
         "  PRIMARY KEY (key_type, key_value, aggregate_id)"
         ");"
         "CREATE INDEX IF NOT EXISTS member_coverage_keys_lookup "
         "ON member_coverage_keys(key_type, key_value);"
+        "CREATE TABLE IF NOT EXISTS aggregate_event_routes ("
+        "  aggregate_type TEXT NOT NULL,"
+        "  aggregate_id TEXT NOT NULL,"
+        "  event_id TEXT NOT NULL REFERENCES events(event_id),"
+        "  PRIMARY KEY (aggregate_type, aggregate_id, event_id)"
+        ");"
+        "CREATE INDEX IF NOT EXISTS aggregate_event_routes_lookup "
+        "ON aggregate_event_routes(aggregate_type, aggregate_id);"
+        "CREATE TABLE IF NOT EXISTS dirty_aggregates ("
+        "  aggregate_type TEXT NOT NULL,"
+        "  aggregate_id TEXT NOT NULL,"
+        "  source_drop_id TEXT NOT NULL,"
+        "  first_event_id TEXT NOT NULL,"
+        "  PRIMARY KEY (aggregate_type, aggregate_id, source_drop_id)"
+        ");"
     );
 }
 
@@ -606,6 +629,126 @@ int scribe_store_get_event_locator(
     return rc;
 }
 
+int scribe_store_put_aggregate_event_route(
+    scribe_store_t *store,
+    const char *aggregate_type,
+    const char *aggregate_id,
+    const char *event_id
+)
+{
+    sqlite3_stmt *stmt;
+    sqlite3 *db = store_db(store);
+    int rc;
+
+    rc = prepare(
+        db,
+        "INSERT OR IGNORE INTO aggregate_event_routes "
+        "(aggregate_type, aggregate_id, event_id) VALUES (?, ?, ?);",
+        &stmt
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    rc = bind_text(stmt, 1, aggregate_type);
+    if (rc == X12_OK) {
+        rc = bind_text(stmt, 2, aggregate_id);
+    }
+    if (rc == X12_OK) {
+        rc = bind_text(stmt, 3, event_id);
+    }
+    if (rc == X12_OK) {
+        rc = step_done(stmt);
+    }
+    if (sqlite3_finalize(stmt) != SQLITE_OK && rc == X12_OK) {
+        rc = X12_ERR_IO;
+    }
+
+    return rc;
+}
+
+int scribe_store_mark_dirty_aggregate(
+    scribe_store_t *store,
+    const char *aggregate_type,
+    const char *aggregate_id,
+    const char *source_drop_id,
+    const char *first_event_id
+)
+{
+    sqlite3_stmt *stmt;
+    sqlite3 *db = store_db(store);
+    int rc;
+
+    rc = prepare(
+        db,
+        "INSERT INTO dirty_aggregates "
+        "(aggregate_type, aggregate_id, source_drop_id, first_event_id) "
+        "VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(aggregate_type, aggregate_id, source_drop_id) DO NOTHING;",
+        &stmt
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    rc = bind_text(stmt, 1, aggregate_type);
+    if (rc == X12_OK) {
+        rc = bind_text(stmt, 2, aggregate_id);
+    }
+    if (rc == X12_OK) {
+        rc = bind_text(stmt, 3, source_drop_id);
+    }
+    if (rc == X12_OK) {
+        rc = bind_text(stmt, 4, first_event_id);
+    }
+    if (rc == X12_OK) {
+        rc = step_done(stmt);
+    }
+    if (sqlite3_finalize(stmt) != SQLITE_OK && rc == X12_OK) {
+        rc = X12_ERR_IO;
+    }
+
+    return rc;
+}
+
+int scribe_store_clear_dirty_aggregate(
+    scribe_store_t *store,
+    const char *aggregate_type,
+    const char *aggregate_id,
+    const char *source_drop_id
+)
+{
+    sqlite3_stmt *stmt;
+    sqlite3 *db = store_db(store);
+    int rc;
+
+    rc = prepare(
+        db,
+        "DELETE FROM dirty_aggregates "
+        "WHERE aggregate_type = ? AND aggregate_id = ? AND source_drop_id = ?;",
+        &stmt
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    rc = bind_text(stmt, 1, aggregate_type);
+    if (rc == X12_OK) {
+        rc = bind_text(stmt, 2, aggregate_id);
+    }
+    if (rc == X12_OK) {
+        rc = bind_text(stmt, 3, source_drop_id);
+    }
+    if (rc == X12_OK) {
+        rc = step_done(stmt);
+    }
+    if (sqlite3_finalize(stmt) != SQLITE_OK && rc == X12_OK) {
+        rc = X12_ERR_IO;
+    }
+
+    return rc;
+}
+
 int scribe_store_put_claim_aggregate(
     scribe_store_t *store,
     const char *aggregate_id,
@@ -753,6 +896,104 @@ int scribe_store_get_latest_claim_aggregate(
         rc = X12_ERR_IO;
     }
 
+    return rc;
+}
+
+int scribe_store_put_claim_aggregate_key(
+    scribe_store_t *store,
+    const char *key_type,
+    const char *key_value,
+    const char *aggregate_id
+)
+{
+    sqlite3_stmt *stmt;
+    sqlite3 *db = store_db(store);
+    int rc;
+
+    rc = prepare(
+        db,
+        "INSERT OR IGNORE INTO claim_aggregate_keys "
+        "(key_type, key_value, aggregate_id) VALUES (?, ?, ?);",
+        &stmt
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    rc = bind_text(stmt, 1, key_type);
+    if (rc == X12_OK) {
+        rc = bind_text(stmt, 2, key_value);
+    }
+    if (rc == X12_OK) {
+        rc = bind_text(stmt, 3, aggregate_id);
+    }
+    if (rc == X12_OK) {
+        rc = step_done(stmt);
+    }
+    if (sqlite3_finalize(stmt) != SQLITE_OK && rc == X12_OK) {
+        rc = X12_ERR_IO;
+    }
+
+    return rc;
+}
+
+int scribe_store_find_claim_aggregate_ids_by_key(
+    scribe_store_t *store,
+    const char *key_type,
+    const char *key_value,
+    char aggregate_ids[][SCRIBE_STORE_ID_MAX],
+    size_t max_aggregate_ids,
+    size_t *out_count
+)
+{
+    sqlite3_stmt *stmt;
+    sqlite3 *db = store_db(store);
+    int step_rc;
+    int rc;
+    size_t count = 0u;
+
+    if (out_count == NULL || (aggregate_ids == NULL && max_aggregate_ids > 0u)) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+    *out_count = 0u;
+
+    rc = prepare(
+        db,
+        "SELECT aggregate_id "
+        "FROM claim_aggregate_keys "
+        "WHERE key_type = ? AND key_value = ? "
+        "ORDER BY aggregate_id "
+        "LIMIT ?;",
+        &stmt
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    rc = bind_text(stmt, 1, key_type);
+    if (rc == X12_OK) {
+        rc = bind_text(stmt, 2, key_value);
+    }
+    if (rc == X12_OK &&
+        sqlite3_bind_int64(stmt, 3, (sqlite3_int64)max_aggregate_ids) != SQLITE_OK) {
+        rc = X12_ERR_IO;
+    }
+
+    while (rc == X12_OK && (step_rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        rc = copy_column_text(stmt, 0, aggregate_ids[count], SCRIBE_STORE_ID_MAX);
+        if (rc != X12_OK) {
+            break;
+        }
+        count++;
+    }
+    if (rc == X12_OK && step_rc != SQLITE_DONE) {
+        rc = sqlite_to_x12(step_rc);
+    }
+    if (sqlite3_finalize(stmt) != SQLITE_OK && rc == X12_OK) {
+        rc = X12_ERR_IO;
+    }
+
+    *out_count = count;
     return rc;
 }
 

@@ -11,6 +11,7 @@ static int test_store_indexes_and_aggregates(void)
     char db_wal_path[560];
     char db_shm_path[560];
     char event_ids[4][SCRIBE_STORE_ID_MAX];
+    char aggregate_ids[4][SCRIBE_STORE_ID_MAX];
     char state_json[512];
     scribe_store_t store;
     scribe_source_drop_t source_drop;
@@ -113,6 +114,42 @@ static int test_store_indexes_and_aggregates(void)
             ));
     REQUIRE(version == 3u);
     REQUIRE(strstr(state_json, "\"version\":3") != NULL);
+
+    REQUIRE_OK(scribe_store_put_claim_aggregate_key(
+                &store,
+                "claim_id",
+                "8259c238232f9585e95fc8f45b0bb410",
+                "claim:8259c238232f9585e95fc8f45b0bb410"
+            ));
+    REQUIRE_OK(scribe_store_find_claim_aggregate_ids_by_key(
+                &store,
+                "claim_id",
+                "8259c238232f9585e95fc8f45b0bb410",
+                aggregate_ids,
+                4u,
+                &count
+            ));
+    REQUIRE(count == 1u);
+    REQUIRE_STR(aggregate_ids[0], "claim:8259c238232f9585e95fc8f45b0bb410");
+    REQUIRE_OK(scribe_store_put_aggregate_event_route(
+                &store,
+                "claim",
+                "claim:8259c238232f9585e95fc8f45b0bb410",
+                "evt_000128"
+            ));
+    REQUIRE_OK(scribe_store_mark_dirty_aggregate(
+                &store,
+                "claim",
+                "claim:8259c238232f9585e95fc8f45b0bb410",
+                "835:000000102:102:0001",
+                "evt_000128"
+            ));
+    REQUIRE_OK(scribe_store_clear_dirty_aggregate(
+                &store,
+                "claim",
+                "claim:8259c238232f9585e95fc8f45b0bb410",
+                "835:000000102:102:0001"
+            ));
 
     REQUIRE(scribe_store_get_event_locator(&store, "evt_missing", &locator) == X12_ERR_NOT_FOUND);
     REQUIRE_OK(scribe_store_close(&store));

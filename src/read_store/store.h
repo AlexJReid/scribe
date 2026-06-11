@@ -85,6 +85,28 @@ int scribe_store_get_event_locator(
     scribe_event_locator_t *out
 );
 
+int scribe_store_put_aggregate_event_route(
+    scribe_store_t *store,
+    const char *aggregate_type,
+    const char *aggregate_id,
+    const char *event_id
+);
+
+int scribe_store_mark_dirty_aggregate(
+    scribe_store_t *store,
+    const char *aggregate_type,
+    const char *aggregate_id,
+    const char *source_drop_id,
+    const char *first_event_id
+);
+
+int scribe_store_clear_dirty_aggregate(
+    scribe_store_t *store,
+    const char *aggregate_type,
+    const char *aggregate_id,
+    const char *source_drop_id
+);
+
 int scribe_store_put_claim_aggregate(
     scribe_store_t *store,
     const char *aggregate_id,
@@ -100,6 +122,22 @@ int scribe_store_get_latest_claim_aggregate(
     size_t *out_version,
     char *state_json,
     size_t state_json_len
+);
+
+int scribe_store_put_claim_aggregate_key(
+    scribe_store_t *store,
+    const char *key_type,
+    const char *key_value,
+    const char *aggregate_id
+);
+
+int scribe_store_find_claim_aggregate_ids_by_key(
+    scribe_store_t *store,
+    const char *key_type,
+    const char *key_value,
+    char aggregate_ids[][SCRIBE_STORE_ID_MAX],
+    size_t max_aggregate_ids,
+    size_t *out_count
 );
 
 int scribe_store_put_member_coverage(

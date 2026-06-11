@@ -111,11 +111,13 @@ typedef struct {
     char current_source_run_id[STITCH_ID_MAX];
     size_t source_drop_count;
     char run_id[STITCH_ID_MAX];
+    size_t dirty_route_count;
     int include_phi;
     FILE *out;
     FILE *notify_out;
     scribe_store_t *read_store;
     phi_vault_t *phi_vault;
+    int incremental;
 } stitch_state_t;
 
 void claim_stitch_split_patient_name(
@@ -138,5 +140,10 @@ int claim_stitch_resolve_identifier_output_pair(
 );
 
 int claim_stitch_flush_update_batches(stitch_state_t *state);
+int claim_stitch_hydrate_snapshot(
+    stitch_state_t *state,
+    const char *aggregate_id,
+    const char *state_json
+);
 
 #endif
