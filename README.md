@@ -212,6 +212,7 @@ details, dates, amounts, and EDI content are made up.
 ## More
 
 - [model.md](./model.md): compact model notes
+- [FAQ.md](./FAQ.md): matching, stitching, deployment, and ordering notes
 - [events.md](./events.md): event names
 - [tests/fixtures/stroke_encounter/README.md](./tests/fixtures/stroke_encounter/README.md): fixture map
 
