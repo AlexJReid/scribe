@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <zstd.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -853,22 +854,84 @@ static int join_path(const char *base, const char *name, char **out)
     return X12_OK;
 }
 
-static int append_segment_path(journal_reader_t *reader, const char *path)
+static int copy_normalized_path(const char *path, char **out)
 {
-    char **next;
     char *copy;
+    size_t i;
+    size_t len;
 
-    if (reader == NULL || path == NULL) {
+    if (path == NULL || out == NULL) {
         return X12_ERR_INVALID_ARGUMENT;
     }
 
-    copy = dup_cstr(path);
+    *out = NULL;
+    len = strlen(path);
+    copy = (char *)malloc(len + 1u);
     if (copy == NULL) {
+        return X12_ERR_NO_MEMORY;
+    }
+    for (i = 0u; i < len; i++) {
+        copy[i] = path[i] == '\\' ? '/' : path[i];
+    }
+    copy[len] = '\0';
+
+    *out = copy;
+    return X12_OK;
+}
+
+static int segment_id_under_root(const char *root_path, const char *path, char **out)
+{
+    const char *rel;
+    size_t root_len;
+
+    if (root_path == NULL || path == NULL || out == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    root_len = strlen(root_path);
+    if (strncmp(path, root_path, root_len) != 0) {
+        return copy_normalized_path(path, out);
+    }
+    if (path[root_len] != '\0' &&
+        path[root_len] != '/' &&
+        path[root_len] != '\\') {
+        return copy_normalized_path(path, out);
+    }
+
+    rel = path + root_len;
+    while (*rel == '/' || *rel == '\\') {
+        rel++;
+    }
+    if (*rel == '\0') {
+        rel = path;
+    }
+
+    return copy_normalized_path(rel, out);
+}
+
+static int append_segment_path(journal_reader_t *reader, const char *path, const char *segment_id)
+{
+    char **next;
+    char *path_copy;
+    char *id_copy;
+
+    if (reader == NULL || path == NULL || segment_id == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    path_copy = dup_cstr(path);
+    if (path_copy == NULL) {
+        return X12_ERR_NO_MEMORY;
+    }
+    id_copy = dup_cstr(segment_id);
+    if (id_copy == NULL) {
+        free(path_copy);
         return X12_ERR_NO_MEMORY;
     }
 
     if (reader->segment_count == SIZE_MAX / sizeof(*reader->segment_paths)) {
-        free(copy);
+        free(path_copy);
+        free(id_copy);
         return X12_ERR_BUFFER_TOO_SMALL;
     }
     next = (char **)realloc(
@@ -876,32 +939,50 @@ static int append_segment_path(journal_reader_t *reader, const char *path)
         (reader->segment_count + 1u) * sizeof(*reader->segment_paths)
     );
     if (next == NULL) {
-        free(copy);
+        free(path_copy);
+        free(id_copy);
         return X12_ERR_NO_MEMORY;
     }
-
     reader->segment_paths = next;
-    reader->segment_paths[reader->segment_count++] = copy;
+
+    next = (char **)realloc(
+        reader->segment_ids,
+        (reader->segment_count + 1u) * sizeof(*reader->segment_ids)
+    );
+    if (next == NULL) {
+        free(path_copy);
+        free(id_copy);
+        return X12_ERR_NO_MEMORY;
+    }
+    reader->segment_ids = next;
+
+    reader->segment_paths[reader->segment_count] = path_copy;
+    reader->segment_ids[reader->segment_count] = id_copy;
+    reader->segment_count++;
     return X12_OK;
-}
-
-static int compare_segment_paths(const void *left, const void *right)
-{
-    const char *left_path = *(const char * const *)left;
-    const char *right_path = *(const char * const *)right;
-
-    return strcmp(left_path, right_path);
 }
 
 static void sort_segment_paths(journal_reader_t *reader)
 {
-    if (reader != NULL && reader->segment_count > 1u) {
-        qsort(
-            reader->segment_paths,
-            reader->segment_count,
-            sizeof(*reader->segment_paths),
-            compare_segment_paths
-        );
+    size_t i;
+    size_t j;
+
+    if (reader == NULL || reader->segment_count < 2u) {
+        return;
+    }
+
+    for (i = 0u; i + 1u < reader->segment_count; i++) {
+        for (j = i + 1u; j < reader->segment_count; j++) {
+            if (strcmp(reader->segment_ids[i], reader->segment_ids[j]) > 0) {
+                char *tmp_path = reader->segment_paths[i];
+                char *tmp_id = reader->segment_ids[i];
+
+                reader->segment_paths[i] = reader->segment_paths[j];
+                reader->segment_ids[i] = reader->segment_ids[j];
+                reader->segment_paths[j] = tmp_path;
+                reader->segment_ids[j] = tmp_id;
+            }
+        }
     }
 }
 
@@ -951,8 +1032,239 @@ static int path_is_regular_file(const char *path)
 #endif
 }
 
+static int segment_file_is_supported(const char *path)
+{
+    return has_suffix(path, ".journal") || has_suffix(path, ".journal.zst");
+}
+
+static int segment_file_is_compressed(const char *path)
+{
+    return has_suffix(path, ".zst");
+}
+
+static void journal_reader_clear_zstd_stream(journal_reader_t *reader)
+{
+    if (reader == NULL) {
+        return;
+    }
+
+    if (reader->zstd_stream != NULL) {
+        ZSTD_freeDStream((ZSTD_DStream *)reader->zstd_stream);
+        reader->zstd_stream = NULL;
+    }
+    reader->zstd_in_pos = 0u;
+    reader->zstd_in_len = 0u;
+    reader->zstd_out_pos = 0u;
+    reader->zstd_out_len = 0u;
+    reader->zstd_input_eof = 0;
+}
+
+static void journal_reader_free_zstd(journal_reader_t *reader)
+{
+    if (reader == NULL) {
+        return;
+    }
+
+    journal_reader_clear_zstd_stream(reader);
+    free(reader->zstd_in);
+    free(reader->zstd_out);
+    reader->zstd_in = NULL;
+    reader->zstd_out = NULL;
+    reader->zstd_in_cap = 0u;
+    reader->zstd_out_cap = 0u;
+}
+
+static int journal_reader_prepare_zstd(journal_reader_t *reader)
+{
+    size_t in_cap;
+    size_t out_cap;
+    size_t zstd_rc;
+
+    if (reader == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    reader->zstd_stream = ZSTD_createDStream();
+    if (reader->zstd_stream == NULL) {
+        return X12_ERR_NO_MEMORY;
+    }
+    zstd_rc = ZSTD_initDStream((ZSTD_DStream *)reader->zstd_stream);
+    if (ZSTD_isError(zstd_rc)) {
+        journal_reader_clear_zstd_stream(reader);
+        return X12_ERR_IO;
+    }
+
+    in_cap = ZSTD_DStreamInSize();
+    out_cap = ZSTD_DStreamOutSize();
+    if (reader->zstd_in_cap < in_cap) {
+        unsigned char *next = (unsigned char *)realloc(reader->zstd_in, in_cap);
+        if (next == NULL) {
+            journal_reader_clear_zstd_stream(reader);
+            return X12_ERR_NO_MEMORY;
+        }
+        reader->zstd_in = next;
+        reader->zstd_in_cap = in_cap;
+    }
+    if (reader->zstd_out_cap < out_cap) {
+        unsigned char *next = (unsigned char *)realloc(reader->zstd_out, out_cap);
+        if (next == NULL) {
+            journal_reader_clear_zstd_stream(reader);
+            return X12_ERR_NO_MEMORY;
+        }
+        reader->zstd_out = next;
+        reader->zstd_out_cap = out_cap;
+    }
+    reader->zstd_in_pos = 0u;
+    reader->zstd_in_len = 0u;
+    reader->zstd_out_pos = 0u;
+    reader->zstd_out_len = 0u;
+    reader->zstd_input_eof = 0;
+    return X12_OK;
+}
+
+static int journal_reader_read_some(
+    journal_reader_t *reader,
+    unsigned char *out,
+    size_t len,
+    size_t *bytes_read
+)
+{
+    size_t copied = 0u;
+
+    if (reader == NULL || out == NULL || bytes_read == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    *bytes_read = 0u;
+    if (len == 0u) {
+        return X12_OK;
+    }
+
+    if (!reader->current_segment_compressed) {
+        copied = fread(out, 1u, len, reader->fp);
+        if (copied > 0u) {
+            reader->logical_offset += (long long)copied;
+        }
+        *bytes_read = copied;
+        if (copied < len && ferror(reader->fp)) {
+            return X12_ERR_IO;
+        }
+        return X12_OK;
+    }
+
+    while (copied < len) {
+        size_t available;
+        size_t need;
+
+        if (reader->zstd_out_pos < reader->zstd_out_len) {
+            available = reader->zstd_out_len - reader->zstd_out_pos;
+            need = len - copied;
+            if (available > need) {
+                available = need;
+            }
+            memcpy(out + copied, reader->zstd_out + reader->zstd_out_pos, available);
+            reader->zstd_out_pos += available;
+            copied += available;
+            reader->logical_offset += (long long)available;
+            continue;
+        }
+
+        reader->zstd_out_pos = 0u;
+        reader->zstd_out_len = 0u;
+
+        if (reader->zstd_in_pos >= reader->zstd_in_len && !reader->zstd_input_eof) {
+            reader->zstd_in_len = fread(reader->zstd_in, 1u, reader->zstd_in_cap, reader->fp);
+            reader->zstd_in_pos = 0u;
+            if (reader->zstd_in_len == 0u) {
+                if (ferror(reader->fp)) {
+                    return X12_ERR_IO;
+                }
+                reader->zstd_input_eof = 1;
+            }
+        }
+
+        if (reader->zstd_input_eof && reader->zstd_in_pos >= reader->zstd_in_len) {
+            break;
+        }
+
+        {
+            ZSTD_inBuffer input = {
+                reader->zstd_in,
+                reader->zstd_in_len,
+                reader->zstd_in_pos
+            };
+            ZSTD_outBuffer output = {
+                reader->zstd_out,
+                reader->zstd_out_cap,
+                0u
+            };
+            size_t zstd_rc = ZSTD_decompressStream(
+                (ZSTD_DStream *)reader->zstd_stream,
+                &output,
+                &input
+            );
+            if (ZSTD_isError(zstd_rc)) {
+                return X12_ERR_IO;
+            }
+            reader->zstd_in_pos = input.pos;
+            reader->zstd_out_len = output.pos;
+        }
+
+        if (reader->zstd_out_len == 0u &&
+            reader->zstd_in_pos >= reader->zstd_in_len &&
+            reader->zstd_input_eof) {
+            break;
+        }
+    }
+
+    *bytes_read = copied;
+    return X12_OK;
+}
+
+static int journal_reader_read_exact(journal_reader_t *reader, unsigned char *out, size_t len)
+{
+    size_t total = 0u;
+
+    if (reader == NULL || out == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    while (total < len) {
+        size_t bytes_read = 0u;
+        int rc = journal_reader_read_some(reader, out + total, len - total, &bytes_read);
+
+        if (rc != X12_OK) {
+            return rc;
+        }
+        if (bytes_read == 0u) {
+            return X12_ERR_IO;
+        }
+        total += bytes_read;
+    }
+
+    return X12_OK;
+}
+
+static int journal_reader_read_header(journal_reader_t *reader)
+{
+    unsigned char magic[JOURNAL_MAGIC_LEN];
+
+    if (reader == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    if (journal_reader_read_exact(reader, magic, sizeof(magic)) != X12_OK) {
+        return X12_ERR_IO;
+    }
+    if (memcmp(magic, JOURNAL_MAGIC, JOURNAL_MAGIC_LEN) == 0 ||
+        memcmp(magic, JOURNAL_LEGACY_MAGIC, JOURNAL_MAGIC_LEN) == 0) {
+        return X12_OK;
+    }
+    return X12_ERR_IO;
+}
+
 #ifdef _WIN32
-static int scan_segment_dir(journal_reader_t *reader, const char *dir_path)
+static int scan_segment_dir(journal_reader_t *reader, const char *root_path, const char *dir_path)
 {
     WIN32_FIND_DATAA data;
     HANDLE handle;
@@ -984,9 +1296,15 @@ static int scan_segment_dir(journal_reader_t *reader, const char *dir_path)
         }
 
         if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0u) {
-            rc = scan_segment_dir(reader, child_path);
-        } else if (has_suffix(data.cFileName, ".journal")) {
-            rc = append_segment_path(reader, child_path);
+            rc = scan_segment_dir(reader, root_path, child_path);
+        } else if (segment_file_is_supported(data.cFileName)) {
+            char *segment_id = NULL;
+
+            rc = segment_id_under_root(root_path, child_path, &segment_id);
+            if (rc == X12_OK) {
+                rc = append_segment_path(reader, child_path, segment_id);
+            }
+            free(segment_id);
         }
         free(child_path);
         if (rc != X12_OK) {
@@ -999,7 +1317,7 @@ static int scan_segment_dir(journal_reader_t *reader, const char *dir_path)
     return X12_OK;
 }
 #else
-static int scan_segment_dir(journal_reader_t *reader, const char *dir_path)
+static int scan_segment_dir(journal_reader_t *reader, const char *root_path, const char *dir_path)
 {
     DIR *dir;
     struct dirent *entry;
@@ -1023,10 +1341,16 @@ static int scan_segment_dir(journal_reader_t *reader, const char *dir_path)
         }
 
         if (path_is_directory(child_path)) {
-            rc = scan_segment_dir(reader, child_path);
+            rc = scan_segment_dir(reader, root_path, child_path);
         } else if (path_is_regular_file(child_path) &&
-                   has_suffix(entry->d_name, ".journal")) {
-            rc = append_segment_path(reader, child_path);
+                   segment_file_is_supported(entry->d_name)) {
+            char *segment_id = NULL;
+
+            rc = segment_id_under_root(root_path, child_path, &segment_id);
+            if (rc == X12_OK) {
+                rc = append_segment_path(reader, child_path, segment_id);
+            }
+            free(segment_id);
         }
         free(child_path);
         if (rc != X12_OK) {
@@ -1051,12 +1375,18 @@ static void free_segment_paths(journal_reader_t *reader)
 
     for (i = 0u; i < reader->segment_count; i++) {
         free(reader->segment_paths[i]);
+        free(reader->segment_ids[i]);
     }
     free(reader->segment_paths);
+    free(reader->segment_ids);
     reader->segment_paths = NULL;
+    reader->segment_ids = NULL;
     reader->segment_count = 0u;
     reader->segment_index = 0u;
     reader->current_segment_path = NULL;
+    reader->current_segment_id = NULL;
+    reader->current_segment_compressed = 0;
+    reader->logical_offset = 0;
 }
 
 static int journal_reader_open_next_segment(journal_reader_t *reader)
@@ -1070,29 +1400,55 @@ static int journal_reader_open_next_segment(journal_reader_t *reader)
     if (reader->fp != NULL) {
         if (fclose(reader->fp) != 0) {
             reader->fp = NULL;
+            journal_reader_clear_zstd_stream(reader);
             return X12_ERR_IO;
         }
         reader->fp = NULL;
     }
+    journal_reader_clear_zstd_stream(reader);
     reader->current_segment_path = NULL;
+    reader->current_segment_id = NULL;
+    reader->current_segment_compressed = 0;
+    reader->logical_offset = 0;
     clear_reader_context(reader);
 
     if (reader->segment_index >= reader->segment_count) {
         return X12_OK;
     }
 
-    reader->current_segment_path = reader->segment_paths[reader->segment_index++];
+    reader->current_segment_path = reader->segment_paths[reader->segment_index];
+    reader->current_segment_id = reader->segment_ids[reader->segment_index];
+    reader->current_segment_compressed =
+        segment_file_is_compressed(reader->current_segment_path);
+    reader->segment_index++;
     reader->fp = fopen(reader->current_segment_path, "rb");
     if (reader->fp == NULL) {
         reader->current_segment_path = NULL;
+        reader->current_segment_id = NULL;
+        reader->current_segment_compressed = 0;
         return X12_ERR_IO;
     }
 
-    rc = journal_read_header(reader->fp);
+    if (reader->current_segment_compressed) {
+        rc = journal_reader_prepare_zstd(reader);
+        if (rc != X12_OK) {
+            (void)fclose(reader->fp);
+            reader->fp = NULL;
+            reader->current_segment_path = NULL;
+            reader->current_segment_id = NULL;
+            reader->current_segment_compressed = 0;
+            return rc;
+        }
+    }
+
+    rc = journal_reader_read_header(reader);
     if (rc != X12_OK) {
         (void)fclose(reader->fp);
         reader->fp = NULL;
+        journal_reader_clear_zstd_stream(reader);
         reader->current_segment_path = NULL;
+        reader->current_segment_id = NULL;
+        reader->current_segment_compressed = 0;
         return rc;
     }
 
@@ -1106,9 +1462,23 @@ void journal_reader_init(journal_reader_t *reader)
         reader->buffer = NULL;
         reader->buffer_cap = 0u;
         reader->segment_paths = NULL;
+        reader->segment_ids = NULL;
         reader->segment_count = 0u;
         reader->segment_index = 0u;
         reader->current_segment_path = NULL;
+        reader->current_segment_id = NULL;
+        reader->current_segment_compressed = 0;
+        reader->zstd_stream = NULL;
+        reader->zstd_in = NULL;
+        reader->zstd_in_cap = 0u;
+        reader->zstd_in_pos = 0u;
+        reader->zstd_in_len = 0u;
+        reader->zstd_out = NULL;
+        reader->zstd_out_cap = 0u;
+        reader->zstd_out_pos = 0u;
+        reader->zstd_out_len = 0u;
+        reader->zstd_input_eof = 0;
+        reader->logical_offset = 0;
         reader->context_source_file = NULL;
         reader->context_source_transaction = NULL;
         reader->context_source_drop_id = NULL;
@@ -1129,7 +1499,7 @@ int journal_reader_open(journal_reader_t *reader, const char *path)
 
     journal_reader_init(reader);
     if (path_is_directory(path)) {
-        rc = scan_segment_dir(reader, path);
+        rc = scan_segment_dir(reader, path, path);
         if (rc != X12_OK) {
             journal_reader_close(reader);
             return rc;
@@ -1140,7 +1510,7 @@ int journal_reader_open(journal_reader_t *reader, const char *path)
             return X12_ERR_IO;
         }
     } else {
-        rc = append_segment_path(reader, path);
+        rc = append_segment_path(reader, path, path);
         if (rc != X12_OK) {
             journal_reader_close(reader);
             return rc;
@@ -1165,7 +1535,7 @@ int journal_reader_next(journal_reader_t *reader, journal_event_t *out)
     uint32_t len;
     size_t bytes_read;
     size_t i;
-    long record_offset;
+    long long record_offset;
     int rc;
 
     if (reader == NULL || reader->fp == NULL || out == NULL) {
@@ -1180,18 +1550,21 @@ int journal_reader_next(journal_reader_t *reader, journal_event_t *out)
     memset(out, 0, sizeof(*out));
 
     while (reader->fp != NULL) {
-        record_offset = ftell(reader->fp);
-        if (record_offset < 0) {
-            return X12_ERR_IO;
-        }
+        record_offset = reader->logical_offset;
 
-        bytes_read = fread(encoded_len, 1u, sizeof(encoded_len), reader->fp);
+        bytes_read = 0u;
+        rc = journal_reader_read_some(
+            reader,
+            encoded_len,
+            sizeof(encoded_len),
+            &bytes_read
+        );
+        if (rc != X12_OK) {
+            return rc;
+        }
         if (bytes_read == 0u) {
             int next_rc;
 
-            if (!feof(reader->fp)) {
-                return X12_ERR_IO;
-            }
             next_rc = journal_reader_open_next_segment(reader);
             if (next_rc != X12_OK) {
                 return next_rc;
@@ -1219,8 +1592,9 @@ int journal_reader_next(journal_reader_t *reader, journal_event_t *out)
             reader->buffer_cap = (size_t)len;
         }
 
-        if (fread(reader->buffer, 1u, (size_t)len, reader->fp) != (size_t)len) {
-            return X12_ERR_IO;
+        rc = journal_reader_read_exact(reader, reader->buffer, (size_t)len);
+        if (rc != X12_OK) {
+            return rc;
         }
 
         cursor = reader->buffer;
@@ -1233,7 +1607,7 @@ int journal_reader_next(journal_reader_t *reader, journal_event_t *out)
 
         out->record = reader->buffer;
         out->record_len = (size_t)len;
-        out->segment_path = reader->current_segment_path;
+        out->segment_path = reader->current_segment_id;
         out->offset = (long long)record_offset;
         out->stored_len = (long long)(JOURNAL_LEN_SIZE + (size_t)len);
         out->field_count = field_count;
@@ -1283,6 +1657,7 @@ int journal_reader_close(journal_reader_t *reader)
         rc = X12_ERR_IO;
     }
     free(reader->buffer);
+    journal_reader_free_zstd(reader);
     free_segment_paths(reader);
     clear_reader_context(reader);
     journal_reader_init(reader);

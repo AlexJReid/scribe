@@ -276,6 +276,7 @@ static int test_journal_builder_file_list(void)
     journal_reader_t reader;
     journal_event_t event;
     char event_type[128];
+    char source_file[512];
     char source_transaction[32];
     size_t claim_observed_count = 0u;
     int rc;
@@ -292,6 +293,7 @@ static int test_journal_builder_file_list(void)
     (void)remove(journal_path);
     journal_builder_input_init(&journal_input);
     journal_input.run_id = "file-list-test";
+    journal_input.source_root = TEST_FIXTURE_DIR;
     journal_input.x837_list_path = list_path;
     REQUIRE_OK(journal_builder_build(&journal_input, journal_path));
 
@@ -304,8 +306,10 @@ static int test_journal_builder_file_list(void)
             break;
         }
         event_type[0] = '\0';
+        source_file[0] = '\0';
         source_transaction[0] = '\0';
         (void)journal_event_get_string(&event, "event_type", event_type, sizeof(event_type));
+        (void)journal_event_get_string(&event, "source_file", source_file, sizeof(source_file));
         (void)journal_event_get_string(
             &event,
             "source_transaction",
@@ -314,6 +318,7 @@ static int test_journal_builder_file_list(void)
         );
         if (strcmp(source_transaction, "837") == 0 &&
             strcmp(event_type, "ClaimObserved") == 0) {
+            REQUIRE_STR(source_file, "sample_837.edi");
             claim_observed_count++;
         }
     }
@@ -322,6 +327,57 @@ static int test_journal_builder_file_list(void)
 
     (void)remove(list_path);
     (void)remove(journal_path);
+    return 0;
+}
+
+static int test_journal_builder_compressed_zstd(void)
+{
+    char fixture_path[512];
+    char journal_path[512];
+    char raw_temp_path[640];
+    journal_builder_input_t journal_input;
+    journal_reader_t reader;
+    journal_event_t event;
+    char event_type[128];
+    char source_file[512];
+    size_t claim_observed_count = 0u;
+    int rc;
+
+    REQUIRE(make_path(fixture_path, sizeof(fixture_path), TEST_FIXTURE_DIR, "sample_837.edi") == 0);
+    REQUIRE(make_path(journal_path, sizeof(journal_path), TEST_OUTPUT_DIR, "sample_837_zstd.journal.zst") == 0);
+    REQUIRE(snprintf(raw_temp_path, sizeof(raw_temp_path), "%s.raw", journal_path) > 0);
+    (void)remove(journal_path);
+    (void)remove(raw_temp_path);
+
+    journal_builder_input_init(&journal_input);
+    journal_input.run_id = "zstd-test";
+    journal_input.source_root = TEST_FIXTURE_DIR;
+    journal_input.compress_zstd = 1;
+    REQUIRE_OK(journal_builder_input_add_837(&journal_input, fixture_path));
+    REQUIRE_OK(journal_builder_build(&journal_input, journal_path));
+
+    journal_reader_init(&reader);
+    REQUIRE_OK(journal_reader_open(&reader, journal_path));
+    while (1) {
+        rc = journal_reader_next(&reader, &event);
+        REQUIRE_OK(rc);
+        if (event.record_len == 0u) {
+            break;
+        }
+        event_type[0] = '\0';
+        source_file[0] = '\0';
+        (void)journal_event_get_string(&event, "event_type", event_type, sizeof(event_type));
+        (void)journal_event_get_string(&event, "source_file", source_file, sizeof(source_file));
+        if (strcmp(event_type, "ClaimObserved") == 0) {
+            REQUIRE_STR(source_file, "sample_837.edi");
+            claim_observed_count++;
+        }
+    }
+    REQUIRE_OK(journal_reader_close(&reader));
+    REQUIRE(claim_observed_count == 1u);
+
+    (void)remove(journal_path);
+    (void)remove(raw_temp_path);
     return 0;
 }
 
@@ -1206,6 +1262,7 @@ static int test_stroke_balance_projection_from_journal(void)
     journal_builder_input_init(&journal_input);
     journal_input.include_phi = 1;
     journal_input.run_id = "ingest-test-run";
+    journal_input.source_root = TEST_FIXTURE_DIR;
     REQUIRE_OK(journal_builder_input_add_834(&journal_input, coverage_834_path));
     REQUIRE_OK(journal_builder_input_add_270(&journal_input, eligibility_270_path));
     REQUIRE_OK(journal_builder_input_add_271(&journal_input, eligibility_271_path));
@@ -1607,7 +1664,7 @@ static int test_stroke_balance_projection_from_journal(void)
                 indexed_locator.source_drop_id,
                 &indexed_source_drop
             ));
-    REQUIRE_STR(indexed_source_drop.source_file, facility_835_path);
+    REQUIRE_STR(indexed_source_drop.source_file, "stroke_encounter/facility_835.edi");
     REQUIRE_OK(scribe_store_close(&read_store));
 
     projection_input.read_store_path = nonphi_read_store_path;
@@ -1715,6 +1772,7 @@ static int test_member_coverage_aggregate_from_journal(void)
 
     journal_builder_input_init(&journal_input);
     journal_input.run_id = "coverage-ingest-test";
+    journal_input.source_root = TEST_FIXTURE_DIR;
     journal_input.phi_vault_path = phi_vault_path;
     REQUIRE_OK(journal_builder_input_add_834(&journal_input, coverage_834_path));
     REQUIRE_OK(journal_builder_input_add_270(&journal_input, eligibility_270_path));
@@ -1865,6 +1923,7 @@ int main(void)
     REQUIRE(test_837_claim_event() == 0);
     REQUIRE(test_x12_005010x222_example_01_shape() == 0);
     REQUIRE(test_journal_builder_file_list() == 0);
+    REQUIRE(test_journal_builder_compressed_zstd() == 0);
     REQUIRE(test_834_ins_event() == 0);
     REQUIRE(test_270_271_eligibility_events() == 0);
     REQUIRE(test_835_remittance_events() == 0);

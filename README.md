@@ -37,21 +37,40 @@ Ingest multiple inputs into a replayable evidence stream:
 
 ```bash
 scribe ingest --out journal.scribe \
-  --837 claims.edi \
-  --835 remit.edi
+  --source-root inbound \
+  --837 inbound/claims.edi \
+  --835 inbound/remit.edi
 ```
 
 Write source drops into partitioned journal segments:
 
 ```bash
-scribe ingest --out journal.d/20260617/drop-001.journal --run-id drop-001 --837 claims.edi
+scribe ingest --out journal.d/20260617/drop-001.journal --run-id drop-001 --source-root inbound --837 inbound/claims.edi
 scribe stitch claims --journal journal.d/20260617/drop-001.journal \
   --incremental --read-store read_store.sqlite --out changed_claims.ndjson
 
-scribe ingest --out journal.d/20260720/drop-002.journal --run-id drop-002 --835 remit.edi
+scribe ingest --out journal.d/20260720/drop-002.journal --run-id drop-002 --source-root inbound --835 inbound/remit.edi
 scribe stitch claims --journal journal.d/20260720/drop-002.journal \
   --incremental --read-store read_store.sqlite --out changed_claims.ndjson
 ```
+
+`--source-root` keeps the journal `source_file` field portable by storing only
+the input path below that root, such as `claims.edi` or `batch-001/claims.edi`.
+When stitching a journal directory, segment locators are similarly reported
+relative to the journal directory root, for example `20260617/drop-001.journal`.
+Closed source-drop segments can be written compressed with zstd:
+
+```bash
+scribe ingest --out journal.d/20260617/drop-001.journal.zst \
+  --compress zstd \
+  --source-root inbound \
+  --837 inbound/claims.edi
+```
+
+Compressed ingest does not support `--append`; keep active segments as raw
+`.journal` files, then write closed segments as `.journal.zst`. Stitch commands
+can read raw and zstd-compressed journal segments from the same journal
+directory.
 
 Stitch claim versions by matching 837 claim facts with 835 remittance facts,
 then populate read-store indexes:
@@ -165,7 +184,7 @@ TYPE=835 FILE_COUNT=5000 KEEP=1 scripts/throughput-test.sh
 - Events: small auditable facts with source transaction, control numbers,
   segment index, byte offset, and optional run ID
 - Journal: immutable binary evidence stream, either one segment file or a
-  directory of `.journal` segment files
+  directory of raw `.journal` and/or compressed `.journal.zst` segment files
 - PHI vault: raw PHI resolver, separate from normal stores
 - Read store: indexes, versioned aggregate snapshots, and latest rows
 - Debug/output streams: aggregate/version NDJSON and balances.

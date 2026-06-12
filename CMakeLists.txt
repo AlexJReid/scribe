@@ -28,6 +28,16 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
 find_package(SQLite3 REQUIRED)
+find_package(zstd CONFIG QUIET)
+if(TARGET zstd::libzstd_static)
+    set(SCRIBE_ZSTD_TARGET zstd::libzstd_static)
+elseif(TARGET zstd::libzstd_shared)
+    set(SCRIBE_ZSTD_TARGET zstd::libzstd_shared)
+else()
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(ZSTD REQUIRED IMPORTED_TARGET libzstd)
+    set(SCRIBE_ZSTD_TARGET PkgConfig::ZSTD)
+endif()
 
 set(SCRIBE_BUILD_PLATFORM "${CMAKE_SYSTEM_NAME}")
 set(SCRIBE_BUILD_ARCH "${CMAKE_SYSTEM_PROCESSOR}")
@@ -90,7 +100,7 @@ target_include_directories(scribe_core PUBLIC
     src/x12
     src/x12/mappers
 )
-target_link_libraries(scribe_core PUBLIC SQLite::SQLite3 yyjson)
+target_link_libraries(scribe_core PUBLIC SQLite::SQLite3 yyjson ${SCRIBE_ZSTD_TARGET})
 scribe_enable_warnings(scribe_core)
 
 add_executable(scribe src/main.c)

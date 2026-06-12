@@ -18,11 +18,13 @@ Environment:
   SKIP_BUILD   Set to 1 to skip cmake configure/build.
   WORKDIR      Parent directory for generated workload. Default: mktemp under /tmp.
   KEEP         Set to 1 to keep generated files and journal.
+  COMPRESS     Set to 1 to write a zstd-compressed .journal.zst segment.
 
 Examples:
   scripts/throughput-test.sh
   FILE_COUNT=5000 scripts/throughput-test.sh
   TYPE=835 FILE_COUNT=2000 KEEP=1 scripts/throughput-test.sh
+  COMPRESS=1 FILE_COUNT=5000 KEEP=1 scripts/throughput-test.sh
 USAGE
 }
 
@@ -36,6 +38,7 @@ BUILD_DIR="${BUILD_DIR:-build}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
 KEEP="${KEEP:-0}"
 TYPE="${TYPE:-837}"
+COMPRESS="${COMPRESS:-0}"
 
 case "$FILE_COUNT" in
   ''|*[!0-9]*)
@@ -72,6 +75,11 @@ trap cleanup EXIT HUP INT TERM
 
 edi_dir="$workdir/edi"
 journal_path="$workdir/throughput.journal"
+compress_args=
+if [ "$COMPRESS" = "1" ]; then
+  journal_path="$journal_path.zst"
+  compress_args="--compress zstd"
+fi
 list_path="$workdir/input-files.txt"
 mkdir -p "$edi_dir"
 
@@ -178,6 +186,8 @@ ingest_start=$(date +%s)
 "$scribe_bin" ingest \
   --out "$journal_path" \
   --run-id "throughput-$TYPE-$FILE_COUNT" \
+  --source-root "$workdir" \
+  $compress_args \
   "--$TYPE-list" "$list_path"
 ingest_end=$(date +%s)
 

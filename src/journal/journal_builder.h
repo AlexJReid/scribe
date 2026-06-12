@@ -25,8 +25,11 @@ typedef struct {
     const char *x835_list_path;
     int include_phi;
     int append;
+    int compress_zstd;
+    int zstd_level;
     const char *phi_vault_path;
     const char *run_id;
+    const char *source_root;
 } journal_builder_input_t;
 
 void journal_builder_input_init(journal_builder_input_t *input);

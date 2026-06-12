@@ -189,11 +189,25 @@ Treat the binary journal as the evidence store and keep durable identity out of
 arrival order or local filenames.
 
 - Journal segment: arrival date plus ingest run file.
+- Source file: path below a declared source root, not a workstation absolute
+  path.
 - Source drop: stable inbound X12 transaction identity, `txn:ISA13:GS06:ST02`
   when ISA/GS/ST controls are present.
 - Event locator: journal segment plus byte offset and stored length.
 - Aggregate partition: domain key, normally claim token for claims and member
   token plus payer/service context for coverage.
+
+Source file provenance is portable: `scribe ingest --source-root inbound
+--837 inbound/batch-001/claims.edi` records `batch-001/claims.edi`. If no source
+root is supplied, ingest uses the current working directory; if an absolute
+input is outside that root, only the basename is recorded. When a journal
+directory is stitched, segment locators are rooted at that journal directory,
+such as `20260617/stroke-drop-facility-837.journal.zst`.
+
+Closed journal segments may be compressed as `.journal.zst` with
+`scribe ingest --compress zstd --out ...journal.zst`. Appendable active
+segments remain raw `.journal` files; readers accept a mixed journal directory
+containing both raw and compressed closed segments.
 
 Source drop IDs identify the file/interchange/transaction batch that should
 collapse into one aggregate version. Event locators identify the exact bytes that
@@ -218,36 +232,41 @@ Worked example, as used by the stroke demo:
 ```sh
 mkdir -p demo/stroke.journal.d/20260617 demo/stroke.journal.d/20260720
 
-scribe ingest --out demo/stroke.journal.d/20260617/stroke-drop-facility-837.journal \
+scribe ingest --out demo/stroke.journal.d/20260617/stroke-drop-facility-837.journal.zst \
   --run-id stroke-drop-facility-837 \
+  --compress zstd \
+  --source-root tests/fixtures \
   --phi-vault demo/stroke_phi_vault.sqlite \
   --837 tests/fixtures/stroke_encounter/facility_837.edi
 
-scribe ingest --out demo/stroke.journal.d/20260720/stroke-drop-facility-835.journal \
+scribe ingest --out demo/stroke.journal.d/20260720/stroke-drop-facility-835.journal.zst \
   --run-id stroke-drop-facility-835 \
+  --compress zstd \
+  --source-root tests/fixtures \
   --phi-vault demo/stroke_phi_vault.sqlite \
   --835 tests/fixtures/stroke_encounter/facility_835.edi
 
 scribe stitch claims \
-  --journal demo/stroke.journal.d/20260617/stroke-drop-facility-837.journal \
+  --journal demo/stroke.journal.d/20260617/stroke-drop-facility-837.journal.zst \
   --incremental \
   --read-store demo/stroke_resume_read_store.sqlite \
   --out demo/stroke_resume_first.ndjson
 
 scribe stitch claims \
-  --journal demo/stroke.journal.d/20260720/stroke-drop-facility-835.journal \
+  --journal demo/stroke.journal.d/20260720/stroke-drop-facility-835.journal.zst \
   --incremental \
   --read-store demo/stroke_resume_read_store.sqlite \
   --out demo/stroke_resume_append.ndjson
 ```
 
-Each ingest writes one binary journal segment under an arrival-date partition.
+Each ingest writes one compressed binary journal segment under an arrival-date partition.
 The incremental stitch calls treat each segment as the newly appended source
 drop: the first call records claim version 1 from the 837, and the second call
 hydrates that aggregate from `stroke_resume_read_store.sqlite` before applying
 the 835 as version 2. The stitch/project readers also accept a directory tree of
-`.journal` segment files and replay them in lexical path order for an explicit
-audit rebuild. The `--out` NDJSON files in the example are debug views of the
+raw `.journal` and compressed `.journal.zst` segment files and replay them in
+lexical path order for an explicit audit rebuild. The `--out` NDJSON files in
+the example are debug views of the
 versions emitted by each run; applications should query the read-store tables.
 The 837 and 835 files keep distinct source drop IDs from their X12 controls,
 while `run_id` identifies the ingest execution that wrote that segment.
