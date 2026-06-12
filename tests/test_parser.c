@@ -1144,6 +1144,7 @@ static int test_stroke_balance_projection_from_journal(void)
     char *projection = NULL;
     char resolved[256];
     char indexed_event_ids[16][SCRIBE_STORE_ID_MAX];
+    char aggregate_ids[4][SCRIBE_STORE_ID_MAX];
     char first_source_drop_id[SCRIBE_STORE_ID_MAX];
     char last_source_drop_id[SCRIBE_STORE_ID_MAX];
     char patient_name_token[TOKENISE_MAX_TOKEN_LEN];
@@ -1161,6 +1162,7 @@ static int test_stroke_balance_projection_from_journal(void)
     scribe_event_locator_t indexed_locator;
     scribe_source_drop_t indexed_source_drop;
     size_t indexed_event_count = 0u;
+    size_t aggregate_id_count = 0u;
     size_t latest_version = 0u;
     int saw_stroke_834 = 0;
     int saw_stroke_270 = 0;
@@ -1451,6 +1453,73 @@ static int test_stroke_balance_projection_from_journal(void)
     REQUIRE(strstr(latest_aggregate, "\"service_lines\":[") != NULL);
     REQUIRE(strstr(latest_aggregate, "\"match_method\":\"procedure_charge_date\"") != NULL);
     REQUIRE(strstr(latest_aggregate, "\"line_paid_amount\":\"250.00\"") != NULL);
+    REQUIRE_OK(scribe_store_find_claim_aggregate_ids_by_key(
+                &read_store,
+                "claim_id",
+                "8259c238232f9585e95fc8f45b0bb410",
+                aggregate_ids,
+                4u,
+                &aggregate_id_count
+            ));
+    REQUIRE(aggregate_id_count == 1u);
+    REQUIRE_STR(aggregate_ids[0], "claim:8259c238232f9585e95fc8f45b0bb410");
+    REQUIRE_OK(scribe_store_find_claim_aggregate_ids_by_key(
+                &read_store,
+                "claim_id_token",
+                "8259c238232f9585e95fc8f45b0bb410",
+                aggregate_ids,
+                4u,
+                &aggregate_id_count
+            ));
+    REQUIRE(aggregate_id_count == 0u);
+    REQUIRE_OK(scribe_store_find_claim_aggregate_ids_by_key(
+                &read_store,
+                "claim_id_raw",
+                "8259c238232f9585e95fc8f45b0bb410",
+                aggregate_ids,
+                4u,
+                &aggregate_id_count
+            ));
+    REQUIRE(aggregate_id_count == 0u);
+    REQUIRE_OK(scribe_store_find_claim_aggregate_ids_by_key(
+                &read_store,
+                "claim_id_raw",
+                "CLM-STROKE-RAD-FAC-001",
+                aggregate_ids,
+                4u,
+                &aggregate_id_count
+            ));
+    REQUIRE(aggregate_id_count == 1u);
+    REQUIRE_STR(aggregate_ids[0], "claim:8259c238232f9585e95fc8f45b0bb410");
+    REQUIRE_OK(scribe_store_find_claim_aggregate_ids_by_key(
+                &read_store,
+                "payer_claim_control_number",
+                "edf29f09740ab104da309e2b036e14d1",
+                aggregate_ids,
+                4u,
+                &aggregate_id_count
+            ));
+    REQUIRE(aggregate_id_count == 1u);
+    REQUIRE_STR(aggregate_ids[0], "claim:8259c238232f9585e95fc8f45b0bb410");
+    REQUIRE_OK(scribe_store_find_claim_aggregate_ids_by_key(
+                &read_store,
+                "payer_claim_control_number_raw",
+                "edf29f09740ab104da309e2b036e14d1",
+                aggregate_ids,
+                4u,
+                &aggregate_id_count
+            ));
+    REQUIRE(aggregate_id_count == 0u);
+    REQUIRE_OK(scribe_store_find_claim_aggregate_ids_by_key(
+                &read_store,
+                "payer_claim_control_number_raw",
+                "PAYER-STROKE-FAC-001",
+                aggregate_ids,
+                4u,
+                &aggregate_id_count
+            ));
+    REQUIRE(aggregate_id_count == 1u);
+    REQUIRE_STR(aggregate_ids[0], "claim:8259c238232f9585e95fc8f45b0bb410");
     REQUIRE_OK(scribe_store_close(&read_store));
     (void)remove(nonphi_read_store_path);
     (void)remove(nonphi_read_store_wal_path);

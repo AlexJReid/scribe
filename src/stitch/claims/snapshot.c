@@ -1211,6 +1211,12 @@ static int persist_claim_aggregate_keys(
     const char *aggregate_id
 )
 {
+    char claim_id_raw[STITCH_ID_MAX];
+    char claim_id_token[TOKENISE_MAX_TOKEN_LEN];
+    char payer_control_raw[STITCH_ID_MAX];
+    char payer_control_token[TOKENISE_MAX_TOKEN_LEN];
+    const char *claim_key_value;
+    const char *payer_key_value;
     int rc;
 
     if (state == NULL || state->read_store == NULL || aggregate == NULL ||
@@ -1218,53 +1224,78 @@ static int persist_claim_aggregate_keys(
         return X12_OK;
     }
 
+    rc = claim_stitch_resolve_identifier_output_pair(
+        state,
+        "claim_id",
+        aggregate->claim_id,
+        aggregate->claim_id_token,
+        claim_id_raw,
+        sizeof(claim_id_raw),
+        claim_id_token,
+        sizeof(claim_id_token)
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+    claim_key_value = claim_id_token[0] != '\0' ? claim_id_token : aggregate->key;
     rc = scribe_store_put_claim_aggregate_key(
         state->read_store,
         "claim_id",
-        aggregate->key,
+        claim_key_value,
         aggregate_id
     );
     if (rc != X12_OK) {
         return rc;
     }
-    if (aggregate->claim_id_token[0] != '\0') {
-        rc = scribe_store_put_claim_aggregate_key(
-            state->read_store,
-            "claim_id_token",
-            aggregate->claim_id_token,
-            aggregate_id
-        );
-        if (rc != X12_OK) {
-            return rc;
-        }
-    }
-    if (state->include_phi && aggregate->claim_id[0] != '\0') {
+    if (state->include_phi && claim_id_raw[0] != '\0' &&
+        claim_id_token[0] != '\0' && strcmp(claim_id_raw, claim_id_token) != 0) {
         rc = scribe_store_put_claim_aggregate_key(
             state->read_store,
             "claim_id_raw",
-            aggregate->claim_id,
+            claim_id_raw,
             aggregate_id
         );
         if (rc != X12_OK) {
             return rc;
         }
     }
-    if (aggregate->payer_claim_control_number_token[0] != '\0') {
+
+    rc = claim_stitch_resolve_identifier_output_pair(
+        state,
+        "payer_claim_control_number",
+        aggregate->payer_claim_control_number,
+        aggregate->payer_claim_control_number_token,
+        payer_control_raw,
+        sizeof(payer_control_raw),
+        payer_control_token,
+        sizeof(payer_control_token)
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+    payer_key_value = payer_control_token[0] != '\0' ?
+        payer_control_token :
+        (aggregate->payer_claim_control_number_token[0] != '\0' ?
+            aggregate->payer_claim_control_number_token :
+            aggregate->payer_claim_control_number);
+    if (payer_key_value[0] != '\0') {
         rc = scribe_store_put_claim_aggregate_key(
             state->read_store,
             "payer_claim_control_number",
-            aggregate->payer_claim_control_number_token,
+            payer_key_value,
             aggregate_id
         );
         if (rc != X12_OK) {
             return rc;
         }
     }
-    if (aggregate->payer_claim_control_number[0] != '\0') {
+    if (state->include_phi && payer_control_raw[0] != '\0' &&
+        payer_control_token[0] != '\0' &&
+        strcmp(payer_control_raw, payer_control_token) != 0) {
         rc = scribe_store_put_claim_aggregate_key(
             state->read_store,
-            state->include_phi ? "payer_claim_control_number_raw" : "payer_claim_control_number",
-            aggregate->payer_claim_control_number,
+            "payer_claim_control_number_raw",
+            payer_control_raw,
             aggregate_id
         );
         if (rc != X12_OK) {
