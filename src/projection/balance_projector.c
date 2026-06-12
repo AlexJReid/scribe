@@ -1,16 +1,13 @@
 #include "balance_projector.h"
 
 #include "event_writer.h"
-#include "journal.h"
+#include "store.h"
 #include "tokenise.h"
+#include "yyjson.h"
 
 #include <stdio.h>
 #include <string.h>
 
-#define json_get_string journal_event_get_string
-#define json_get_array_string_at journal_event_get_array_string_at
-
-#define BALANCE_LINE_MAX 8192u
 #define BALANCE_ID_MAX 128u
 #define BALANCE_DESC_MAX 256u
 #define BALANCE_MAX_CLAIMS 64u
@@ -67,6 +64,14 @@ static void copy_cstr(char *out, size_t out_len, const char *value)
     }
     memcpy(out, value, len);
     out[len] = '\0';
+}
+
+static const char *aggregate_key_from_id(const char *aggregate_id)
+{
+    if (aggregate_id != NULL && strncmp(aggregate_id, "claim:", 6u) == 0) {
+        return aggregate_id + 6u;
+    }
+    return aggregate_id == NULL ? "" : aggregate_id;
 }
 
 static int parse_money(const char *value, long long *out)
@@ -128,96 +133,85 @@ static void format_money(long long cents, char *out, size_t out_len)
     (void)snprintf(out, out_len, "%s%lld.%02lld", sign, abs_cents / 100, abs_cents % 100);
 }
 
-static balance_claim_t *find_claim(balance_state_t *state, const char *key)
+static void snapshot_get_string(yyjson_val *obj, const char *key, char *out, size_t out_len)
 {
-    size_t i;
+    yyjson_val *value;
 
-    if (state == NULL || key == NULL || key[0] == '\0') {
-        return NULL;
+    if (out == NULL || out_len == 0u) {
+        return;
+    }
+    if (obj == NULL || !yyjson_is_obj(obj)) {
+        out[0] = '\0';
+        return;
     }
 
-    for (i = 0u; i < state->claim_count; i++) {
-        if (strcmp(state->claims[i].key, key) == 0) {
-            return &state->claims[i];
-        }
+    value = yyjson_obj_get(obj, key);
+    if (value == NULL || !yyjson_is_str(value)) {
+        out[0] = '\0';
+        return;
     }
-
-    return NULL;
+    copy_cstr(out, out_len, yyjson_get_str(value));
 }
 
-static balance_claim_t *find_or_add_claim(
-    balance_state_t *state,
-    const char *claim_id,
-    const char *claim_id_token
-)
+static int snapshot_money_field(yyjson_val *obj, const char *key, long long *out)
 {
-    const char *key = claim_id_token != NULL && claim_id_token[0] != '\0' ? claim_id_token : claim_id;
-    balance_claim_t *claim;
+    yyjson_val *value;
 
-    claim = find_claim(state, key);
-    if (claim != NULL) {
-        if (claim->claim_id[0] == '\0' && claim_id != NULL) {
-            copy_cstr(claim->claim_id, sizeof(claim->claim_id), claim_id);
-        }
-        if (claim->claim_id_token[0] == '\0' && claim_id_token != NULL) {
-            copy_cstr(claim->claim_id_token, sizeof(claim->claim_id_token), claim_id_token);
-        }
-        return claim;
+    if (obj == NULL || !yyjson_is_obj(obj)) {
+        return X12_OK;
     }
 
-    if (state->claim_count >= BALANCE_MAX_CLAIMS) {
+    value = yyjson_obj_get(obj, key);
+    if (value == NULL || !yyjson_is_str(value)) {
+        return X12_OK;
+    }
+    return parse_money(yyjson_get_str(value), out);
+}
+
+static int snapshot_money_array_sum(yyjson_val *arr, long long *out)
+{
+    yyjson_val *value;
+    size_t idx;
+    size_t max;
+    long long amount;
+    int rc;
+
+    if (out == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+    *out = 0;
+    if (arr == NULL || !yyjson_is_arr(arr)) {
+        return X12_OK;
+    }
+
+    yyjson_arr_foreach(arr, idx, max, value) {
+        if (yyjson_is_str(value)) {
+            rc = parse_money(yyjson_get_str(value), &amount);
+            if (rc != X12_OK) {
+                return rc;
+            }
+            *out += amount;
+        }
+    }
+
+    return X12_OK;
+}
+
+static balance_claim_t *add_claim(balance_state_t *state, const char *aggregate_id)
+{
+    balance_claim_t *claim;
+    const char *key;
+
+    if (state == NULL || state->claim_count >= BALANCE_MAX_CLAIMS) {
         return NULL;
     }
 
     claim = &state->claims[state->claim_count++];
     memset(claim, 0, sizeof(*claim));
+    key = aggregate_key_from_id(aggregate_id);
     copy_cstr(claim->key, sizeof(claim->key), key);
-    copy_cstr(claim->claim_id, sizeof(claim->claim_id), claim_id);
-    copy_cstr(claim->claim_id_token, sizeof(claim->claim_id_token), claim_id_token);
+    copy_cstr(claim->claim_id, sizeof(claim->claim_id), key);
     return claim;
-}
-
-static balance_service_line_t *find_line_by_number(
-    balance_claim_t *claim,
-    const char *service_line_number
-)
-{
-    size_t i;
-
-    if (claim == NULL || service_line_number == NULL || service_line_number[0] == '\0') {
-        return NULL;
-    }
-
-    for (i = 0u; i < claim->line_count; i++) {
-        if (strcmp(claim->lines[i].service_line_number, service_line_number) == 0 ||
-            strcmp(claim->lines[i].remit_service_line_number, service_line_number) == 0) {
-            return &claim->lines[i];
-        }
-    }
-
-    return NULL;
-}
-
-static balance_service_line_t *find_line_by_procedure_charge(
-    balance_claim_t *claim,
-    const char *procedure_code,
-    long long billed
-)
-{
-    size_t i;
-
-    if (claim == NULL || procedure_code == NULL || procedure_code[0] == '\0') {
-        return NULL;
-    }
-
-    for (i = 0u; i < claim->line_count; i++) {
-        if (strcmp(claim->lines[i].procedure_code, procedure_code) == 0 &&
-            (billed == 0 || claim->lines[i].billed == billed)) {
-            return &claim->lines[i];
-        }
-    }
-
-    return NULL;
 }
 
 static balance_service_line_t *add_line(balance_claim_t *claim)
@@ -234,364 +228,239 @@ static balance_service_line_t *add_line(balance_claim_t *claim)
     return line;
 }
 
-static balance_service_line_t *find_or_add_line_by_number(
-    balance_claim_t *claim,
-    const char *service_line_number
-)
+static int apply_snapshot_adjustments(balance_service_line_t *line, yyjson_val *line_obj)
 {
-    balance_service_line_t *line = find_line_by_number(claim, service_line_number);
+    yyjson_val *adjustments;
+    yyjson_val *adjustment;
+    yyjson_val *amounts;
+    char group_code[32];
+    size_t idx;
+    size_t max;
+    long long amount;
+    int rc;
 
-    if (line != NULL) {
-        return line;
+    adjustments = yyjson_obj_get(line_obj, "adjustments");
+    if (adjustments == NULL || !yyjson_is_arr(adjustments)) {
+        return X12_OK;
+    }
+
+    yyjson_arr_foreach(adjustments, idx, max, adjustment) {
+        if (!yyjson_is_obj(adjustment)) {
+            continue;
+        }
+        snapshot_get_string(
+            adjustment,
+            "adjustment_group_code",
+            group_code,
+            sizeof(group_code)
+        );
+        amounts = yyjson_obj_get(adjustment, "amounts");
+        rc = snapshot_money_array_sum(amounts, &amount);
+        if (rc != X12_OK) {
+            return rc;
+        }
+
+        if (strcmp(group_code, "CO") == 0) {
+            line->contractual_adjustments += amount;
+        } else if (strcmp(group_code, "PR") == 0) {
+            line->patient_responsibility += amount;
+        }
+    }
+
+    return X12_OK;
+}
+
+static int apply_snapshot_line(balance_claim_t *claim, yyjson_val *line_obj)
+{
+    balance_service_line_t *line;
+    yyjson_val *submitted;
+    yyjson_val *remittance;
+    long long amount = 0;
+    int rc;
+
+    if (claim == NULL || line_obj == NULL || !yyjson_is_obj(line_obj)) {
+        return X12_OK;
     }
 
     line = add_line(claim);
-    if (line != NULL) {
-        copy_cstr(line->service_line_number, sizeof(line->service_line_number), service_line_number);
-    }
-    return line;
-}
-
-static void event_claim_key(const journal_event_t *journal_line, char *claim_id, size_t claim_id_len, char *claim_token, size_t token_len)
-{
-    claim_id[0] = '\0';
-    claim_token[0] = '\0';
-    (void)json_get_string(journal_line, "claim_id", claim_id, claim_id_len);
-    (void)json_get_string(journal_line, "claim_id_token", claim_token, token_len);
-}
-
-static int apply_claim_observed(balance_state_t *state, const journal_event_t *journal_line)
-{
-    char claim_id[BALANCE_ID_MAX];
-    char claim_token[TOKENISE_MAX_TOKEN_LEN];
-    char amount_text[64];
-    balance_claim_t *claim;
-
-    event_claim_key(journal_line, claim_id, sizeof(claim_id), claim_token, sizeof(claim_token));
-    if (claim_id[0] == '\0') {
-        return X12_OK;
-    }
-    claim = find_claim(state, claim_token[0] != '\0' ? claim_token : claim_id);
-    if (claim == NULL) {
-        claim = find_or_add_claim(state, claim_id, claim_token);
-    }
-    if (claim == NULL) {
-        return X12_ERR_NO_MEMORY;
-    }
-
-    if (json_get_string(journal_line, "total_charge_amount", amount_text, sizeof(amount_text)) &&
-        parse_money(amount_text, &claim->claim_total_billed) != X12_OK) {
-        return X12_ERR_INVALID_ARGUMENT;
-    }
-
-    return X12_OK;
-}
-
-static int apply_claim_service_line(balance_state_t *state, const journal_event_t *journal_line)
-{
-    char claim_id[BALANCE_ID_MAX];
-    char claim_token[TOKENISE_MAX_TOKEN_LEN];
-    char line_no[32];
-    char procedure_code[32];
-    char amount_text[64];
-    long long amount = 0;
-    balance_claim_t *claim;
-    balance_service_line_t *line;
-
-    event_claim_key(journal_line, claim_id, sizeof(claim_id), claim_token, sizeof(claim_token));
-    claim = find_claim(state, claim_token[0] != '\0' ? claim_token : claim_id);
-    if (claim == NULL) {
-        claim = find_or_add_claim(state, claim_id, claim_token);
-    }
-    if (claim == NULL) {
-        return X12_ERR_NO_MEMORY;
-    }
-
-    (void)json_get_string(journal_line, "service_line_number", line_no, sizeof(line_no));
-    line = find_or_add_line_by_number(claim, line_no);
     if (line == NULL) {
         return X12_ERR_NO_MEMORY;
     }
 
-    if (json_get_string(journal_line, "procedure_code", procedure_code, sizeof(procedure_code))) {
-        copy_cstr(line->procedure_code, sizeof(line->procedure_code), procedure_code);
-    }
-    if (line->billed == 0 &&
-        json_get_string(journal_line, "charge_amount", amount_text, sizeof(amount_text))) {
-        if (parse_money(amount_text, &amount) != X12_OK) {
-            return X12_ERR_INVALID_ARGUMENT;
-        }
-        line->billed = amount;
-    }
-
-    return X12_OK;
-}
-
-static int apply_claim_line_date(balance_state_t *state, const journal_event_t *journal_line)
-{
-    char claim_id[BALANCE_ID_MAX];
-    char claim_token[TOKENISE_MAX_TOKEN_LEN];
-    char line_no[32];
-    char service_date[32];
-    balance_claim_t *claim;
-    balance_service_line_t *line;
-
-    event_claim_key(journal_line, claim_id, sizeof(claim_id), claim_token, sizeof(claim_token));
-    claim = find_claim(state, claim_token[0] != '\0' ? claim_token : claim_id);
-    if (claim == NULL) {
-        return X12_OK;
+    snapshot_get_string(
+        line_obj,
+        "service_line_number",
+        line->service_line_number,
+        sizeof(line->service_line_number)
+    );
+    snapshot_get_string(
+        line_obj,
+        "remittance_service_line_number",
+        line->remit_service_line_number,
+        sizeof(line->remit_service_line_number)
+    );
+    snapshot_get_string(line_obj, "procedure_code", line->procedure_code, sizeof(line->procedure_code));
+    snapshot_get_string(line_obj, "description", line->description, sizeof(line->description));
+    snapshot_get_string(line_obj, "service_date", line->service_date, sizeof(line->service_date));
+    snapshot_get_string(line_obj, "match_method", line->match_method, sizeof(line->match_method));
+    if (line->match_method[0] == '\0') {
+        copy_cstr(line->match_method, sizeof(line->match_method), "unmatched");
     }
 
-    if (!json_get_string(journal_line, "service_line_number", line_no, sizeof(line_no)) ||
-        !json_get_string(journal_line, "date_value", service_date, sizeof(service_date))) {
-        return X12_OK;
-    }
-
-    line = find_line_by_number(claim, line_no);
-    if (line != NULL && line->service_date[0] == '\0') {
-        copy_cstr(line->service_date, sizeof(line->service_date), service_date);
-    }
-
-    return X12_OK;
-}
-
-static int apply_remittance_claim(balance_state_t *state, const journal_event_t *journal_line)
-{
-    char claim_id[BALANCE_ID_MAX];
-    char claim_token[TOKENISE_MAX_TOKEN_LEN];
-    char amount_text[64];
-    char payer_control[BALANCE_ID_MAX];
-    char payer_control_token[TOKENISE_MAX_TOKEN_LEN];
-    balance_claim_t *claim;
-
-    event_claim_key(journal_line, claim_id, sizeof(claim_id), claim_token, sizeof(claim_token));
-    claim = find_claim(state, claim_token[0] != '\0' ? claim_token : claim_id);
-    if (claim == NULL) {
-        claim = find_or_add_claim(state, claim_id, claim_token);
-    }
-    if (claim == NULL) {
-        return X12_ERR_NO_MEMORY;
-    }
-
-    if (json_get_string(journal_line, "claim_status_code", amount_text, sizeof(amount_text))) {
-        copy_cstr(claim->claim_status_code, sizeof(claim->claim_status_code), amount_text);
-    }
-    if (json_get_string(journal_line, "total_charge_amount", amount_text, sizeof(amount_text)) &&
-        parse_money(amount_text, &claim->claim_total_billed) != X12_OK) {
-        return X12_ERR_INVALID_ARGUMENT;
-    }
-    if (json_get_string(journal_line, "paid_amount", amount_text, sizeof(amount_text)) &&
-        parse_money(amount_text, &claim->claim_paid) != X12_OK) {
-        return X12_ERR_INVALID_ARGUMENT;
-    }
-    if (json_get_string(journal_line, "patient_responsibility_amount", amount_text, sizeof(amount_text)) &&
-        parse_money(amount_text, &claim->claim_patient_responsibility) != X12_OK) {
-        return X12_ERR_INVALID_ARGUMENT;
-    }
-    if (json_get_string(journal_line, "payer_claim_control_number", payer_control, sizeof(payer_control))) {
-        copy_cstr(claim->payer_claim_control_number, sizeof(claim->payer_claim_control_number), payer_control);
-    }
-    if (json_get_string(journal_line, "payer_claim_control_number_token", payer_control_token, sizeof(payer_control_token))) {
-        copy_cstr(
-            claim->payer_claim_control_number_token,
-            sizeof(claim->payer_claim_control_number_token),
-            payer_control_token
-        );
-    }
-
-    return X12_OK;
-}
-
-static int apply_remittance_service_line(balance_state_t *state, const journal_event_t *journal_line)
-{
-    char claim_id[BALANCE_ID_MAX];
-    char claim_token[TOKENISE_MAX_TOKEN_LEN];
-    char remit_line_no[32];
-    char procedure_code[32];
-    char amount_text[64];
-    long long charge_amount = 0;
-    long long paid_amount = 0;
-    balance_claim_t *claim;
-    balance_service_line_t *line;
-
-    event_claim_key(journal_line, claim_id, sizeof(claim_id), claim_token, sizeof(claim_token));
-    claim = find_claim(state, claim_token[0] != '\0' ? claim_token : claim_id);
-    if (claim == NULL) {
-        claim = find_or_add_claim(state, claim_id, claim_token);
-    }
-    if (claim == NULL) {
-        return X12_ERR_NO_MEMORY;
-    }
-
-    (void)json_get_string(journal_line, "service_line_number", remit_line_no, sizeof(remit_line_no));
-    (void)json_get_string(journal_line, "procedure_code", procedure_code, sizeof(procedure_code));
-    if (json_get_string(journal_line, "line_charge_amount", amount_text, sizeof(amount_text)) &&
-        parse_money(amount_text, &charge_amount) != X12_OK) {
-        return X12_ERR_INVALID_ARGUMENT;
-    }
-    if (json_get_string(journal_line, "line_paid_amount", amount_text, sizeof(amount_text)) &&
-        parse_money(amount_text, &paid_amount) != X12_OK) {
-        return X12_ERR_INVALID_ARGUMENT;
-    }
-
-    line = find_line_by_procedure_charge(claim, procedure_code, charge_amount);
-    if (line != NULL) {
-        copy_cstr(line->match_method, sizeof(line->match_method), "procedure_charge");
-    } else {
-        line = find_line_by_number(claim, remit_line_no);
-        if (line != NULL) {
-            copy_cstr(line->match_method, sizeof(line->match_method), "line_order");
-        }
-    }
-    if (line == NULL) {
-        line = find_or_add_line_by_number(claim, remit_line_no);
-        if (line == NULL) {
-            return X12_ERR_NO_MEMORY;
-        }
-        copy_cstr(line->match_method, sizeof(line->match_method), "created_from_remittance");
-    }
-
-    copy_cstr(line->remit_service_line_number, sizeof(line->remit_service_line_number), remit_line_no);
-    if (line->procedure_code[0] == '\0') {
-        copy_cstr(line->procedure_code, sizeof(line->procedure_code), procedure_code);
-    }
-    if (line->billed == 0) {
-        line->billed = charge_amount;
-    }
-    line->payer_paid += paid_amount;
-    return X12_OK;
-}
-
-static int apply_remittance_line_date(balance_state_t *state, const journal_event_t *journal_line)
-{
-    char claim_id[BALANCE_ID_MAX];
-    char claim_token[TOKENISE_MAX_TOKEN_LEN];
-    char remit_line_no[32];
-    char service_date[32];
-    balance_claim_t *claim;
-    balance_service_line_t *line;
-
-    event_claim_key(journal_line, claim_id, sizeof(claim_id), claim_token, sizeof(claim_token));
-    claim = find_claim(state, claim_token[0] != '\0' ? claim_token : claim_id);
-    if (claim == NULL) {
-        return X12_OK;
-    }
-    if (!json_get_string(journal_line, "service_line_number", remit_line_no, sizeof(remit_line_no)) ||
-        !json_get_string(journal_line, "date_value", service_date, sizeof(service_date))) {
-        return X12_OK;
-    }
-
-    line = find_line_by_number(claim, remit_line_no);
-    if (line != NULL) {
-        if (line->service_date[0] == '\0') {
-            copy_cstr(line->service_date, sizeof(line->service_date), service_date);
-        }
-        if (strcmp(line->service_date, service_date) == 0 &&
-            strcmp(line->match_method, "procedure_charge") == 0) {
-            copy_cstr(line->match_method, sizeof(line->match_method), "procedure_charge_date");
-        }
-    }
-
-    return X12_OK;
-}
-
-static int apply_adjustment(balance_state_t *state, const journal_event_t *journal_line)
-{
-    char claim_id[BALANCE_ID_MAX];
-    char claim_token[TOKENISE_MAX_TOKEN_LEN];
-    char line_no[32];
-    char group_code[32];
-    char amount_text[64];
-    long long amount = 0;
-    balance_claim_t *claim;
-    balance_service_line_t *line;
-
-    event_claim_key(journal_line, claim_id, sizeof(claim_id), claim_token, sizeof(claim_token));
-    claim = find_claim(state, claim_token[0] != '\0' ? claim_token : claim_id);
-    if (claim == NULL) {
-        return X12_OK;
-    }
-
-    if (!json_get_string(journal_line, "service_line_number", line_no, sizeof(line_no)) ||
-        line_no[0] == '\0') {
-        return X12_OK;
-    }
-    line = find_line_by_number(claim, line_no);
-    if (line == NULL) {
-        return X12_OK;
-    }
-
-    (void)json_get_string(journal_line, "adjustment_group_code", group_code, sizeof(group_code));
-    if (!json_get_array_string_at(journal_line, "amounts", 0u, amount_text, sizeof(amount_text))) {
-        return X12_OK;
-    }
-    if (parse_money(amount_text, &amount) != X12_OK) {
-        return X12_ERR_INVALID_ARGUMENT;
-    }
-
-    if (strcmp(group_code, "CO") == 0) {
-        line->contractual_adjustments += amount;
-    } else if (strcmp(group_code, "PR") == 0) {
-        line->patient_responsibility += amount;
-    }
-
-    return X12_OK;
-}
-
-static int apply_event(balance_state_t *state, const journal_event_t *journal_line)
-{
-    char event_type[96];
-
-    if (!json_get_string(journal_line, "event_type", event_type, sizeof(event_type))) {
-        return X12_OK;
-    }
-
-    if (strcmp(event_type, "ClaimObserved") == 0) {
-        return apply_claim_observed(state, journal_line);
-    }
-    if (strcmp(event_type, "ClaimServiceLineRecorded") == 0) {
-        return apply_claim_service_line(state, journal_line);
-    }
-    if (strcmp(event_type, "ClaimLineDateRecorded") == 0) {
-        return apply_claim_line_date(state, journal_line);
-    }
-    if (strcmp(event_type, "RemittanceClaimPaymentObserved") == 0) {
-        return apply_remittance_claim(state, journal_line);
-    }
-    if (strcmp(event_type, "RemittanceServiceLinePaymentObserved") == 0) {
-        return apply_remittance_service_line(state, journal_line);
-    }
-    if (strcmp(event_type, "RemittanceDateRecorded") == 0) {
-        return apply_remittance_line_date(state, journal_line);
-    }
-    if (strcmp(event_type, "RemittanceAdjustmentObserved") == 0) {
-        return apply_adjustment(state, journal_line);
-    }
-
-    return X12_OK;
-}
-
-static int read_journal_pass(balance_state_t *state, const char *path)
-{
-    journal_reader_t reader;
-    journal_event_t record;
-    int rc = X12_OK;
-
-    journal_reader_init(&reader);
-    rc = journal_reader_open(&reader, path);
+    submitted = yyjson_obj_get(line_obj, "submitted");
+    rc = snapshot_money_field(submitted, "charge_amount", &line->billed);
     if (rc != X12_OK) {
         return rc;
     }
 
-    while (rc == X12_OK) {
-        rc = journal_reader_next(&reader, &record);
-        if (rc != X12_OK || record.record_len == 0u) {
-            break;
+    remittance = yyjson_obj_get(line_obj, "remittance");
+    if (line->billed == 0) {
+        rc = snapshot_money_field(remittance, "line_charge_amount", &amount);
+        if (rc != X12_OK) {
+            return rc;
         }
-        rc = apply_event(state, &record);
+        line->billed = amount;
+    }
+    rc = snapshot_money_field(remittance, "line_paid_amount", &line->payer_paid);
+    if (rc != X12_OK) {
+        return rc;
     }
 
-    if (journal_reader_close(&reader) != X12_OK && rc == X12_OK) {
+    return apply_snapshot_adjustments(line, line_obj);
+}
+
+static int apply_claim_snapshot(
+    balance_state_t *state,
+    const char *aggregate_id,
+    const char *state_json
+)
+{
+    yyjson_doc *doc;
+    yyjson_val *root;
+    yyjson_val *keys;
+    yyjson_val *snapshot_state;
+    yyjson_val *claim_envelope;
+    yyjson_val *service_lines;
+    yyjson_val *line_obj;
+    balance_claim_t *claim;
+    size_t idx;
+    size_t max;
+    int rc = X12_OK;
+
+    if (state == NULL || aggregate_id == NULL || state_json == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    doc = yyjson_read(state_json, strlen(state_json), 0);
+    if (doc == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+    root = yyjson_doc_get_root(doc);
+    if (root == NULL || !yyjson_is_obj(root)) {
+        yyjson_doc_free(doc);
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    claim = add_claim(state, aggregate_id);
+    if (claim == NULL) {
+        yyjson_doc_free(doc);
+        return X12_ERR_NO_MEMORY;
+    }
+
+    keys = yyjson_obj_get(root, "keys");
+    if (keys != NULL && yyjson_is_obj(keys)) {
+        snapshot_get_string(keys, "claim_id", claim->claim_id, sizeof(claim->claim_id));
+        snapshot_get_string(
+            keys,
+            "claim_id_token",
+            claim->claim_id_token,
+            sizeof(claim->claim_id_token)
+        );
+        snapshot_get_string(
+            keys,
+            "payer_claim_control_number",
+            claim->payer_claim_control_number,
+            sizeof(claim->payer_claim_control_number)
+        );
+        snapshot_get_string(
+            keys,
+            "payer_claim_control_number_token",
+            claim->payer_claim_control_number_token,
+            sizeof(claim->payer_claim_control_number_token)
+        );
+    }
+    if (claim->claim_id[0] == '\0') {
+        copy_cstr(claim->claim_id, sizeof(claim->claim_id), claim->key);
+    }
+
+    snapshot_state = yyjson_obj_get(root, "state");
+    if (snapshot_state != NULL && yyjson_is_obj(snapshot_state)) {
+        snapshot_get_string(
+            snapshot_state,
+            "claim_type",
+            claim->claim_type,
+            sizeof(claim->claim_type)
+        );
+        snapshot_get_string(
+            snapshot_state,
+            "claim_status_code",
+            claim->claim_status_code,
+            sizeof(claim->claim_status_code)
+        );
+        claim_envelope = yyjson_obj_get(snapshot_state, "claim_envelope");
+        rc = snapshot_money_field(
+            claim_envelope,
+            "total_charge_amount",
+            &claim->claim_total_billed
+        );
+    }
+    if (rc == X12_OK) {
+        service_lines = yyjson_obj_get(root, "service_lines");
+        if (service_lines != NULL && yyjson_is_arr(service_lines)) {
+            yyjson_arr_foreach(service_lines, idx, max, line_obj) {
+                rc = apply_snapshot_line(claim, line_obj);
+                if (rc != X12_OK) {
+                    break;
+                }
+            }
+        }
+    }
+
+    yyjson_doc_free(doc);
+    return rc;
+}
+
+static int latest_claim_callback(
+    const char *aggregate_id,
+    size_t version,
+    const char *state_json,
+    void *user
+)
+{
+    (void)version;
+    return apply_claim_snapshot((balance_state_t *)user, aggregate_id, state_json);
+}
+
+static int read_store_pass(balance_state_t *state, const char *path)
+{
+    scribe_store_t store;
+    int opened = 0;
+    int rc;
+
+    if (state == NULL || path == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    scribe_store_init(&store);
+    rc = scribe_store_open(&store, path);
+    if (rc == X12_OK) {
+        opened = 1;
+        rc = scribe_store_init_schema(&store);
+    }
+    if (rc == X12_OK) {
+        rc = scribe_store_each_latest_claim_aggregate(&store, latest_claim_callback, state);
+    }
+    if (opened && scribe_store_close(&store) != X12_OK && rc == X12_OK) {
         rc = X12_ERR_IO;
     }
 
@@ -743,7 +612,10 @@ static int write_claim_identifier(FILE *fp, const balance_claim_t *claim, int in
 
 static int write_payer_control(FILE *fp, const balance_claim_t *claim, int include_phi)
 {
-    if (claim->payer_claim_control_number[0] == '\0') {
+    const char *tokenised_value;
+
+    if (claim->payer_claim_control_number[0] == '\0' &&
+        claim->payer_claim_control_number_token[0] == '\0') {
         return X12_OK;
     }
 
@@ -768,7 +640,10 @@ static int write_payer_control(FILE *fp, const balance_claim_t *claim, int inclu
         return X12_OK;
     }
 
-    return event_writer_write_cstring_field(fp, "payer_claim_control_number", claim->payer_claim_control_number, 1);
+    tokenised_value = claim->payer_claim_control_number_token[0] != '\0' ?
+        claim->payer_claim_control_number_token :
+        claim->payer_claim_control_number;
+    return event_writer_write_cstring_field(fp, "payer_claim_control_number", tokenised_value, 1);
 }
 
 static int write_service_line(FILE *fp, const balance_service_line_t *line, int prefix_comma)
@@ -903,14 +778,14 @@ int balance_projector_project(
     int owns_file = 0;
     int rc;
 
-    if (input == NULL || input->journal_path == NULL || out_path == NULL) {
+    if (input == NULL || input->read_store_path == NULL || out_path == NULL) {
         return X12_ERR_INVALID_ARGUMENT;
     }
 
     memset(&state, 0, sizeof(state));
     state.include_phi = input->include_phi;
 
-    rc = read_journal_pass(&state, input->journal_path);
+    rc = read_store_pass(&state, input->read_store_path);
     if (rc != X12_OK) {
         return rc;
     }
@@ -945,11 +820,11 @@ int balance_projector_run_cli(int argc, char **argv)
     balance_projector_input_init(&input);
 
     for (i = 2; i < argc; i++) {
-        if (strcmp(argv[i], "--journal") == 0) {
+        if (strcmp(argv[i], "--read-store") == 0) {
             if (i + 1 >= argc) {
                 return -1;
             }
-            input.journal_path = argv[++i];
+            input.read_store_path = argv[++i];
         } else if (strcmp(argv[i], "--out") == 0) {
             if (i + 1 >= argc) {
                 return -1;
@@ -962,7 +837,7 @@ int balance_projector_run_cli(int argc, char **argv)
         }
     }
 
-    if (input.journal_path == NULL) {
+    if (input.read_store_path == NULL) {
         return -1;
     }
 

@@ -6,7 +6,7 @@
 #include <stddef.h>
 
 typedef struct {
-    const char *journal_path;
+    const char *read_store_path;
     int include_phi;
 } balance_projector_input_t;
 

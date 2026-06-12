@@ -143,9 +143,9 @@ rm -f demo/.stroke_claim_delta.ndjson
 rm -f demo/.stroke_claim_notifications_delta.ndjson
 rm -f demo/.stroke_coverage_delta.ndjson
 
-echo "projecting balance from full journal directory"
+echo "projecting balance from claim read store"
 build/scribe project balance \
-  --journal demo/stroke.journal.d \
+  --read-store demo/stroke_read_store.sqlite \
   --out demo/stroke_balance.json
 
 echo "done, see demo/ for generated case-study output"

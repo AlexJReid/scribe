@@ -15,7 +15,7 @@ Use it in five layers:
 2. **Ingest** X12 files into an immutable journal.
 3. **Stitch** journal events into claim and coverage aggregate versions, matching
    837 claim submissions with 835 remittances.
-4. **Project** the journal into balance and notification read models.
+4. **Project** aggregate/read-store state into balance and notification read models.
 5. **Consume** applications and reports read directly from the projected read store(s).
 
 The parser handles 834 enrollment, 837 claims, 835 remits, and 270/271 eligibility
@@ -62,6 +62,14 @@ scribe stitch claims \
   --read-store read_store.sqlite \
   --out claim_aggregates.ndjson \
   --notify-out notifications.ndjson
+```
+
+Project claim balances from the stitched claim read store:
+
+```bash
+scribe project balance \
+  --read-store read_store.sqlite \
+  --out claim_balances.json
 ```
 
 The stitch `--out` NDJSON is a debug/inspection stream of changed aggregate

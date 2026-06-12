@@ -1255,9 +1255,13 @@ static int test_stroke_balance_projection_from_journal(void)
     REQUIRE(saw_stroke_271);
 
     aggregate_stitcher_input_init(&stitch_input);
+    (void)remove(resolved_phi_read_store_path);
+    (void)remove(resolved_phi_read_store_wal_path);
+    (void)remove(resolved_phi_read_store_shm_path);
     stitch_input.journal_path = journal_path;
     stitch_input.out_path = aggregate_path;
     stitch_input.notify_out_path = notification_path;
+    stitch_input.read_store_path = resolved_phi_read_store_path;
     stitch_input.include_phi = 1;
     stitch_input.run_id = "stitch-test-run";
     REQUIRE_OK(aggregate_stitcher_stitch(&stitch_input));
@@ -1320,7 +1324,7 @@ static int test_stroke_balance_projection_from_journal(void)
     REQUIRE(strstr(aggregates, "\"payer_claim_control_number\":\"PAYER-STROKE-FAC-001\"") != NULL);
 
     balance_projector_input_init(&projection_input);
-    projection_input.journal_path = journal_path;
+    projection_input.read_store_path = resolved_phi_read_store_path;
     projection_input.include_phi = 1;
     REQUIRE_OK(balance_projector_project(&projection_input, projection_path));
     REQUIRE(read_file_text(projection_path, projection, PROJECTION_LEN) == 0);
@@ -1606,7 +1610,7 @@ static int test_stroke_balance_projection_from_journal(void)
     REQUIRE_STR(indexed_source_drop.source_file, facility_835_path);
     REQUIRE_OK(scribe_store_close(&read_store));
 
-    projection_input.journal_path = nonphi_journal_path;
+    projection_input.read_store_path = nonphi_read_store_path;
     projection_input.include_phi = 0;
     REQUIRE_OK(balance_projector_project(&projection_input, nonphi_projection_path));
     REQUIRE(read_file_text(nonphi_projection_path, projection, PROJECTION_LEN) == 0);

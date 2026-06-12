@@ -929,6 +929,57 @@ int scribe_store_get_latest_claim_aggregate(
     return rc;
 }
 
+int scribe_store_each_latest_claim_aggregate(
+    scribe_store_t *store,
+    scribe_latest_aggregate_cb callback,
+    void *user
+)
+{
+    sqlite3_stmt *stmt;
+    sqlite3 *db = store_db(store);
+    int step_rc;
+    int rc;
+
+    if (callback == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+
+    rc = prepare(
+        db,
+        "SELECT aggregate_id, version, state_json "
+        "FROM claim_aggregate_latest "
+        "ORDER BY aggregate_id;",
+        &stmt
+    );
+    if (rc != X12_OK) {
+        return rc;
+    }
+
+    while (rc == X12_OK) {
+        step_rc = sqlite3_step(stmt);
+        if (step_rc == SQLITE_DONE) {
+            break;
+        }
+        if (step_rc != SQLITE_ROW) {
+            rc = sqlite_to_x12(step_rc);
+            break;
+        }
+
+        rc = callback(
+            (const char *)sqlite3_column_text(stmt, 0),
+            (size_t)sqlite3_column_int64(stmt, 1),
+            (const char *)sqlite3_column_text(stmt, 2),
+            user
+        );
+    }
+
+    if (sqlite3_finalize(stmt) != SQLITE_OK && rc == X12_OK) {
+        rc = X12_ERR_IO;
+    }
+
+    return rc;
+}
+
 int scribe_store_put_claim_aggregate_key(
     scribe_store_t *store,
     const char *key_type,

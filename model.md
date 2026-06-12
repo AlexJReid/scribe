@@ -120,6 +120,28 @@ The key distinction is that `event_keys` answer "which journal events mention
 this key?" while aggregate key indexes answer "which durable aggregate owns this
 key now?" Dirty routing ties the two together for incremental work.
 
+### Aggregates and projections
+
+Aggregates own durable domain state and cross-drop identity decisions. They
+answer questions such as "which aggregate owns this event?", "does this 835
+belong to this 837?", and "which submitted and remitted service lines match?".
+Aggregate code is also responsible for durable keys, version history, latest
+snapshots, and incremental dirty routing.
+
+Projections own reader-specific shapes derived from aggregate truth. They may
+persist their own read models, indexes, or report output, but they should not
+reinvent canonical joins, aggregate ids, or service-line matching rules. A
+projection should read aggregate latest rows or aggregate version changes and
+reshape those facts for a consumer.
+
+As a rule: if code decides what happened or which business object owns an event,
+it belongs in aggregate code. If code reshapes known state for a query, report,
+notification, or export, it belongs in projection code.
+
+Claim balance is a projection over claim aggregate state. The claim aggregate
+owns 837/835 matching and adjustment capture; the balance projection turns the
+latest matched claim state into ledger-style totals and line balances.
+
 ### Incremental shuffle/reduce
 
 Normal processing should not replay the entire journal. The steady-state path is

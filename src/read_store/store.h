@@ -32,6 +32,13 @@ typedef struct {
     char checksum[SCRIBE_STORE_CHECKSUM_MAX];
 } scribe_event_locator_t;
 
+typedef int (*scribe_latest_aggregate_cb)(
+    const char *aggregate_id,
+    size_t version,
+    const char *state_json,
+    void *user
+);
+
 void scribe_store_init(scribe_store_t *store);
 int scribe_store_open(scribe_store_t *store, const char *path);
 int scribe_store_close(scribe_store_t *store);
@@ -125,6 +132,12 @@ int scribe_store_get_latest_claim_aggregate(
     size_t *out_version,
     char *state_json,
     size_t state_json_len
+);
+
+int scribe_store_each_latest_claim_aggregate(
+    scribe_store_t *store,
+    scribe_latest_aggregate_cb callback,
+    void *user
 );
 
 int scribe_store_put_claim_aggregate_key(
