@@ -3,20 +3,10 @@
 
 #include "event_writer.h"
 #include "tokenise.h"
+#include "try.h"
 #include "x12_parser.h"
 
 #include <stddef.h>
-
-/* Shared "return rc on first error" guard used by every mapper. */
-#define TRY(expr)           \
-    do                      \
-    {                       \
-        int rc__ = (expr);  \
-        if (rc__ != X12_OK) \
-        {                   \
-            return rc__;    \
-        }                   \
-    } while (0)
 
 /* An empty (zero-length, "") x12_str_t. */
 x12_str_t x12_mapper_empty_str(void);
