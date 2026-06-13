@@ -115,26 +115,6 @@ static void format_money(long long cents, char *out, size_t out_len)
     (void)snprintf(out, out_len, "%s%lld.%02lld", sign, abs_cents / 100, abs_cents % 100);
 }
 
-static void snapshot_get_string(yyjson_val *obj, const char *key, char *out, size_t out_len)
-{
-    yyjson_val *value;
-
-    if (out == NULL || out_len == 0u) {
-        return;
-    }
-    if (obj == NULL || !yyjson_is_obj(obj)) {
-        out[0] = '\0';
-        return;
-    }
-
-    value = yyjson_obj_get(obj, key);
-    if (value == NULL || !yyjson_is_str(value)) {
-        out[0] = '\0';
-        return;
-    }
-    scribe_copy_cstr(out, out_len, yyjson_get_str(value));
-}
-
 static int snapshot_money_field(yyjson_val *obj, const char *key, long long *out)
 {
     yyjson_val *value;
@@ -230,7 +210,7 @@ static int apply_snapshot_adjustments(balance_service_line_t *line, yyjson_val *
         if (!yyjson_is_obj(adjustment)) {
             continue;
         }
-        snapshot_get_string(
+        (void)json_read_string(
             adjustment,
             "adjustment_group_code",
             group_code,
@@ -269,22 +249,22 @@ static int apply_snapshot_line(balance_claim_t *claim, yyjson_val *line_obj)
         return X12_ERR_NO_MEMORY;
     }
 
-    snapshot_get_string(
+    (void)json_read_string(
         line_obj,
         "service_line_number",
         line->service_line_number,
         sizeof(line->service_line_number)
     );
-    snapshot_get_string(
+    (void)json_read_string(
         line_obj,
         "remittance_service_line_number",
         line->remit_service_line_number,
         sizeof(line->remit_service_line_number)
     );
-    snapshot_get_string(line_obj, "procedure_code", line->procedure_code, sizeof(line->procedure_code));
-    snapshot_get_string(line_obj, "description", line->description, sizeof(line->description));
-    snapshot_get_string(line_obj, "service_date", line->service_date, sizeof(line->service_date));
-    snapshot_get_string(line_obj, "match_method", line->match_method, sizeof(line->match_method));
+    (void)json_read_string(line_obj, "procedure_code", line->procedure_code, sizeof(line->procedure_code));
+    (void)json_read_string(line_obj, "description", line->description, sizeof(line->description));
+    (void)json_read_string(line_obj, "service_date", line->service_date, sizeof(line->service_date));
+    (void)json_read_string(line_obj, "match_method", line->match_method, sizeof(line->match_method));
     if (line->match_method[0] == '\0') {
         scribe_copy_cstr(line->match_method, sizeof(line->match_method), "unmatched");
     }
@@ -351,20 +331,20 @@ static int apply_claim_snapshot(
 
     keys = yyjson_obj_get(root, "keys");
     if (keys != NULL && yyjson_is_obj(keys)) {
-        snapshot_get_string(keys, "claim_id", claim->claim_id, sizeof(claim->claim_id));
-        snapshot_get_string(
+        (void)json_read_string(keys, "claim_id", claim->claim_id, sizeof(claim->claim_id));
+        (void)json_read_string(
             keys,
             "claim_id_token",
             claim->claim_id_token,
             sizeof(claim->claim_id_token)
         );
-        snapshot_get_string(
+        (void)json_read_string(
             keys,
             "payer_claim_control_number",
             claim->payer_claim_control_number,
             sizeof(claim->payer_claim_control_number)
         );
-        snapshot_get_string(
+        (void)json_read_string(
             keys,
             "payer_claim_control_number_token",
             claim->payer_claim_control_number_token,
@@ -377,13 +357,13 @@ static int apply_claim_snapshot(
 
     snapshot_state = yyjson_obj_get(root, "state");
     if (snapshot_state != NULL && yyjson_is_obj(snapshot_state)) {
-        snapshot_get_string(
+        (void)json_read_string(
             snapshot_state,
             "claim_type",
             claim->claim_type,
             sizeof(claim->claim_type)
         );
-        snapshot_get_string(
+        (void)json_read_string(
             snapshot_state,
             "claim_status_code",
             claim->claim_status_code,

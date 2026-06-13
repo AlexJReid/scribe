@@ -234,3 +234,40 @@ int json_writer_write_fp(
 
     return X12_OK;
 }
+
+int json_read_string(
+    yyjson_val *obj,
+    const char *key,
+    char *out,
+    size_t out_len)
+{
+    yyjson_val *value;
+    const char *str;
+    size_t len;
+
+    if (out == NULL || out_len == 0u)
+    {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+    out[0] = '\0';
+    if (obj == NULL || key == NULL)
+    {
+        return X12_OK;
+    }
+
+    value = yyjson_obj_get(obj, key);
+    if (value == NULL || !yyjson_is_str(value))
+    {
+        return X12_OK;
+    }
+
+    str = yyjson_get_str(value);
+    len = yyjson_get_len(value);
+    if (len >= out_len)
+    {
+        len = out_len - 1u;
+    }
+    memcpy(out, str, len);
+    out[len] = '\0';
+    return X12_OK;
+}
