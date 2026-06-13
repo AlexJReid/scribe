@@ -1,4 +1,5 @@
 #include "x12_parser.h"
+#include "try.h"
 
 #include <ctype.h>
 #include <string.h>
@@ -275,29 +276,17 @@ int x12_document_each_segment(
 
         doc->buffer[segment_end] = '\0';
 
-        rc = parse_segment(doc, segment_start, segment_end, segment_index, &seg);
-        if (rc != X12_OK)
-        {
-            return rc;
-        }
+        TRY(parse_segment(doc, segment_start, segment_end, segment_index, &seg));
 
         if (seg.tag.len > 0)
         {
-            rc = validate_transaction_counts(
+            TRY(validate_transaction_counts(
                 &seg,
                 &inside_transaction,
                 &segments_since_st,
-                &current_st02);
-            if (rc != X12_OK)
-            {
-                return rc;
-            }
+                &current_st02));
 
-            rc = cb(&seg, user);
-            if (rc != X12_OK)
-            {
-                return rc;
-            }
+            TRY(cb(&seg, user));
 
             segment_index++;
         }

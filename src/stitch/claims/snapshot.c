@@ -2,6 +2,7 @@
 
 #include "json_write.h"
 #include "str_util.h"
+#include "try.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -16,7 +17,6 @@ static int snapshot_add_string_array32(
 {
     yyjson_mut_val *arr;
     size_t i;
-    int rc;
 
     arr = json_writer_add_array(writer, obj, key);
     if (arr == NULL) {
@@ -24,10 +24,7 @@ static int snapshot_add_string_array32(
     }
 
     for (i = 0u; i < value_count; i++) {
-        rc = json_writer_array_add_string(writer, arr, values[i]);
-        if (rc != X12_OK) {
-            return rc;
-        }
+        TRY(json_writer_array_add_string(writer, arr, values[i]));
     }
 
     return X12_OK;
@@ -43,7 +40,6 @@ static int snapshot_add_string_array64(
 {
     yyjson_mut_val *arr;
     size_t i;
-    int rc;
 
     arr = json_writer_add_array(writer, obj, key);
     if (arr == NULL) {
@@ -51,10 +47,7 @@ static int snapshot_add_string_array64(
     }
 
     for (i = 0u; i < value_count; i++) {
-        rc = json_writer_array_add_string(writer, arr, values[i]);
-        if (rc != X12_OK) {
-            return rc;
-        }
+        TRY(json_writer_array_add_string(writer, arr, values[i]));
     }
 
     return X12_OK;
@@ -118,7 +111,6 @@ static int snapshot_add_references(
     yyjson_mut_val *arr;
     yyjson_mut_val *ref_obj;
     size_t i;
-    int rc;
 
     arr = json_writer_add_array(writer, obj, key);
     if (arr == NULL) {
@@ -130,10 +122,7 @@ static int snapshot_add_references(
         if (ref_obj == NULL) {
             return X12_ERR_NO_MEMORY;
         }
-        rc = snapshot_add_reference(writer, ref_obj, state, &references[i]);
-        if (rc != X12_OK) {
-            return rc;
-        }
+        TRY(snapshot_add_reference(writer, ref_obj, state, &references[i]));
     }
 
     return X12_OK;
@@ -775,7 +764,6 @@ static int snapshot_add_source_event_ids(
 {
     yyjson_mut_val *arr;
     size_t i;
-    int rc;
 
     arr = json_writer_add_array(writer, root, "applied_event_ids");
     if (arr == NULL) {
@@ -783,10 +771,7 @@ static int snapshot_add_source_event_ids(
     }
 
     for (i = 0u; i < aggregate->source_event_count; i++) {
-        rc = json_writer_array_add_size(writer, arr, aggregate->source_events[i].event_id);
-        if (rc != X12_OK) {
-            return rc;
-        }
+        TRY(json_writer_array_add_size(writer, arr, aggregate->source_events[i].event_id));
     }
 
     return X12_OK;
@@ -801,7 +786,6 @@ static int snapshot_add_update_event_ids(
     yyjson_mut_val *arr;
     size_t i;
     size_t end;
-    int rc;
 
     if (batch == NULL || batch->aggregate == NULL) {
         return X12_ERR_INVALID_ARGUMENT;
@@ -814,10 +798,7 @@ static int snapshot_add_update_event_ids(
 
     end = batch->first_source_event_index + batch->source_event_count;
     for (i = batch->first_source_event_index; i < end; i++) {
-        rc = json_writer_array_add_size(writer, arr, batch->aggregate->source_events[i].event_id);
-        if (rc != X12_OK) {
-            return rc;
-        }
+        TRY(json_writer_array_add_size(writer, arr, batch->aggregate->source_events[i].event_id));
     }
 
     return X12_OK;
@@ -853,10 +834,7 @@ static int build_snapshot_doc(
     aggregate = batch->aggregate;
     include_phi = state->include_phi;
 
-    rc = json_writer_init_object(writer);
-    if (rc != X12_OK) {
-        return rc;
-    }
+    TRY(json_writer_init_object(writer));
 
     root = json_writer_root(writer);
     rc = json_writer_add_string(writer, root, "event_type", "ClaimAggregateUpdated");
@@ -907,7 +885,7 @@ static int build_snapshot_doc(
         return X12_ERR_NO_MEMORY;
     }
 
-    rc = claim_stitch_resolve_identifier_output_pair(
+    TRY(claim_stitch_resolve_identifier_output_pair(
         state,
         "claim_id",
         aggregate->claim_id,
@@ -916,10 +894,7 @@ static int build_snapshot_doc(
         sizeof(claim_id),
         claim_id_token,
         sizeof(claim_id_token)
-    );
-    if (rc != X12_OK) {
-        return rc;
-    }
+    ));
     if (include_phi && claim_id[0] != '\0') {
         rc = json_writer_add_string(writer, keys, "claim_id", claim_id);
         if (rc == X12_OK) {
@@ -937,7 +912,7 @@ static int build_snapshot_doc(
         return rc;
     }
 
-    rc = claim_stitch_resolve_identifier_output_pair(
+    TRY(claim_stitch_resolve_identifier_output_pair(
         state,
         "payer_claim_control_number",
         aggregate->payer_claim_control_number,
@@ -946,10 +921,7 @@ static int build_snapshot_doc(
         sizeof(payer_control),
         payer_control_token,
         sizeof(payer_control_token)
-    );
-    if (rc != X12_OK) {
-        return rc;
-    }
+    ));
     if (payer_control[0] != '\0' || payer_control_token[0] != '\0') {
         if (include_phi && payer_control[0] != '\0') {
             rc = json_writer_add_string(
@@ -1199,14 +1171,13 @@ static int persist_claim_aggregate_keys(
     char payer_control_token[TOKENISE_MAX_TOKEN_LEN];
     const char *claim_key_value;
     const char *payer_key_value;
-    int rc;
 
     if (state == NULL || state->read_store == NULL || aggregate == NULL ||
         aggregate_id == NULL) {
         return X12_OK;
     }
 
-    rc = claim_stitch_resolve_identifier_output_pair(
+    TRY(claim_stitch_resolve_identifier_output_pair(
         state,
         "claim_id",
         aggregate->claim_id,
@@ -1215,34 +1186,25 @@ static int persist_claim_aggregate_keys(
         sizeof(claim_id_raw),
         claim_id_token,
         sizeof(claim_id_token)
-    );
-    if (rc != X12_OK) {
-        return rc;
-    }
+    ));
     claim_key_value = claim_id_token[0] != '\0' ? claim_id_token : aggregate->key;
-    rc = scribe_store_put_claim_aggregate_key(
+    TRY(scribe_store_put_claim_aggregate_key(
         state->read_store,
         "claim_id",
         claim_key_value,
         aggregate_id
-    );
-    if (rc != X12_OK) {
-        return rc;
-    }
+    ));
     if (state->include_phi && claim_id_raw[0] != '\0' &&
         claim_id_token[0] != '\0' && strcmp(claim_id_raw, claim_id_token) != 0) {
-        rc = scribe_store_put_claim_aggregate_key(
+        TRY(scribe_store_put_claim_aggregate_key(
             state->read_store,
             "claim_id_raw",
             claim_id_raw,
             aggregate_id
-        );
-        if (rc != X12_OK) {
-            return rc;
-        }
+        ));
     }
 
-    rc = claim_stitch_resolve_identifier_output_pair(
+    TRY(claim_stitch_resolve_identifier_output_pair(
         state,
         "payer_claim_control_number",
         aggregate->payer_claim_control_number,
@@ -1251,38 +1213,29 @@ static int persist_claim_aggregate_keys(
         sizeof(payer_control_raw),
         payer_control_token,
         sizeof(payer_control_token)
-    );
-    if (rc != X12_OK) {
-        return rc;
-    }
+    ));
     payer_key_value = payer_control_token[0] != '\0' ?
         payer_control_token :
         (aggregate->payer_claim_control_number_token[0] != '\0' ?
             aggregate->payer_claim_control_number_token :
             aggregate->payer_claim_control_number);
     if (payer_key_value[0] != '\0') {
-        rc = scribe_store_put_claim_aggregate_key(
+        TRY(scribe_store_put_claim_aggregate_key(
             state->read_store,
             "payer_claim_control_number",
             payer_key_value,
             aggregate_id
-        );
-        if (rc != X12_OK) {
-            return rc;
-        }
+        ));
     }
     if (state->include_phi && payer_control_raw[0] != '\0' &&
         payer_control_token[0] != '\0' &&
         strcmp(payer_control_raw, payer_control_token) != 0) {
-        rc = scribe_store_put_claim_aggregate_key(
+        TRY(scribe_store_put_claim_aggregate_key(
             state->read_store,
             "payer_claim_control_number_raw",
             payer_control_raw,
             aggregate_id
-        );
-        if (rc != X12_OK) {
-            return rc;
-        }
+        ));
     }
 
     return X12_OK;
@@ -1377,10 +1330,7 @@ static int write_notification(
         return X12_ERR_BUFFER_TOO_SMALL;
     }
 
-    rc = json_writer_init_object(&writer);
-    if (rc != X12_OK) {
-        return rc;
-    }
+    TRY(json_writer_init_object(&writer));
     root = json_writer_root(&writer);
 
     rc = json_writer_add_string(&writer, root, "event_type", "SourceDropAggregatesRecorded");
@@ -1481,58 +1431,19 @@ static int write_snapshot(
         return rc;
     }
 
-    rc = persist_snapshot_to_read_store(state, batch, aggregate_id);
-    if (rc != X12_OK) {
-        return rc;
-    }
+    TRY(persist_snapshot_to_read_store(state, batch, aggregate_id));
     if (state->incremental && state->read_store != NULL) {
-        rc = scribe_store_clear_dirty_aggregate(
+        TRY(scribe_store_clear_dirty_aggregate(
             state->read_store,
             "claim",
             aggregate_id,
             batch->source_drop_id
-        );
-        if (rc != X12_OK) {
-            return rc;
-        }
+        ));
     }
 
     return X12_OK;
 }
 
-static int snapshot_get_string(
-    yyjson_val *obj,
-    const char *key,
-    char *out,
-    size_t out_len
-)
-{
-    yyjson_val *value;
-    const char *str;
-    size_t len;
-
-    if (out == NULL || out_len == 0u) {
-        return X12_ERR_INVALID_ARGUMENT;
-    }
-    out[0] = '\0';
-    if (obj == NULL || key == NULL) {
-        return X12_OK;
-    }
-
-    value = yyjson_obj_get(obj, key);
-    if (value == NULL || !yyjson_is_str(value)) {
-        return X12_OK;
-    }
-
-    str = yyjson_get_str(value);
-    len = yyjson_get_len(value);
-    if (len >= out_len) {
-        len = out_len - 1u;
-    }
-    memcpy(out, str, len);
-    out[len] = '\0';
-    return X12_OK;
-}
 
 static void snapshot_get_bool(yyjson_val *obj, const char *key, int *out)
 {
@@ -1605,9 +1516,9 @@ static int hydrate_reference(stitched_claim_reference_t *reference, yyjson_val *
         return X12_ERR_INVALID_ARGUMENT;
     }
 
-    rc = snapshot_get_string(obj, "reference_scope", reference->reference_scope, sizeof(reference->reference_scope));
+    rc = json_read_string(obj, "reference_scope", reference->reference_scope, sizeof(reference->reference_scope));
     if (rc == X12_OK) {
-        rc = snapshot_get_string(
+        rc = json_read_string(
             obj,
             "service_line_number",
             reference->service_line_number,
@@ -1615,7 +1526,7 @@ static int hydrate_reference(stitched_claim_reference_t *reference, yyjson_val *
         );
     }
     if (rc == X12_OK) {
-        rc = snapshot_get_string(
+        rc = json_read_string(
             obj,
             "reference_qualifier",
             reference->reference_qualifier,
@@ -1623,7 +1534,7 @@ static int hydrate_reference(stitched_claim_reference_t *reference, yyjson_val *
         );
     }
     if (rc == X12_OK) {
-        rc = snapshot_get_string(
+        rc = json_read_string(
             obj,
             "reference_identification",
             reference->reference_identification,
@@ -1631,7 +1542,7 @@ static int hydrate_reference(stitched_claim_reference_t *reference, yyjson_val *
         );
     }
     if (rc == X12_OK) {
-        rc = snapshot_get_string(
+        rc = json_read_string(
             obj,
             "reference_identification_token",
             reference->reference_identification_token,
@@ -1662,7 +1573,6 @@ static int hydrate_reference_array(
     yyjson_val *item;
     size_t idx;
     size_t max;
-    int rc;
 
     if (references == NULL || reference_count == NULL || parent == NULL || key == NULL) {
         return X12_ERR_INVALID_ARGUMENT;
@@ -1681,10 +1591,7 @@ static int hydrate_reference_array(
         if (*reference_count >= reference_cap) {
             return X12_ERR_NO_MEMORY;
         }
-        rc = hydrate_reference(&references[*reference_count], item);
-        if (rc != X12_OK) {
-            return rc;
-        }
+        TRY(hydrate_reference(&references[*reference_count], item));
         (*reference_count)++;
     }
 
@@ -1700,15 +1607,15 @@ static int hydrate_claim_envelope(claim_aggregate_t *aggregate, yyjson_val *stat
         return X12_OK;
     }
 
-    (void)snapshot_get_string(obj, "total_charge_amount", aggregate->claim_envelope.total_charge_amount, sizeof(aggregate->claim_envelope.total_charge_amount));
-    (void)snapshot_get_string(obj, "facility_type_code", aggregate->claim_envelope.facility_type_code, sizeof(aggregate->claim_envelope.facility_type_code));
-    (void)snapshot_get_string(obj, "facility_code_qualifier", aggregate->claim_envelope.facility_code_qualifier, sizeof(aggregate->claim_envelope.facility_code_qualifier));
-    (void)snapshot_get_string(obj, "claim_frequency_type_code", aggregate->claim_envelope.claim_frequency_type_code, sizeof(aggregate->claim_envelope.claim_frequency_type_code));
-    (void)snapshot_get_string(obj, "provider_signature_indicator", aggregate->claim_envelope.provider_signature_indicator, sizeof(aggregate->claim_envelope.provider_signature_indicator));
-    (void)snapshot_get_string(obj, "assignment_or_plan_participation_code", aggregate->claim_envelope.assignment_or_plan_participation_code, sizeof(aggregate->claim_envelope.assignment_or_plan_participation_code));
-    (void)snapshot_get_string(obj, "benefits_assignment_certification_indicator", aggregate->claim_envelope.benefits_assignment_certification_indicator, sizeof(aggregate->claim_envelope.benefits_assignment_certification_indicator));
-    (void)snapshot_get_string(obj, "release_of_information_code", aggregate->claim_envelope.release_of_information_code, sizeof(aggregate->claim_envelope.release_of_information_code));
-    (void)snapshot_get_string(obj, "patient_signature_source_code", aggregate->claim_envelope.patient_signature_source_code, sizeof(aggregate->claim_envelope.patient_signature_source_code));
+    (void)json_read_string(obj, "total_charge_amount", aggregate->claim_envelope.total_charge_amount, sizeof(aggregate->claim_envelope.total_charge_amount));
+    (void)json_read_string(obj, "facility_type_code", aggregate->claim_envelope.facility_type_code, sizeof(aggregate->claim_envelope.facility_type_code));
+    (void)json_read_string(obj, "facility_code_qualifier", aggregate->claim_envelope.facility_code_qualifier, sizeof(aggregate->claim_envelope.facility_code_qualifier));
+    (void)json_read_string(obj, "claim_frequency_type_code", aggregate->claim_envelope.claim_frequency_type_code, sizeof(aggregate->claim_envelope.claim_frequency_type_code));
+    (void)json_read_string(obj, "provider_signature_indicator", aggregate->claim_envelope.provider_signature_indicator, sizeof(aggregate->claim_envelope.provider_signature_indicator));
+    (void)json_read_string(obj, "assignment_or_plan_participation_code", aggregate->claim_envelope.assignment_or_plan_participation_code, sizeof(aggregate->claim_envelope.assignment_or_plan_participation_code));
+    (void)json_read_string(obj, "benefits_assignment_certification_indicator", aggregate->claim_envelope.benefits_assignment_certification_indicator, sizeof(aggregate->claim_envelope.benefits_assignment_certification_indicator));
+    (void)json_read_string(obj, "release_of_information_code", aggregate->claim_envelope.release_of_information_code, sizeof(aggregate->claim_envelope.release_of_information_code));
+    (void)json_read_string(obj, "patient_signature_source_code", aggregate->claim_envelope.patient_signature_source_code, sizeof(aggregate->claim_envelope.patient_signature_source_code));
 
     return X12_OK;
 }
@@ -1722,10 +1629,10 @@ static int hydrate_party_context(stitched_party_context_t *party, yyjson_val *st
         return X12_OK;
     }
 
-    (void)snapshot_get_string(obj, "payer_responsibility_sequence_number_code", party->payer_responsibility_sequence_number_code, sizeof(party->payer_responsibility_sequence_number_code));
-    (void)snapshot_get_string(obj, "individual_relationship_code", party->individual_relationship_code, sizeof(party->individual_relationship_code));
-    (void)snapshot_get_string(obj, "insured_group_or_policy_number", party->insured_group_or_policy_number, sizeof(party->insured_group_or_policy_number));
-    (void)snapshot_get_string(obj, "insured_group_or_policy_number_token", party->insured_group_or_policy_number_token, sizeof(party->insured_group_or_policy_number_token));
+    (void)json_read_string(obj, "payer_responsibility_sequence_number_code", party->payer_responsibility_sequence_number_code, sizeof(party->payer_responsibility_sequence_number_code));
+    (void)json_read_string(obj, "individual_relationship_code", party->individual_relationship_code, sizeof(party->individual_relationship_code));
+    (void)json_read_string(obj, "insured_group_or_policy_number", party->insured_group_or_policy_number, sizeof(party->insured_group_or_policy_number));
+    (void)json_read_string(obj, "insured_group_or_policy_number_token", party->insured_group_or_policy_number_token, sizeof(party->insured_group_or_policy_number_token));
     if (party->insured_group_or_policy_number_token[0] == '\0') {
         scribe_copy_cstr(
             party->insured_group_or_policy_number_token,
@@ -1734,10 +1641,10 @@ static int hydrate_party_context(stitched_party_context_t *party, yyjson_val *st
         );
         party->insured_group_or_policy_number[0] = '\0';
     }
-    (void)snapshot_get_string(obj, "claim_filing_indicator_code", party->claim_filing_indicator_code, sizeof(party->claim_filing_indicator_code));
-    (void)snapshot_get_string(obj, "date_format", party->date_format, sizeof(party->date_format));
-    (void)snapshot_get_string(obj, "date_of_birth", party->date_of_birth, sizeof(party->date_of_birth));
-    (void)snapshot_get_string(obj, "date_of_birth_token", party->date_of_birth_token, sizeof(party->date_of_birth_token));
+    (void)json_read_string(obj, "claim_filing_indicator_code", party->claim_filing_indicator_code, sizeof(party->claim_filing_indicator_code));
+    (void)json_read_string(obj, "date_format", party->date_format, sizeof(party->date_format));
+    (void)json_read_string(obj, "date_of_birth", party->date_of_birth, sizeof(party->date_of_birth));
+    (void)json_read_string(obj, "date_of_birth_token", party->date_of_birth_token, sizeof(party->date_of_birth_token));
     if (party->date_of_birth_token[0] == '\0') {
         scribe_copy_cstr(
             party->date_of_birth_token,
@@ -1746,7 +1653,7 @@ static int hydrate_party_context(stitched_party_context_t *party, yyjson_val *st
         );
         party->date_of_birth[0] = '\0';
     }
-    (void)snapshot_get_string(obj, "gender_code", party->gender_code, sizeof(party->gender_code));
+    (void)json_read_string(obj, "gender_code", party->gender_code, sizeof(party->gender_code));
 
     return X12_OK;
 }
@@ -1774,9 +1681,9 @@ static int hydrate_claim_dates(claim_aggregate_t *aggregate, yyjson_val *state_o
             return X12_ERR_NO_MEMORY;
         }
         date = &aggregate->claim_dates[aggregate->claim_date_count++];
-        (void)snapshot_get_string(item, "date_qualifier", date->date_qualifier, sizeof(date->date_qualifier));
-        (void)snapshot_get_string(item, "date_format", date->date_format, sizeof(date->date_format));
-        (void)snapshot_get_string(item, "date_value", date->date_value, sizeof(date->date_value));
+        (void)json_read_string(item, "date_qualifier", date->date_qualifier, sizeof(date->date_qualifier));
+        (void)json_read_string(item, "date_format", date->date_format, sizeof(date->date_format));
+        (void)json_read_string(item, "date_value", date->date_value, sizeof(date->date_value));
     }
 
     return X12_OK;
@@ -1795,7 +1702,7 @@ static int hydrate_diagnoses(claim_aggregate_t *aggregate, yyjson_val *state_obj
         return X12_OK;
     }
 
-    (void)snapshot_get_string(
+    (void)json_read_string(
         obj,
         "principal_diagnosis_code",
         aggregate->principal_diagnosis_code,
@@ -1853,12 +1760,12 @@ static int hydrate_healthcare_codes(claim_aggregate_t *aggregate, yyjson_val *st
         }
 
         code = &aggregate->healthcare_codes[aggregate->healthcare_code_count++];
-        (void)snapshot_get_string(item, "healthcare_code_kind", code->healthcare_code_kind, sizeof(code->healthcare_code_kind));
-        (void)snapshot_get_string(item, "healthcare_code_qualifier", code->healthcare_code_qualifier, sizeof(code->healthcare_code_qualifier));
-        (void)snapshot_get_string(item, "healthcare_code", code->healthcare_code, sizeof(code->healthcare_code));
-        (void)snapshot_get_string(item, "healthcare_code_date_format", code->healthcare_code_date_format, sizeof(code->healthcare_code_date_format));
-        (void)snapshot_get_string(item, "healthcare_code_date_value", code->healthcare_code_date_value, sizeof(code->healthcare_code_date_value));
-        (void)snapshot_get_string(item, "healthcare_code_amount", code->healthcare_code_amount, sizeof(code->healthcare_code_amount));
+        (void)json_read_string(item, "healthcare_code_kind", code->healthcare_code_kind, sizeof(code->healthcare_code_kind));
+        (void)json_read_string(item, "healthcare_code_qualifier", code->healthcare_code_qualifier, sizeof(code->healthcare_code_qualifier));
+        (void)json_read_string(item, "healthcare_code", code->healthcare_code, sizeof(code->healthcare_code));
+        (void)json_read_string(item, "healthcare_code_date_format", code->healthcare_code_date_format, sizeof(code->healthcare_code_date_format));
+        (void)json_read_string(item, "healthcare_code_date_value", code->healthcare_code_date_value, sizeof(code->healthcare_code_date_value));
+        (void)json_read_string(item, "healthcare_code_amount", code->healthcare_code_amount, sizeof(code->healthcare_code_amount));
 
         components = yyjson_obj_get(item, "healthcare_code_components");
         if (components != NULL && yyjson_is_arr(components)) {
@@ -1906,12 +1813,12 @@ static int hydrate_provider_taxonomies(claim_aggregate_t *aggregate, yyjson_val 
         }
 
         taxonomy = &aggregate->provider_taxonomies[aggregate->provider_taxonomy_count++];
-        (void)snapshot_get_string(item, "reference_scope", taxonomy->reference_scope, sizeof(taxonomy->reference_scope));
-        (void)snapshot_get_string(item, "service_line_number", taxonomy->service_line_number, sizeof(taxonomy->service_line_number));
-        (void)snapshot_get_string(item, "provider_context", taxonomy->provider_context, sizeof(taxonomy->provider_context));
-        (void)snapshot_get_string(item, "provider_role_code", taxonomy->provider_role_code, sizeof(taxonomy->provider_role_code));
-        (void)snapshot_get_string(item, "reference_identification_qualifier", taxonomy->reference_identification_qualifier, sizeof(taxonomy->reference_identification_qualifier));
-        (void)snapshot_get_string(item, "provider_taxonomy_code", taxonomy->provider_taxonomy_code, sizeof(taxonomy->provider_taxonomy_code));
+        (void)json_read_string(item, "reference_scope", taxonomy->reference_scope, sizeof(taxonomy->reference_scope));
+        (void)json_read_string(item, "service_line_number", taxonomy->service_line_number, sizeof(taxonomy->service_line_number));
+        (void)json_read_string(item, "provider_context", taxonomy->provider_context, sizeof(taxonomy->provider_context));
+        (void)json_read_string(item, "provider_role_code", taxonomy->provider_role_code, sizeof(taxonomy->provider_role_code));
+        (void)json_read_string(item, "reference_identification_qualifier", taxonomy->reference_identification_qualifier, sizeof(taxonomy->reference_identification_qualifier));
+        (void)json_read_string(item, "provider_taxonomy_code", taxonomy->provider_taxonomy_code, sizeof(taxonomy->provider_taxonomy_code));
     }
 
     return X12_OK;
@@ -1926,12 +1833,12 @@ static int hydrate_institutional_claim(claim_aggregate_t *aggregate, yyjson_val 
         return X12_OK;
     }
 
-    (void)snapshot_get_string(obj, "admission_type_code", aggregate->institutional_claim.admission_type_code, sizeof(aggregate->institutional_claim.admission_type_code));
-    (void)snapshot_get_string(obj, "admission_source_code", aggregate->institutional_claim.admission_source_code, sizeof(aggregate->institutional_claim.admission_source_code));
-    (void)snapshot_get_string(obj, "patient_status_code", aggregate->institutional_claim.patient_status_code, sizeof(aggregate->institutional_claim.patient_status_code));
-    (void)snapshot_get_string(obj, "admission_date", aggregate->institutional_claim.admission_date, sizeof(aggregate->institutional_claim.admission_date));
-    (void)snapshot_get_string(obj, "discharge_date", aggregate->institutional_claim.discharge_date, sizeof(aggregate->institutional_claim.discharge_date));
-    (void)snapshot_get_string(obj, "diagnosis_related_group_code", aggregate->institutional_claim.diagnosis_related_group_code, sizeof(aggregate->institutional_claim.diagnosis_related_group_code));
+    (void)json_read_string(obj, "admission_type_code", aggregate->institutional_claim.admission_type_code, sizeof(aggregate->institutional_claim.admission_type_code));
+    (void)json_read_string(obj, "admission_source_code", aggregate->institutional_claim.admission_source_code, sizeof(aggregate->institutional_claim.admission_source_code));
+    (void)json_read_string(obj, "patient_status_code", aggregate->institutional_claim.patient_status_code, sizeof(aggregate->institutional_claim.patient_status_code));
+    (void)json_read_string(obj, "admission_date", aggregate->institutional_claim.admission_date, sizeof(aggregate->institutional_claim.admission_date));
+    (void)json_read_string(obj, "discharge_date", aggregate->institutional_claim.discharge_date, sizeof(aggregate->institutional_claim.discharge_date));
+    (void)json_read_string(obj, "diagnosis_related_group_code", aggregate->institutional_claim.diagnosis_related_group_code, sizeof(aggregate->institutional_claim.diagnosis_related_group_code));
 
     return X12_OK;
 }
@@ -1966,7 +1873,7 @@ static int hydrate_adjustments(
         }
 
         adjustment = &line->adjustments[line->adjustment_count++];
-        (void)snapshot_get_string(
+        (void)json_read_string(
             item,
             "adjustment_group_code",
             adjustment->adjustment_group_code,
@@ -2058,14 +1965,14 @@ static int hydrate_service_lines(claim_aggregate_t *aggregate, yyjson_val *root)
         }
 
         line = &aggregate->service_lines[aggregate->service_line_count++];
-        rc = snapshot_get_string(
+        rc = json_read_string(
             item,
             "service_line_number",
             line->service_line_number,
             sizeof(line->service_line_number)
         );
         if (rc == X12_OK) {
-            rc = snapshot_get_string(
+            rc = json_read_string(
                 item,
                 "remittance_service_line_number",
                 line->remit_service_line_number,
@@ -2073,16 +1980,16 @@ static int hydrate_service_lines(claim_aggregate_t *aggregate, yyjson_val *root)
             );
         }
         if (rc == X12_OK) {
-            rc = snapshot_get_string(item, "procedure_code", line->procedure_code, sizeof(line->procedure_code));
+            rc = json_read_string(item, "procedure_code", line->procedure_code, sizeof(line->procedure_code));
         }
         if (rc == X12_OK) {
-            rc = snapshot_get_string(item, "description", line->description, sizeof(line->description));
+            rc = json_read_string(item, "description", line->description, sizeof(line->description));
         }
         if (rc == X12_OK) {
-            rc = snapshot_get_string(item, "service_date", line->service_date, sizeof(line->service_date));
+            rc = json_read_string(item, "service_date", line->service_date, sizeof(line->service_date));
         }
         if (rc == X12_OK) {
-            rc = snapshot_get_string(item, "match_method", line->match_method, sizeof(line->match_method));
+            rc = json_read_string(item, "match_method", line->match_method, sizeof(line->match_method));
         }
         if (rc != X12_OK) {
             return rc;
@@ -2091,24 +1998,24 @@ static int hydrate_service_lines(claim_aggregate_t *aggregate, yyjson_val *root)
         submitted = yyjson_obj_get(item, "submitted");
         if (submitted != NULL && yyjson_is_obj(submitted)) {
             line->has_submitted = 1;
-            (void)snapshot_get_string(submitted, "line_type", line->submitted_line_type, sizeof(line->submitted_line_type));
-            (void)snapshot_get_string(submitted, "procedure_code_qualifier", line->submitted_procedure_code_qualifier, sizeof(line->submitted_procedure_code_qualifier));
-            (void)snapshot_get_string(submitted, "procedure_code_set", line->submitted_procedure_code_set, sizeof(line->submitted_procedure_code_set));
-            (void)snapshot_get_string(submitted, "charge_amount", line->submitted_charge_amount, sizeof(line->submitted_charge_amount));
-            (void)snapshot_get_string(submitted, "unit_measure_code", line->submitted_unit_measure_code, sizeof(line->submitted_unit_measure_code));
-            (void)snapshot_get_string(submitted, "unit_count", line->submitted_unit_count, sizeof(line->submitted_unit_count));
-            (void)snapshot_get_string(submitted, "service_date", line->submitted_service_date, sizeof(line->submitted_service_date));
+            (void)json_read_string(submitted, "line_type", line->submitted_line_type, sizeof(line->submitted_line_type));
+            (void)json_read_string(submitted, "procedure_code_qualifier", line->submitted_procedure_code_qualifier, sizeof(line->submitted_procedure_code_qualifier));
+            (void)json_read_string(submitted, "procedure_code_set", line->submitted_procedure_code_set, sizeof(line->submitted_procedure_code_set));
+            (void)json_read_string(submitted, "charge_amount", line->submitted_charge_amount, sizeof(line->submitted_charge_amount));
+            (void)json_read_string(submitted, "unit_measure_code", line->submitted_unit_measure_code, sizeof(line->submitted_unit_measure_code));
+            (void)json_read_string(submitted, "unit_count", line->submitted_unit_count, sizeof(line->submitted_unit_count));
+            (void)json_read_string(submitted, "service_date", line->submitted_service_date, sizeof(line->submitted_service_date));
         }
 
         remittance = yyjson_obj_get(item, "remittance");
         if (remittance != NULL && yyjson_is_obj(remittance)) {
             line->has_remittance = 1;
-            (void)snapshot_get_string(remittance, "procedure_code_qualifier", line->remittance_procedure_code_qualifier, sizeof(line->remittance_procedure_code_qualifier));
-            (void)snapshot_get_string(remittance, "procedure_code_set", line->remittance_procedure_code_set, sizeof(line->remittance_procedure_code_set));
-            (void)snapshot_get_string(remittance, "line_charge_amount", line->remittance_line_charge_amount, sizeof(line->remittance_line_charge_amount));
-            (void)snapshot_get_string(remittance, "line_paid_amount", line->remittance_line_paid_amount, sizeof(line->remittance_line_paid_amount));
-            (void)snapshot_get_string(remittance, "paid_service_unit_count", line->remittance_paid_unit_count, sizeof(line->remittance_paid_unit_count));
-            (void)snapshot_get_string(remittance, "service_date", line->remittance_service_date, sizeof(line->remittance_service_date));
+            (void)json_read_string(remittance, "procedure_code_qualifier", line->remittance_procedure_code_qualifier, sizeof(line->remittance_procedure_code_qualifier));
+            (void)json_read_string(remittance, "procedure_code_set", line->remittance_procedure_code_set, sizeof(line->remittance_procedure_code_set));
+            (void)json_read_string(remittance, "line_charge_amount", line->remittance_line_charge_amount, sizeof(line->remittance_line_charge_amount));
+            (void)json_read_string(remittance, "line_paid_amount", line->remittance_line_paid_amount, sizeof(line->remittance_line_paid_amount));
+            (void)json_read_string(remittance, "paid_service_unit_count", line->remittance_paid_unit_count, sizeof(line->remittance_paid_unit_count));
+            (void)json_read_string(remittance, "service_date", line->remittance_service_date, sizeof(line->remittance_service_date));
         }
 
         rc = hydrate_reference_array(
@@ -2170,13 +2077,13 @@ int claim_stitch_hydrate_snapshot(
     snapshot_get_size(root, "version", &aggregate->version);
     keys = yyjson_obj_get(root, "keys");
     if (keys != NULL && yyjson_is_obj(keys)) {
-        (void)snapshot_get_string(keys, "claim_id", aggregate->claim_id, sizeof(aggregate->claim_id));
-        (void)snapshot_get_string(keys, "claim_id_token", aggregate->claim_id_token, sizeof(aggregate->claim_id_token));
-        (void)snapshot_get_string(keys, "payer_claim_control_number", aggregate->payer_claim_control_number, sizeof(aggregate->payer_claim_control_number));
-        (void)snapshot_get_string(keys, "payer_claim_control_number_token", aggregate->payer_claim_control_number_token, sizeof(aggregate->payer_claim_control_number_token));
-        (void)snapshot_get_string(keys, "patient_id", aggregate->patient_id, sizeof(aggregate->patient_id));
-        (void)snapshot_get_string(keys, "patient_id_token", aggregate->patient_id_token, sizeof(aggregate->patient_id_token));
-        (void)snapshot_get_string(keys, "patient_name_token", aggregate->patient_name_token, sizeof(aggregate->patient_name_token));
+        (void)json_read_string(keys, "claim_id", aggregate->claim_id, sizeof(aggregate->claim_id));
+        (void)json_read_string(keys, "claim_id_token", aggregate->claim_id_token, sizeof(aggregate->claim_id_token));
+        (void)json_read_string(keys, "payer_claim_control_number", aggregate->payer_claim_control_number, sizeof(aggregate->payer_claim_control_number));
+        (void)json_read_string(keys, "payer_claim_control_number_token", aggregate->payer_claim_control_number_token, sizeof(aggregate->payer_claim_control_number_token));
+        (void)json_read_string(keys, "patient_id", aggregate->patient_id, sizeof(aggregate->patient_id));
+        (void)json_read_string(keys, "patient_id_token", aggregate->patient_id_token, sizeof(aggregate->patient_id_token));
+        (void)json_read_string(keys, "patient_name_token", aggregate->patient_name_token, sizeof(aggregate->patient_name_token));
     }
     if (aggregate->claim_id_token[0] == '\0') {
         scribe_copy_cstr(aggregate->claim_id_token, sizeof(aggregate->claim_id_token), aggregate->key);
@@ -2186,8 +2093,8 @@ int claim_stitch_hydrate_snapshot(
     if (snapshot_state != NULL && yyjson_is_obj(snapshot_state)) {
         snapshot_get_bool(snapshot_state, "has_837", &aggregate->has_837);
         snapshot_get_bool(snapshot_state, "has_835", &aggregate->has_835);
-        (void)snapshot_get_string(snapshot_state, "claim_type", aggregate->claim_type, sizeof(aggregate->claim_type));
-        (void)snapshot_get_string(snapshot_state, "claim_status_code", aggregate->claim_status_code, sizeof(aggregate->claim_status_code));
+        (void)json_read_string(snapshot_state, "claim_type", aggregate->claim_type, sizeof(aggregate->claim_type));
+        (void)json_read_string(snapshot_state, "claim_status_code", aggregate->claim_status_code, sizeof(aggregate->claim_status_code));
         snapshot_get_size(snapshot_state, "submitted_service_line_count", &aggregate->submitted_service_line_count);
         snapshot_get_size(snapshot_state, "remittance_service_line_count", &aggregate->remittance_service_line_count);
         snapshot_get_size(snapshot_state, "adjustment_count", &aggregate->adjustment_count);
@@ -2263,10 +2170,7 @@ int claim_stitch_flush_update_batches(stitch_state_t *state)
     }
 
     if (aggregate_version_count > 0u && state->read_store != NULL) {
-        rc = scribe_store_begin_immediate(state->read_store);
-        if (rc != X12_OK) {
-            return rc;
-        }
+        TRY(scribe_store_begin_immediate(state->read_store));
         txn_open = 1;
     }
 

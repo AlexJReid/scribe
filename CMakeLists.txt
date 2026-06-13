@@ -85,6 +85,7 @@ add_library(scribe_core
     src/x12/mappers/x12_mapper_834.c
     src/x12/mappers/x12_mapper_835.c
     src/x12/mappers/x12_mapper_837.c
+    src/x12/mappers/x12_mapper_phi.c
     src/x12/mappers/x12_mapper_registry.c
     src/x12/x12_parser.c
     src/x12/x12_reader.c

@@ -1,4 +1,5 @@
 #include "journal_builder.h"
+#include "try.h"
 
 #include "event_writer.h"
 #include "journal.h"
@@ -580,18 +581,13 @@ static int format_source_file(
 {
     char path_abs[SOURCE_PATH_MAX];
     const char *relative;
-    int rc;
 
     if (source_root_abs == NULL || path == NULL || out == NULL || out_len == 0u)
     {
         return X12_ERR_INVALID_ARGUMENT;
     }
 
-    rc = source_absolute_path(path, path_abs, sizeof(path_abs));
-    if (rc != X12_OK)
-    {
-        return rc;
-    }
+    TRY(source_absolute_path(path, path_abs, sizeof(path_abs)));
     trim_trailing_separators(path_abs);
 
     if (source_path_under_root(path_abs, source_root_abs, &relative) &&
@@ -620,17 +616,9 @@ static int append_x12_file(
     char source_file[SOURCE_PATH_MAX];
     int rc;
 
-    rc = format_source_file(source_root_abs, path, source_file, sizeof(source_file));
-    if (rc != X12_OK)
-    {
-        return rc;
-    }
+    TRY(format_source_file(source_root_abs, path, source_file, sizeof(source_file)));
 
-    rc = x12_document_load(path, &doc);
-    if (rc != X12_OK)
-    {
-        return rc;
-    }
+    TRY(x12_document_load(path, &doc));
 
     rc = event_writer_open_stream(&writer, fp, source_file, type);
     if (rc != X12_OK)
@@ -864,11 +852,7 @@ int journal_builder_build(
     run_id = input->run_id;
     if (run_id == NULL || run_id[0] == '\0')
     {
-        rc = scribe_run_id_generate(generated_run_id, sizeof(generated_run_id));
-        if (rc != X12_OK)
-        {
-            return rc;
-        }
+        TRY(scribe_run_id_generate(generated_run_id, sizeof(generated_run_id)));
         run_id = generated_run_id;
     }
 
@@ -879,19 +863,11 @@ int journal_builder_build(
     }
     if (strcmp(source_root, ".") == 0)
     {
-        rc = source_getcwd(source_root_abs, sizeof(source_root_abs));
-        if (rc != X12_OK)
-        {
-            return rc;
-        }
+        TRY(source_getcwd(source_root_abs, sizeof(source_root_abs)));
     }
     else
     {
-        rc = source_absolute_path(source_root, source_root_abs, sizeof(source_root_abs));
-        if (rc != X12_OK)
-        {
-            return rc;
-        }
+        TRY(source_absolute_path(source_root, source_root_abs, sizeof(source_root_abs)));
     }
     trim_trailing_separators(source_root_abs);
 

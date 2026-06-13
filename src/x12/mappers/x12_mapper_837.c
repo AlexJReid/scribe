@@ -1,98 +1,14 @@
 #include "x12_mapper_837.h"
 
 #include "tokenise.h"
+#include "x12_mapper_phi.h"
 
 #include <stdio.h>
 #include <string.h>
 
-#define TRY(expr)           \
-    do                      \
-    {                       \
-        int rc__ = (expr);  \
-        if (rc__ != X12_OK) \
-        {                   \
-            return rc__;    \
-        }                   \
-    } while (0)
-
 #define X12_837_PARTY_NONE 0
 #define X12_837_PARTY_SUBSCRIBER 1
 #define X12_837_PARTY_PATIENT 2
-
-static x12_str_t empty_str(void)
-{
-    x12_str_t value;
-
-    value.ptr = "";
-    value.len = 0;
-    return value;
-}
-
-static x12_str_t element_or_empty(const x12_segment_t *seg, size_t index)
-{
-    return seg->element_count <= index ? empty_str() : seg->elements[index];
-}
-
-static int add_phi_str(event_writer_t *w, const char *name, x12_str_t value)
-{
-    if (!event_writer_include_phi(w))
-    {
-        return X12_OK;
-    }
-    return event_writer_add_str(w, name, value);
-}
-
-static int add_tokenized_or_phi(
-    event_writer_t *w,
-    const char *name,
-    token_type_t type,
-    x12_str_t raw)
-{
-    char token[TOKENISE_MAX_TOKEN_LEN];
-    x12_str_t token_value;
-
-    if (event_writer_include_phi(w))
-    {
-        TRY(event_writer_record_phi_mapping(w, type, raw));
-        return event_writer_add_str(w, name, raw);
-    }
-
-    if (raw.len == 0u)
-    {
-        return event_writer_add_str(w, name, empty_str());
-    }
-
-    TRY(tokenise_value(type, raw, token, sizeof(token)));
-    TRY(event_writer_record_phi_mapping(w, type, raw));
-
-    token_value.ptr = token;
-    token_value.len = strlen(token);
-    return event_writer_add_str(w, name, token_value);
-}
-
-static int add_phi_token(
-    event_writer_t *w,
-    const char *name,
-    token_type_t type,
-    x12_str_t raw)
-{
-    char token[TOKENISE_MAX_TOKEN_LEN];
-    x12_str_t token_value;
-
-    if (!event_writer_include_phi(w))
-    {
-        return X12_OK;
-    }
-    if (raw.len == 0u)
-    {
-        return event_writer_add_str(w, name, empty_str());
-    }
-
-    TRY(tokenise_value(type, raw, token, sizeof(token)));
-    token_value.ptr = token;
-    token_value.len = strlen(token);
-    return event_writer_add_str(w, name, token_value);
-}
 
 static int str_contains_char(x12_str_t value, char needle)
 {
@@ -149,8 +65,8 @@ static void split_first_component(
 {
     size_t i;
 
-    *qualifier = empty_str();
-    *code = empty_str();
+    *qualifier = x12_mapper_empty_str();
+    *code = x12_mapper_empty_str();
 
     for (i = 0; i < value.len; i++)
     {
@@ -179,8 +95,8 @@ static void split_procedure_components(
     size_t index = 0u;
     size_t i;
 
-    *qualifier = empty_str();
-    *code = empty_str();
+    *qualifier = x12_mapper_empty_str();
+    *code = x12_mapper_empty_str();
     *modifier_count = 0u;
 
     for (i = 0u; i <= value.len; i++)
@@ -214,7 +130,7 @@ static void split_procedure_components(
     if (index == 1u)
     {
         *code = *qualifier;
-        *qualifier = empty_str();
+        *qualifier = x12_mapper_empty_str();
     }
 }
 
@@ -423,8 +339,8 @@ static const char *party_scope_name(int party_scope)
 
 static void clear_claim_position(x12_mapper_837_t *mapper)
 {
-    mapper->current_claim_id = empty_str();
-    mapper->current_service_line_number = empty_str();
+    mapper->current_claim_id = x12_mapper_empty_str();
+    mapper->current_service_line_number = x12_mapper_empty_str();
     mapper->in_service_line = 0;
     mapper->rendering_provider.present = 0;
     mapper->rendering_provider_taxonomy.present = 0;
@@ -452,8 +368,8 @@ static int add_current_claim_fields(x12_mapper_837_t *mapper)
 {
     event_writer_t *w = mapper->writer;
 
-    TRY(add_tokenized_or_phi(w, "claim_id", TOK_CLAIM_ID, mapper->current_claim_id));
-    return add_phi_token(w, "claim_id_token", TOK_CLAIM_ID, mapper->current_claim_id);
+    TRY(x12_mapper_add_tokenized_or_phi(w, "claim_id", TOK_CLAIM_ID, mapper->current_claim_id));
+    return x12_mapper_add_phi_token(w, "claim_id_token", TOK_CLAIM_ID, mapper->current_claim_id);
 }
 
 static token_type_t name_token_type_for_id(token_type_t id_token_type)
@@ -482,33 +398,33 @@ static int write_claim_observed(
     size_t claim_type_component_count;
     int rc;
 
-    mapper->current_claim_id = element_or_empty(seg, 0);
-    mapper->current_service_line_number = empty_str();
+    mapper->current_claim_id = x12_mapper_element_or_empty(seg, 0);
+    mapper->current_service_line_number = x12_mapper_empty_str();
     mapper->in_service_line = 0;
     claim_type_component_count = split_components(
-        element_or_empty(seg, 4),
+        x12_mapper_element_or_empty(seg, 4),
         mapper->component_sep,
         claim_type_components,
         sizeof(claim_type_components) / sizeof(claim_type_components[0]));
 
     TRY(event_writer_begin_event(w, "ClaimObserved", seg));
-    TRY(add_tokenized_or_phi(w, "claim_id", TOK_CLAIM_ID, mapper->current_claim_id));
-    TRY(add_phi_token(w, "claim_id_token", TOK_CLAIM_ID, mapper->current_claim_id));
-    TRY(event_writer_add_str(w, "total_charge_amount", element_or_empty(seg, 1)));
+    TRY(x12_mapper_add_tokenized_or_phi(w, "claim_id", TOK_CLAIM_ID, mapper->current_claim_id));
+    TRY(x12_mapper_add_phi_token(w, "claim_id_token", TOK_CLAIM_ID, mapper->current_claim_id));
+    TRY(event_writer_add_str(w, "total_charge_amount", x12_mapper_element_or_empty(seg, 1)));
     TRY(event_writer_add_str(
         w, "facility_type_code",
-        claim_type_component_count > 0u ? claim_type_components[0] : empty_str()));
+        claim_type_component_count > 0u ? claim_type_components[0] : x12_mapper_empty_str()));
     TRY(event_writer_add_str(
         w, "facility_code_qualifier",
-        claim_type_component_count > 1u ? claim_type_components[1] : empty_str()));
+        claim_type_component_count > 1u ? claim_type_components[1] : x12_mapper_empty_str()));
     TRY(event_writer_add_str(
         w, "claim_frequency_type_code",
-        claim_type_component_count > 2u ? claim_type_components[2] : empty_str()));
-    TRY(event_writer_add_str(w, "provider_signature_indicator", element_or_empty(seg, 5)));
-    TRY(event_writer_add_str(w, "assignment_or_plan_participation_code", element_or_empty(seg, 6)));
-    TRY(event_writer_add_str(w, "benefits_assignment_certification_indicator", element_or_empty(seg, 7)));
-    TRY(event_writer_add_str(w, "release_of_information_code", element_or_empty(seg, 8)));
-    TRY(event_writer_add_str(w, "patient_signature_source_code", element_or_empty(seg, 9)));
+        claim_type_component_count > 2u ? claim_type_components[2] : x12_mapper_empty_str()));
+    TRY(event_writer_add_str(w, "provider_signature_indicator", x12_mapper_element_or_empty(seg, 5)));
+    TRY(event_writer_add_str(w, "assignment_or_plan_participation_code", x12_mapper_element_or_empty(seg, 6)));
+    TRY(event_writer_add_str(w, "benefits_assignment_certification_indicator", x12_mapper_element_or_empty(seg, 7)));
+    TRY(event_writer_add_str(w, "release_of_information_code", x12_mapper_element_or_empty(seg, 8)));
+    TRY(event_writer_add_str(w, "patient_signature_source_code", x12_mapper_element_or_empty(seg, 9)));
     TRY(event_writer_end_event(w));
 
     rc = flush_claim_party_context(mapper);
@@ -533,23 +449,23 @@ static int write_nm1_reference(
     event_writer_t *w = mapper->writer;
 
     TRY(event_writer_begin_event(w, event_type, seg));
-    TRY(add_tokenized_or_phi(w, "claim_id", TOK_CLAIM_ID, mapper->current_claim_id));
-    TRY(add_phi_token(w, "claim_id_token", TOK_CLAIM_ID, mapper->current_claim_id));
+    TRY(x12_mapper_add_tokenized_or_phi(w, "claim_id", TOK_CLAIM_ID, mapper->current_claim_id));
+    TRY(x12_mapper_add_phi_token(w, "claim_id_token", TOK_CLAIM_ID, mapper->current_claim_id));
     TRY(event_writer_add_cstr(w, "reference_scope", current_loop_scope(mapper)));
     TRY(event_writer_add_str(w, "service_line_number", mapper->current_service_line_number));
-    TRY(event_writer_add_str(w, "entity_type", element_or_empty(seg, 1)));
-    TRY(add_phi_str(w, "last_name_or_org", element_or_empty(seg, 2)));
-    TRY(add_phi_str(w, "first_name", element_or_empty(seg, 3)));
+    TRY(event_writer_add_str(w, "entity_type", x12_mapper_element_or_empty(seg, 1)));
+    TRY(x12_mapper_add_phi_str(w, "last_name_or_org", x12_mapper_element_or_empty(seg, 2)));
+    TRY(x12_mapper_add_phi_str(w, "first_name", x12_mapper_element_or_empty(seg, 3)));
     TRY(event_writer_record_phi_name(
         w,
         name_token_type_for_id(id_token_type),
-        element_or_empty(seg, 2),
-        element_or_empty(seg, 3),
+        x12_mapper_element_or_empty(seg, 2),
+        x12_mapper_element_or_empty(seg, 3),
         id_token_type,
-        element_or_empty(seg, 8)));
-    TRY(event_writer_add_str(w, "id_qualifier", element_or_empty(seg, 7)));
-    TRY(add_tokenized_or_phi(w, "id_value", id_token_type, element_or_empty(seg, 8)));
-    TRY(add_phi_token(w, "id_value_token", id_token_type, element_or_empty(seg, 8)));
+        x12_mapper_element_or_empty(seg, 8)));
+    TRY(event_writer_add_str(w, "id_qualifier", x12_mapper_element_or_empty(seg, 7)));
+    TRY(x12_mapper_add_tokenized_or_phi(w, "id_value", id_token_type, x12_mapper_element_or_empty(seg, 8)));
+    TRY(x12_mapper_add_phi_token(w, "id_value_token", id_token_type, x12_mapper_element_or_empty(seg, 8)));
     return event_writer_end_event(w);
 }
 
@@ -604,7 +520,7 @@ static int write_provider_taxonomy_recorded(
     }
     if (provider_context == NULL || provider_context[0] == '\0')
     {
-        provider_context = provider_context_from_prv(element_or_empty(seg, 0));
+        provider_context = provider_context_from_prv(x12_mapper_element_or_empty(seg, 0));
     }
 
     TRY(event_writer_begin_event(w, "ClaimProviderTaxonomyRecorded", seg));
@@ -612,9 +528,9 @@ static int write_provider_taxonomy_recorded(
     TRY(event_writer_add_cstr(w, "reference_scope", current_loop_scope(mapper)));
     TRY(event_writer_add_str(w, "service_line_number", mapper->current_service_line_number));
     TRY(event_writer_add_cstr(w, "provider_context", provider_context));
-    TRY(event_writer_add_str(w, "provider_role_code", element_or_empty(seg, 0)));
-    TRY(event_writer_add_str(w, "reference_identification_qualifier", element_or_empty(seg, 1)));
-    TRY(event_writer_add_str(w, "provider_taxonomy_code", element_or_empty(seg, 2)));
+    TRY(event_writer_add_str(w, "provider_role_code", x12_mapper_element_or_empty(seg, 0)));
+    TRY(event_writer_add_str(w, "reference_identification_qualifier", x12_mapper_element_or_empty(seg, 1)));
+    TRY(event_writer_add_str(w, "provider_taxonomy_code", x12_mapper_element_or_empty(seg, 2)));
     return event_writer_end_event(w);
 }
 
@@ -674,11 +590,11 @@ static int write_subscriber_information(
     TRY(event_writer_begin_event(w, "ClaimSubscriberInformationRecorded", seg));
     TRY(add_current_claim_fields(mapper));
     TRY(event_writer_add_cstr(w, "party_scope", "subscriber"));
-    TRY(event_writer_add_str(w, "payer_responsibility_sequence_number_code", element_or_empty(seg, 0)));
-    TRY(event_writer_add_str(w, "individual_relationship_code", element_or_empty(seg, 1)));
-    TRY(add_tokenized_or_phi(w, "insured_group_or_policy_number", TOK_REFERENCE_ID, element_or_empty(seg, 2)));
-    TRY(add_phi_token(w, "insured_group_or_policy_number_token", TOK_REFERENCE_ID, element_or_empty(seg, 2)));
-    TRY(event_writer_add_str(w, "claim_filing_indicator_code", element_or_empty(seg, 8)));
+    TRY(event_writer_add_str(w, "payer_responsibility_sequence_number_code", x12_mapper_element_or_empty(seg, 0)));
+    TRY(event_writer_add_str(w, "individual_relationship_code", x12_mapper_element_or_empty(seg, 1)));
+    TRY(x12_mapper_add_tokenized_or_phi(w, "insured_group_or_policy_number", TOK_REFERENCE_ID, x12_mapper_element_or_empty(seg, 2)));
+    TRY(x12_mapper_add_phi_token(w, "insured_group_or_policy_number_token", TOK_REFERENCE_ID, x12_mapper_element_or_empty(seg, 2)));
+    TRY(event_writer_add_str(w, "claim_filing_indicator_code", x12_mapper_element_or_empty(seg, 8)));
     return event_writer_end_event(w);
 }
 
@@ -696,7 +612,7 @@ static int write_patient_information(
     TRY(event_writer_begin_event(w, "ClaimPatientInformationRecorded", seg));
     TRY(add_current_claim_fields(mapper));
     TRY(event_writer_add_cstr(w, "party_scope", "patient"));
-    TRY(event_writer_add_str(w, "individual_relationship_code", element_or_empty(seg, 0)));
+    TRY(event_writer_add_str(w, "individual_relationship_code", x12_mapper_element_or_empty(seg, 0)));
     return event_writer_end_event(w);
 }
 
@@ -715,10 +631,10 @@ static int write_demographics_recorded(
     TRY(event_writer_begin_event(w, "ClaimDemographicsRecorded", seg));
     TRY(add_current_claim_fields(mapper));
     TRY(event_writer_add_cstr(w, "party_scope", party_scope_name(party_scope)));
-    TRY(event_writer_add_str(w, "date_format", element_or_empty(seg, 0)));
-    TRY(add_tokenized_or_phi(w, "date_of_birth", TOK_MEMBER_DOB, element_or_empty(seg, 1)));
-    TRY(add_phi_token(w, "date_of_birth_token", TOK_MEMBER_DOB, element_or_empty(seg, 1)));
-    TRY(event_writer_add_str(w, "gender_code", element_or_empty(seg, 2)));
+    TRY(event_writer_add_str(w, "date_format", x12_mapper_element_or_empty(seg, 0)));
+    TRY(x12_mapper_add_tokenized_or_phi(w, "date_of_birth", TOK_MEMBER_DOB, x12_mapper_element_or_empty(seg, 1)));
+    TRY(x12_mapper_add_phi_token(w, "date_of_birth_token", TOK_MEMBER_DOB, x12_mapper_element_or_empty(seg, 1)));
+    TRY(event_writer_add_str(w, "gender_code", x12_mapper_element_or_empty(seg, 2)));
     return event_writer_end_event(w);
 }
 
@@ -769,9 +685,9 @@ static int write_claim_reference_recorded(
     TRY(add_current_claim_fields(mapper));
     TRY(event_writer_add_cstr(w, "reference_scope", current_loop_scope(mapper)));
     TRY(event_writer_add_str(w, "service_line_number", mapper->current_service_line_number));
-    TRY(event_writer_add_str(w, "reference_qualifier", element_or_empty(seg, 0)));
-    TRY(add_tokenized_or_phi(w, "reference_identification", TOK_REFERENCE_ID, element_or_empty(seg, 1)));
-    TRY(add_phi_token(w, "reference_identification_token", TOK_REFERENCE_ID, element_or_empty(seg, 1)));
+    TRY(event_writer_add_str(w, "reference_qualifier", x12_mapper_element_or_empty(seg, 0)));
+    TRY(x12_mapper_add_tokenized_or_phi(w, "reference_identification", TOK_REFERENCE_ID, x12_mapper_element_or_empty(seg, 1)));
+    TRY(x12_mapper_add_phi_token(w, "reference_identification_token", TOK_REFERENCE_ID, x12_mapper_element_or_empty(seg, 1)));
     return event_writer_end_event(w);
 }
 
@@ -788,9 +704,9 @@ static int write_institutional_information_recorded(
 
     TRY(event_writer_begin_event(w, "ClaimInstitutionalInformationRecorded", seg));
     TRY(add_current_claim_fields(mapper));
-    TRY(event_writer_add_str(w, "admission_type_code", element_or_empty(seg, 0)));
-    TRY(event_writer_add_str(w, "admission_source_code", element_or_empty(seg, 1)));
-    TRY(event_writer_add_str(w, "patient_status_code", element_or_empty(seg, 2)));
+    TRY(event_writer_add_str(w, "admission_type_code", x12_mapper_element_or_empty(seg, 0)));
+    TRY(event_writer_add_str(w, "admission_source_code", x12_mapper_element_or_empty(seg, 1)));
+    TRY(event_writer_add_str(w, "patient_status_code", x12_mapper_element_or_empty(seg, 2)));
     TRY(event_writer_add_str_array(w, "raw_elements", seg->elements, seg->element_count));
     return event_writer_end_event(w);
 }
@@ -802,13 +718,13 @@ static int write_date_observed(
     event_writer_t *w = mapper->writer;
 
     TRY(event_writer_begin_event(w, current_date_event_type(mapper), seg));
-    TRY(add_tokenized_or_phi(w, "claim_id", TOK_CLAIM_ID, mapper->current_claim_id));
-    TRY(add_phi_token(w, "claim_id_token", TOK_CLAIM_ID, mapper->current_claim_id));
+    TRY(x12_mapper_add_tokenized_or_phi(w, "claim_id", TOK_CLAIM_ID, mapper->current_claim_id));
+    TRY(x12_mapper_add_phi_token(w, "claim_id_token", TOK_CLAIM_ID, mapper->current_claim_id));
     TRY(event_writer_add_cstr(w, "date_scope", current_loop_scope(mapper)));
     TRY(event_writer_add_str(w, "service_line_number", mapper->current_service_line_number));
-    TRY(event_writer_add_str(w, "date_qualifier", element_or_empty(seg, 0)));
-    TRY(event_writer_add_str(w, "date_format", element_or_empty(seg, 1)));
-    TRY(event_writer_add_str(w, "date_value", element_or_empty(seg, 2)));
+    TRY(event_writer_add_str(w, "date_qualifier", x12_mapper_element_or_empty(seg, 0)));
+    TRY(event_writer_add_str(w, "date_format", x12_mapper_element_or_empty(seg, 1)));
+    TRY(event_writer_add_str(w, "date_value", x12_mapper_element_or_empty(seg, 2)));
     return event_writer_end_event(w);
 }
 
@@ -817,7 +733,7 @@ static int write_diagnosis_observed(
     const x12_segment_t *seg)
 {
     event_writer_t *w = mapper->writer;
-    x12_str_t principal_diagnosis = empty_str();
+    x12_str_t principal_diagnosis = x12_mapper_empty_str();
     x12_str_t other_diagnoses[128];
     char principal_buffer[64];
     char other_buffers[128][64];
@@ -864,8 +780,8 @@ static int write_diagnosis_observed(
     }
 
     TRY(event_writer_begin_event(w, "ClaimDiagnosesRecorded", seg));
-    TRY(add_tokenized_or_phi(w, "claim_id", TOK_CLAIM_ID, mapper->current_claim_id));
-    TRY(add_phi_token(w, "claim_id_token", TOK_CLAIM_ID, mapper->current_claim_id));
+    TRY(x12_mapper_add_tokenized_or_phi(w, "claim_id", TOK_CLAIM_ID, mapper->current_claim_id));
+    TRY(x12_mapper_add_phi_token(w, "claim_id_token", TOK_CLAIM_ID, mapper->current_claim_id));
     TRY(event_writer_add_str(w, "principal_diagnosis_code", principal_diagnosis));
     TRY(event_writer_add_str_array(w, "other_diagnosis_codes", other_diagnoses, other_diagnosis_count));
     TRY(event_writer_add_str_array(w, "raw_diagnosis_elements", seg->elements, seg->element_count));
@@ -879,7 +795,7 @@ static int write_healthcare_code_recorded(
 {
     event_writer_t *w = mapper->writer;
     x12_str_t components[8];
-    x12_str_t code = empty_str();
+    x12_str_t code = x12_mapper_empty_str();
     char normalized_buffer[64];
     size_t component_count;
     int rc;
@@ -912,13 +828,13 @@ static int write_healthcare_code_recorded(
     TRY(event_writer_add_str(w, "healthcare_code", code));
     TRY(event_writer_add_str(
         w, "healthcare_code_date_format",
-        component_count > 2u ? components[2] : empty_str()));
+        component_count > 2u ? components[2] : x12_mapper_empty_str()));
     TRY(event_writer_add_str(
         w, "healthcare_code_date_value",
-        component_count > 3u ? components[3] : empty_str()));
+        component_count > 3u ? components[3] : x12_mapper_empty_str()));
     TRY(event_writer_add_str(
         w, "healthcare_code_amount",
-        component_count > 4u ? components[4] : empty_str()));
+        component_count > 4u ? components[4] : x12_mapper_empty_str()));
     TRY(event_writer_add_str_array(w, "healthcare_code_components", components, component_count));
     return event_writer_end_event(w);
 }
@@ -941,27 +857,27 @@ static int write_service_line_observed(
     const x12_segment_t *seg)
 {
     event_writer_t *w = mapper->writer;
-    x12_str_t revenue_code = empty_str();
-    x12_str_t procedure_element = element_or_empty(seg, 0);
+    x12_str_t revenue_code = x12_mapper_empty_str();
+    x12_str_t procedure_element = x12_mapper_element_or_empty(seg, 0);
     x12_str_t procedure_qualifier;
     x12_str_t procedure_code;
     x12_str_t procedure_modifiers[4];
     size_t procedure_modifier_count;
-    x12_str_t charge_amount = element_or_empty(seg, 1);
-    x12_str_t unit_measure_code = element_or_empty(seg, 2);
-    x12_str_t unit_count = element_or_empty(seg, 3);
-    x12_str_t diagnosis_pointers = element_or_empty(seg, 6);
+    x12_str_t charge_amount = x12_mapper_element_or_empty(seg, 1);
+    x12_str_t unit_measure_code = x12_mapper_element_or_empty(seg, 2);
+    x12_str_t unit_count = x12_mapper_element_or_empty(seg, 3);
+    x12_str_t diagnosis_pointers = x12_mapper_element_or_empty(seg, 6);
     x12_str_t diagnosis_pointer_values[4];
     size_t diagnosis_pointer_count = 0u;
 
     if (x12_str_eq_cstr(seg->tag, "SV2"))
     {
-        revenue_code = element_or_empty(seg, 0);
-        procedure_element = element_or_empty(seg, 1);
-        charge_amount = element_or_empty(seg, 2);
-        unit_measure_code = element_or_empty(seg, 3);
-        unit_count = element_or_empty(seg, 4);
-        diagnosis_pointers = empty_str();
+        revenue_code = x12_mapper_element_or_empty(seg, 0);
+        procedure_element = x12_mapper_element_or_empty(seg, 1);
+        charge_amount = x12_mapper_element_or_empty(seg, 2);
+        unit_measure_code = x12_mapper_element_or_empty(seg, 3);
+        unit_count = x12_mapper_element_or_empty(seg, 4);
+        diagnosis_pointers = x12_mapper_empty_str();
     }
 
     if (diagnosis_pointers.len > 0u)
@@ -977,8 +893,8 @@ static int write_service_line_observed(
         procedure_modifiers, &procedure_modifier_count);
 
     TRY(event_writer_begin_event(w, "ClaimServiceLineRecorded", seg));
-    TRY(add_tokenized_or_phi(w, "claim_id", TOK_CLAIM_ID, mapper->current_claim_id));
-    TRY(add_phi_token(w, "claim_id_token", TOK_CLAIM_ID, mapper->current_claim_id));
+    TRY(x12_mapper_add_tokenized_or_phi(w, "claim_id", TOK_CLAIM_ID, mapper->current_claim_id));
+    TRY(x12_mapper_add_phi_token(w, "claim_id_token", TOK_CLAIM_ID, mapper->current_claim_id));
     TRY(event_writer_add_str(w, "line_type", seg->tag));
     TRY(event_writer_add_str(w, "service_line_number", mapper->current_service_line_number));
     TRY(event_writer_add_str(w, "revenue_code", revenue_code));
@@ -1006,8 +922,8 @@ void x12_mapper_837_init(x12_mapper_837_t *mapper, event_writer_t *writer)
     memset(mapper, 0, sizeof(*mapper));
 
     mapper->writer = writer;
-    mapper->current_claim_id = empty_str();
-    mapper->current_service_line_number = empty_str();
+    mapper->current_claim_id = x12_mapper_empty_str();
+    mapper->current_service_line_number = x12_mapper_empty_str();
     mapper->in_service_line = 0;
     mapper->current_party = X12_837_PARTY_NONE;
     mapper->current_provider_context = "";
@@ -1039,7 +955,7 @@ int x12_mapper_837_on_segment(const x12_segment_t *seg, void *user)
 
     if (x12_str_eq_cstr(seg->tag, "LX"))
     {
-        mapper->current_service_line_number = element_or_empty(seg, 0);
+        mapper->current_service_line_number = x12_mapper_element_or_empty(seg, 0);
         mapper->in_service_line = 1;
         return X12_OK;
     }
@@ -1146,7 +1062,7 @@ int x12_mapper_837_on_segment(const x12_segment_t *seg, void *user)
 
     if (x12_str_eq_cstr(seg->tag, "PRV"))
     {
-        const char *provider_context = provider_context_for_prv(mapper, element_or_empty(seg, 0));
+        const char *provider_context = provider_context_for_prv(mapper, x12_mapper_element_or_empty(seg, 0));
 
         if (mapper->current_claim_id.len == 0u)
         {

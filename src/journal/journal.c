@@ -1,4 +1,5 @@
 #include "journal.h"
+#include "try.h"
 
 #ifndef _WIN32
 #include <dirent.h>
@@ -152,7 +153,6 @@ static int builder_key_id_for_name(
     char *copy;
     size_t len;
     size_t i;
-    int rc;
 
     if (builder == NULL || name == NULL || out == NULL || name[0] == '\0')
     {
@@ -178,11 +178,7 @@ static int builder_key_id_for_name(
         return X12_ERR_BUFFER_TOO_SMALL;
     }
 
-    rc = ensure_builder_key_cap(builder);
-    if (rc != X12_OK)
-    {
-        return rc;
-    }
+    TRY(ensure_builder_key_cap(builder));
 
     copy = (char *)malloc(len + 1u);
     if (copy == NULL)
@@ -239,18 +235,12 @@ static int ensure_builder_cap(journal_record_builder_t *builder, size_t extra)
 
 static int append_bytes(journal_record_builder_t *builder, const void *data, size_t len)
 {
-    int rc;
-
     if (data == NULL && len > 0u)
     {
         return X12_ERR_INVALID_ARGUMENT;
     }
 
-    rc = ensure_builder_cap(builder, len);
-    if (rc != X12_OK)
-    {
-        return rc;
-    }
+    TRY(ensure_builder_cap(builder, len));
     if (len > 0u)
     {
         memcpy(builder->data + builder->len, data, len);
@@ -284,11 +274,7 @@ static int append_field_header(
     unsigned short key_id;
     int rc;
 
-    rc = builder_key_id_for_name(builder, key, &key_id);
-    if (rc != X12_OK)
-    {
-        return rc;
-    }
+    TRY(builder_key_id_for_name(builder, key, &key_id));
     if (value_len > UINT32_MAX)
     {
         return X12_ERR_BUFFER_TOO_SMALL;
@@ -766,19 +752,13 @@ int journal_record_add_string(
     const char *value,
     size_t value_len)
 {
-    int rc;
-
     if (value == NULL)
     {
         value = "";
         value_len = 0u;
     }
 
-    rc = append_field_header(builder, key, JOURNAL_VALUE_STRING, value_len);
-    if (rc != X12_OK)
-    {
-        return rc;
-    }
+    TRY(append_field_header(builder, key, JOURNAL_VALUE_STRING, value_len));
     return append_bytes(builder, value, value_len);
 }
 
@@ -801,13 +781,8 @@ int journal_record_add_bool(
     int value)
 {
     unsigned char bool_value = value ? 1u : 0u;
-    int rc;
 
-    rc = append_field_header(builder, key, JOURNAL_VALUE_BOOL, 1u);
-    if (rc != X12_OK)
-    {
-        return rc;
-    }
+    TRY(append_field_header(builder, key, JOURNAL_VALUE_BOOL, 1u));
     return append_bytes(builder, &bool_value, sizeof(bool_value));
 }
 
@@ -817,13 +792,8 @@ int journal_record_add_u64(
     unsigned long long value)
 {
     unsigned char encoded[8];
-    int rc;
 
-    rc = append_field_header(builder, key, JOURNAL_VALUE_U64, sizeof(encoded));
-    if (rc != X12_OK)
-    {
-        return rc;
-    }
+    TRY(append_field_header(builder, key, JOURNAL_VALUE_U64, sizeof(encoded)));
     encode_u64_le(encoded, value);
     return append_bytes(builder, encoded, sizeof(encoded));
 }
@@ -1043,7 +1013,6 @@ int journal_write_record(
     long long *out_stored_len)
 {
     long offset;
-    int rc;
 
     if (fp == NULL || builder == NULL || builder->data == NULL || builder->len < 2u)
     {
@@ -1064,11 +1033,7 @@ int journal_write_record(
         mark_dictionary_unwritten(builder);
     }
 
-    rc = write_pending_dictionary(fp, builder);
-    if (rc != X12_OK)
-    {
-        return rc;
-    }
+    TRY(write_pending_dictionary(fp, builder));
 
     encode_u16_le(builder->data, builder->field_count);
     return write_record_bytes(fp, builder->data, builder->len, out_offset, out_stored_len);
@@ -1677,11 +1642,7 @@ static int scan_segment_dir(journal_reader_t *reader, const char *root_path, con
     char *pattern = NULL;
     int rc;
 
-    rc = join_path(dir_path, "*", &pattern);
-    if (rc != X12_OK)
-    {
-        return rc;
-    }
+    TRY(join_path(dir_path, "*", &pattern));
 
     handle = FindFirstFileA(pattern, &data);
     free(pattern);
@@ -2063,11 +2024,7 @@ int journal_reader_next(journal_reader_t *reader, journal_event_t *out)
         cursor += 2u;
         if (field_count == 0u)
         {
-            rc = journal_reader_apply_control_record(reader, cursor, end);
-            if (rc != X12_OK)
-            {
-                return rc;
-            }
+            TRY(journal_reader_apply_control_record(reader, cursor, end));
             continue;
         }
         if (field_count > JOURNAL_EVENT_MAX_FIELDS)
@@ -2113,11 +2070,7 @@ int journal_reader_next(journal_reader_t *reader, journal_event_t *out)
             return X12_ERR_IO;
         }
 
-        rc = update_reader_context(reader, out);
-        if (rc != X12_OK)
-        {
-            return rc;
-        }
+        TRY(update_reader_context(reader, out));
 
         return X12_OK;
     }

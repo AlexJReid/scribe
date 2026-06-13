@@ -6,6 +6,7 @@
 #include "run_id.h"
 #include "store.h"
 #include "str_util.h"
+#include "try.h"
 #include "tokenise.h"
 
 #include <stdint.h>
@@ -263,16 +264,12 @@ static int stable_numeric_event_id(
     char event_id[SCRIBE_STORE_ID_MAX];
     char *end;
     unsigned long long value;
-    int rc;
 
     if (out == NULL) {
         return X12_ERR_INVALID_ARGUMENT;
     }
 
-    rc = stable_event_id(event, fallback_event_id, event_id, sizeof(event_id));
-    if (rc != X12_OK) {
-        return rc;
-    }
+    TRY(stable_event_id(event, fallback_event_id, event_id, sizeof(event_id)));
     if (strncmp(event_id, "ev:", 3u) != 0) {
         return X12_ERR_INVALID_ARGUMENT;
     }
@@ -359,7 +356,6 @@ static int extract_value_token_pair(
     char token[TOKENISE_MAX_TOKEN_LEN];
     int has_value;
     int has_token;
-    int rc;
 
     if (raw_out == NULL || raw_out_len == 0u || token_out == NULL || token_out_len == 0u) {
         return X12_ERR_INVALID_ARGUMENT;
@@ -378,10 +374,7 @@ static int extract_value_token_pair(
         if (has_value && state != NULL && state->include_phi) {
             scribe_copy_cstr(raw_out, raw_out_len, value);
         } else {
-            rc = resolve_phi_token(state, namespace_name, token, raw_out, raw_out_len);
-            if (rc != X12_OK) {
-                return rc;
-            }
+            TRY(resolve_phi_token(state, namespace_name, token, raw_out, raw_out_len));
         }
         return X12_OK;
     }
@@ -464,16 +457,12 @@ static int set_member_name(
 )
 {
     char token[TOKENISE_MAX_TOKEN_LEN];
-    int rc;
 
     if (coverage == NULL || raw_name == NULL || raw_name[0] == '\0') {
         return X12_OK;
     }
 
-    rc = tokenise_cstring(TOK_MEMBER_NAME, raw_name, token, sizeof(token));
-    if (rc != X12_OK) {
-        return rc;
-    }
+    TRY(tokenise_cstring(TOK_MEMBER_NAME, raw_name, token, sizeof(token)));
     if (state != NULL && state->include_phi) {
         scribe_copy_cstr(coverage->member_name, sizeof(coverage->member_name), raw_name);
     }
@@ -487,7 +476,6 @@ static int resolve_member_name_by_id(
 )
 {
     char raw_name[COVERAGE_VALUE_MAX];
-    int rc;
 
     if (state == NULL || coverage == NULL || coverage->member_id_token[0] == '\0') {
         return X12_OK;
@@ -496,16 +484,13 @@ static int resolve_member_name_by_id(
         return X12_OK;
     }
 
-    rc = resolve_phi_token(
+    TRY(resolve_phi_token(
         state,
         "member_id_name",
         coverage->member_id_token,
         raw_name,
         sizeof(raw_name)
-    );
-    if (rc != X12_OK) {
-        return rc;
-    }
+    ));
     return set_member_name(state, coverage, raw_name);
 }
 
@@ -810,10 +795,7 @@ static int hydrate_member_coverage_if_present(coverage_state_t *state, const cha
         return X12_OK;
     }
 
-    rc = member_coverage_id_from_key(key, aggregate_id, sizeof(aggregate_id));
-    if (rc != X12_OK) {
-        return rc;
-    }
+    TRY(member_coverage_id_from_key(key, aggregate_id, sizeof(aggregate_id)));
 
     rc = scribe_store_get_latest_member_coverage(
         state->read_store,
@@ -850,7 +832,6 @@ static int find_or_add_coverage(
         member_id_token :
         member_id;
     member_coverage_t *coverage;
-    int rc;
 
     if (out == NULL) {
         return X12_ERR_INVALID_ARGUMENT;
@@ -864,10 +845,7 @@ static int find_or_add_coverage(
         return X12_OK;
     }
 
-    rc = hydrate_member_coverage_if_present(state, key);
-    if (rc != X12_OK) {
-        return rc;
-    }
+    TRY(hydrate_member_coverage_if_present(state, key));
 
     coverage = find_coverage(state, key);
     if (coverage != NULL) {
@@ -1189,7 +1167,6 @@ static int snapshot_add_applied_event_ids(
 {
     yyjson_mut_val *arr;
     size_t i;
-    int rc;
 
     arr = json_writer_add_array(writer, root, "applied_event_ids");
     if (arr == NULL) {
@@ -1197,10 +1174,7 @@ static int snapshot_add_applied_event_ids(
     }
 
     for (i = 0u; i < coverage->source_event_count; i++) {
-        rc = json_writer_array_add_size(writer, arr, coverage->source_events[i].event_id);
-        if (rc != X12_OK) {
-            return rc;
-        }
+        TRY(json_writer_array_add_size(writer, arr, coverage->source_events[i].event_id));
     }
 
     return X12_OK;
@@ -1233,10 +1207,7 @@ static int build_snapshot_doc(
     updated_by = &batch->updated_by;
     include_phi = state->include_phi;
 
-    rc = json_writer_init_object(writer);
-    if (rc != X12_OK) {
-        return rc;
-    }
+    TRY(json_writer_init_object(writer));
     root = json_writer_root(writer);
 
     rc = json_writer_add_string(writer, root, "event_type", "MemberCoverageUpdated");
@@ -1654,22 +1625,16 @@ static int write_snapshot(coverage_state_t *state, const coverage_update_batch_t
         return X12_ERR_BUFFER_TOO_SMALL;
     }
 
-    rc = scribe_store_put_member_coverage(
+    TRY(scribe_store_put_member_coverage(
         state->read_store,
         aggregate_id,
         coverage->version,
         state_json,
         updated_by_event_id,
         batch->source_drop_id
-    );
-    if (rc != X12_OK) {
-        return rc;
-    }
+    ));
 
-    rc = persist_member_coverage_keys(state, coverage, aggregate_id);
-    if (rc != X12_OK) {
-        return rc;
-    }
+    TRY(persist_member_coverage_keys(state, coverage, aggregate_id));
     if (state->incremental && state->read_store != NULL) {
         rc = scribe_store_clear_dirty_aggregate(
             state->read_store,
@@ -1713,10 +1678,7 @@ static int write_notification(
         return X12_ERR_BUFFER_TOO_SMALL;
     }
 
-    rc = json_writer_init_object(&writer);
-    if (rc != X12_OK) {
-        return rc;
-    }
+    TRY(json_writer_init_object(&writer));
     root = json_writer_root(&writer);
 
     rc = json_writer_add_string(&writer, root, "event_type", "SourceDropAggregatesRecorded");
@@ -1790,10 +1752,7 @@ static int coverage_stitch_flush_update_batches(coverage_state_t *state)
     }
 
     if (aggregate_version_count > 0u && state->read_store != NULL) {
-        rc = scribe_store_begin_immediate(state->read_store);
-        if (rc != X12_OK) {
-            return rc;
-        }
+        TRY(scribe_store_begin_immediate(state->read_store));
         txn_open = 1;
     }
 
@@ -1938,7 +1897,6 @@ static int set_current_source_drop(
     char source_file[COVERAGE_VALUE_MAX] = "";
     char source_type[32];
     int written;
-    int rc;
 
     if (state == NULL || drop_key == NULL) {
         return X12_ERR_INVALID_ARGUMENT;
@@ -2007,17 +1965,14 @@ static int set_current_source_drop(
         return X12_OK;
     }
 
-    rc = scribe_store_put_source_drop(
+    TRY(scribe_store_put_source_drop(
         state->read_store,
         state->current_source_drop_id,
         source_type,
         source_file,
         "",
         ""
-    );
-    if (rc != X12_OK) {
-        return rc;
-    }
+    ));
 
     return X12_OK;
 }
@@ -2068,32 +2023,23 @@ static int mark_member_coverage_dirty_for_key(
         return X12_OK;
     }
 
-    rc = scribe_store_find_member_coverage_ids_by_key(
+    TRY(scribe_store_find_member_coverage_ids_by_key(
         state->read_store,
         key_type,
         key_value,
         aggregate_ids,
         8u,
         &aggregate_count
-    );
-    if (rc != X12_OK) {
-        return rc;
-    }
+    ));
 
     if (aggregate_count == 0u && strcmp(key_type, "member_id") == 0) {
-        rc = member_coverage_id_from_key(key_value, aggregate_id, sizeof(aggregate_id));
-        if (rc != X12_OK) {
-            return rc;
-        }
-        rc = scribe_store_put_member_coverage_key(
+        TRY(member_coverage_id_from_key(key_value, aggregate_id, sizeof(aggregate_id)));
+        TRY(scribe_store_put_member_coverage_key(
             state->read_store,
             "member_id",
             key_value,
             aggregate_id
-        );
-        if (rc != X12_OK) {
-            return rc;
-        }
+        ));
         scribe_copy_cstr(aggregate_ids[0], sizeof(aggregate_ids[0]), aggregate_id);
         aggregate_count = 1u;
     }
@@ -2143,7 +2089,7 @@ static int index_journal_event(
     const char *member_key;
     const char *payer_key;
     int written;
-    int rc;
+    int rc = X12_OK;
 
     if (state == NULL || state->read_store == NULL) {
         return X12_OK;
@@ -2155,10 +2101,7 @@ static int index_journal_event(
         return X12_OK;
     }
 
-    rc = stable_event_id(event, numeric_event_id, event_id, sizeof(event_id));
-    if (rc != X12_OK) {
-        return rc;
-    }
+    TRY(stable_event_id(event, numeric_event_id, event_id, sizeof(event_id)));
     if (event->segment_path != NULL && event->segment_path[0] != '\0') {
         scribe_copy_cstr(segment_id, sizeof(segment_id), event->segment_path);
     } else if (!json_get_number_text(event, "source_segment_index", segment_id, sizeof(segment_id))) {
@@ -2168,7 +2111,7 @@ static int index_journal_event(
         }
     }
 
-    rc = scribe_store_put_event(
+    TRY(scribe_store_put_event(
         state->read_store,
         event_id,
         state->current_source_drop_id,
@@ -2177,10 +2120,7 @@ static int index_journal_event(
         event_offset,
         event_length,
         ""
-    );
-    if (rc != X12_OK) {
-        return rc;
-    }
+    ));
 
     member_id[0] = '\0';
     member_id_token[0] = '\0';
@@ -2192,28 +2132,16 @@ static int index_journal_event(
         (void)json_get_string(event, "id_value_token", member_id_token, sizeof(member_id_token));
     }
     member_key = member_id_token[0] != '\0' ? member_id_token : member_id;
-    rc = put_event_key_if_present(state->read_store, "member_id", member_key, event_id);
-    if (rc != X12_OK) {
-        return rc;
-    }
-    rc = mark_member_coverage_dirty_for_key(state, "member_id", member_key, event_id);
-    if (rc != X12_OK) {
-        return rc;
-    }
+    TRY(put_event_key_if_present(state->read_store, "member_id", member_key, event_id));
+    TRY(mark_member_coverage_dirty_for_key(state, "member_id", member_key, event_id));
 
     payer_id[0] = '\0';
     payer_id_token[0] = '\0';
     (void)json_get_string(event, "payer_id", payer_id, sizeof(payer_id));
     (void)json_get_string(event, "payer_id_token", payer_id_token, sizeof(payer_id_token));
     payer_key = payer_id_token[0] != '\0' ? payer_id_token : payer_id;
-    rc = put_event_key_if_present(state->read_store, "payer_id", payer_key, event_id);
-    if (rc != X12_OK) {
-        return rc;
-    }
-    rc = mark_member_coverage_dirty_for_key(state, "payer_id", payer_key, event_id);
-    if (rc != X12_OK) {
-        return rc;
-    }
+    TRY(put_event_key_if_present(state->read_store, "payer_id", payer_key, event_id));
+    TRY(mark_member_coverage_dirty_for_key(state, "payer_id", payer_key, event_id));
 
     if (json_get_string(event, "eligibility_id", eligibility_id, sizeof(eligibility_id))) {
         rc = put_event_key_if_present(state->read_store, "eligibility_id", eligibility_id, event_id);
@@ -2276,7 +2204,7 @@ static int apply_member_referenced(
     char member_name[COVERAGE_VALUE_MAX];
     int rc;
 
-    rc = extract_value_token_pair(
+    TRY(extract_value_token_pair(
         state,
         event,
         "id_value",
@@ -2286,10 +2214,7 @@ static int apply_member_referenced(
         sizeof(member_id),
         member_id_token,
         sizeof(member_id_token)
-    );
-    if (rc != X12_OK) {
-        return rc;
-    }
+    ));
     if (member_id[0] == '\0' && member_id_token[0] == '\0') {
         return X12_OK;
     }
@@ -2506,7 +2431,7 @@ static int apply_eligibility_party(
         return X12_OK;
     }
 
-    rc = extract_value_token_pair(
+    TRY(extract_value_token_pair(
         state,
         event,
         "id_value",
@@ -2516,10 +2441,7 @@ static int apply_eligibility_party(
         sizeof(raw_id),
         id_token,
         sizeof(id_token)
-    );
-    if (rc != X12_OK) {
-        return rc;
-    }
+    ));
 
     if (!is_member) {
         scribe_copy_cstr(state->current_payer_id, sizeof(state->current_payer_id), raw_id);
@@ -2578,7 +2500,7 @@ static int apply_demographics(
         return rc;
     }
 
-    rc = extract_value_token_pair(
+    TRY(extract_value_token_pair(
         state,
         event,
         "date_of_birth",
@@ -2588,10 +2510,7 @@ static int apply_demographics(
         sizeof(dob),
         dob_token,
         sizeof(dob_token)
-    );
-    if (rc != X12_OK) {
-        return rc;
-    }
+    ));
     if (state->include_phi) {
         scribe_copy_cstr(coverage->date_of_birth, sizeof(coverage->date_of_birth), dob);
     }
@@ -2617,7 +2536,6 @@ static int apply_eligibility_date(
     char date_scope[32];
     char qualifier[32];
     char value[32];
-    int rc;
 
     if (!json_get_string(event, "date_qualifier", qualifier, sizeof(qualifier)) ||
         !json_get_string(event, "date_value", value, sizeof(value))) {
@@ -2625,10 +2543,7 @@ static int apply_eligibility_date(
     }
     (void)json_get_string(event, "date_scope", date_scope, sizeof(date_scope));
 
-    rc = current_coverage(state, &coverage);
-    if (rc != X12_OK) {
-        return rc;
-    }
+    TRY(current_coverage(state, &coverage));
     if (coverage == NULL) {
         return X12_OK;
     }
@@ -2994,10 +2909,7 @@ int coverage_stitcher_stitch(const coverage_stitcher_input_t *input)
     }
 
     journal_reader_init(&journal);
-    rc = journal_reader_open(&journal, input->journal_path);
-    if (rc != X12_OK) {
-        return rc;
-    }
+    TRY(journal_reader_open(&journal, input->journal_path));
 
     if (strcmp(input->out_path, "-") == 0) {
         out = stdout;
