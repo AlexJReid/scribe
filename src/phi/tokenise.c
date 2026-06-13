@@ -1,4 +1,5 @@
 #include "tokenise.h"
+#include "try.h"
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -113,7 +114,6 @@ static int hmac_sha256(
     unsigned int digest_len = 0u;
     unsigned char *result;
     size_t message_len = 0u;
-    int rc;
 
     if (key == NULL || digest == NULL)
     {
@@ -124,11 +124,7 @@ static int hmac_sha256(
         return X12_ERR_UNSUPPORTED;
     }
 
-    rc = build_hmac_message(namespace_name, raw, &message, &message_len);
-    if (rc != X12_OK)
-    {
-        return rc;
-    }
+    TRY(build_hmac_message(namespace_name, raw, &message, &message_len));
 
     result = HMAC(
         EVP_sha256(),
@@ -160,7 +156,6 @@ int tokenise_value(
     const char *key = token_key();
     unsigned char digest[TOKEN_HMAC_DIGEST_BYTES];
     size_t i;
-    int rc;
 
     if (raw.ptr == NULL || out == NULL || out_len == 0u)
     {
@@ -171,16 +166,12 @@ int tokenise_value(
         return X12_ERR_BUFFER_TOO_SMALL;
     }
 
-    rc = hmac_sha256(
+    TRY(hmac_sha256(
         (const unsigned char *)key,
         strlen(key),
         type_name,
         raw,
-        digest);
-    if (rc != X12_OK)
-    {
-        return rc;
-    }
+        digest));
 
     for (i = 0; i < TOKEN_DIGEST_BYTES; i++)
     {

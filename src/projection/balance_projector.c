@@ -3,6 +3,7 @@
 #include "json_write.h"
 #include "store.h"
 #include "str_util.h"
+#include "try.h"
 #include "tokenise.h"
 #include "yyjson.h"
 
@@ -136,7 +137,6 @@ static int snapshot_money_array_sum(yyjson_val *arr, long long *out)
     size_t idx;
     size_t max;
     long long amount;
-    int rc;
 
     if (out == NULL) {
         return X12_ERR_INVALID_ARGUMENT;
@@ -148,10 +148,7 @@ static int snapshot_money_array_sum(yyjson_val *arr, long long *out)
 
     yyjson_arr_foreach(arr, idx, max, value) {
         if (yyjson_is_str(value)) {
-            rc = parse_money(yyjson_get_str(value), &amount);
-            if (rc != X12_OK) {
-                return rc;
-            }
+            TRY(parse_money(yyjson_get_str(value), &amount));
             *out += amount;
         }
     }
@@ -199,7 +196,6 @@ static int apply_snapshot_adjustments(balance_service_line_t *line, yyjson_val *
     size_t idx;
     size_t max;
     long long amount;
-    int rc;
 
     adjustments = yyjson_obj_get(line_obj, "adjustments");
     if (adjustments == NULL || !yyjson_is_arr(adjustments)) {
@@ -217,10 +213,7 @@ static int apply_snapshot_adjustments(balance_service_line_t *line, yyjson_val *
             sizeof(group_code)
         );
         amounts = yyjson_obj_get(adjustment, "amounts");
-        rc = snapshot_money_array_sum(amounts, &amount);
-        if (rc != X12_OK) {
-            return rc;
-        }
+        TRY(snapshot_money_array_sum(amounts, &amount));
 
         if (strcmp(group_code, "CO") == 0) {
             line->contractual_adjustments += amount;
@@ -238,7 +231,6 @@ static int apply_snapshot_line(balance_claim_t *claim, yyjson_val *line_obj)
     yyjson_val *submitted;
     yyjson_val *remittance;
     long long amount = 0;
-    int rc;
 
     if (claim == NULL || line_obj == NULL || !yyjson_is_obj(line_obj)) {
         return X12_OK;
@@ -270,23 +262,14 @@ static int apply_snapshot_line(balance_claim_t *claim, yyjson_val *line_obj)
     }
 
     submitted = yyjson_obj_get(line_obj, "submitted");
-    rc = snapshot_money_field(submitted, "charge_amount", &line->billed);
-    if (rc != X12_OK) {
-        return rc;
-    }
+    TRY(snapshot_money_field(submitted, "charge_amount", &line->billed));
 
     remittance = yyjson_obj_get(line_obj, "remittance");
     if (line->billed == 0) {
-        rc = snapshot_money_field(remittance, "line_charge_amount", &amount);
-        if (rc != X12_OK) {
-            return rc;
-        }
+        TRY(snapshot_money_field(remittance, "line_charge_amount", &amount));
         line->billed = amount;
     }
-    rc = snapshot_money_field(remittance, "line_paid_amount", &line->payer_paid);
-    if (rc != X12_OK) {
-        return rc;
-    }
+    TRY(snapshot_money_field(remittance, "line_paid_amount", &line->payer_paid));
 
     return apply_snapshot_adjustments(line, line_obj);
 }

@@ -1,4 +1,5 @@
 #include "event_writer.h"
+#include "try.h"
 
 #include <limits.h>
 #include <stdint.h>
@@ -280,7 +281,6 @@ int event_writer_record_phi_mapping(
     x12_str_t raw)
 {
     char token[TOKENISE_MAX_TOKEN_LEN];
-    int rc;
 
     if (writer == NULL || writer->phi_vault == NULL || raw.ptr == NULL || raw.len == 0u)
     {
@@ -291,11 +291,7 @@ int event_writer_record_phi_mapping(
         return X12_ERR_INVALID_ARGUMENT;
     }
 
-    rc = tokenise_value(type, raw, token, sizeof(token));
-    if (rc != X12_OK)
-    {
-        return rc;
-    }
+    TRY(tokenise_value(type, raw, token, sizeof(token)));
 
     return phi_vault_put_mapping(
         writer->phi_vault,
@@ -319,7 +315,6 @@ int event_writer_record_phi_name(
     char id_name_namespace[128];
     x12_str_t name_raw;
     int written;
-    int rc;
 
     if (writer == NULL || writer->phi_vault == NULL ||
         last_name_or_org.ptr == NULL || last_name_or_org.len == 0u)
@@ -354,32 +349,20 @@ int event_writer_record_phi_name(
     name_raw.ptr = name_raw_buf;
     name_raw.len = (size_t)written;
 
-    rc = tokenise_value(name_type, name_raw, name_token, sizeof(name_token));
-    if (rc != X12_OK)
-    {
-        return rc;
-    }
-    rc = phi_vault_put_mapping(
+    TRY(tokenise_value(name_type, name_raw, name_token, sizeof(name_token)));
+    TRY(phi_vault_put_mapping(
         writer->phi_vault,
         tokenise_namespace(name_type),
         name_token,
         name_raw,
-        writer->current_source_drop_id);
-    if (rc != X12_OK)
-    {
-        return rc;
-    }
+        writer->current_source_drop_id));
 
     if (id_raw.ptr == NULL || id_raw.len == 0u || id_type == TOK_UNKNOWN)
     {
         return X12_OK;
     }
 
-    rc = tokenise_value(id_type, id_raw, id_token, sizeof(id_token));
-    if (rc != X12_OK)
-    {
-        return rc;
-    }
+    TRY(tokenise_value(id_type, id_raw, id_token, sizeof(id_token)));
     written = snprintf(
         id_name_namespace, sizeof(id_name_namespace),
         "%s_name",
@@ -478,18 +461,10 @@ int event_writer_begin_event(
         "%s",
         source_drop_id);
 
-    rc = journal_record_builder_reset(&writer->builder);
-    if (rc != X12_OK)
-    {
-        return rc;
-    }
+    TRY(journal_record_builder_reset(&writer->builder));
     writer->builder_open = 1;
 
-    rc = journal_record_add_cstring(&writer->builder, "event_type", event_type);
-    if (rc != X12_OK)
-    {
-        return rc;
-    }
+    TRY(journal_record_add_cstring(&writer->builder, "event_type", event_type));
 
     /*
      * In JSON mode every event carries the full context block. In journal
@@ -800,13 +775,8 @@ static int emit_json(event_writer_t *writer)
     int control_open;
     int payload_open;
     size_t i;
-    int rc;
 
-    rc = parse_builder_fields(&writer->builder, fields, JOURNAL_EVENT_MAX_FIELDS, &field_count);
-    if (rc != X12_OK)
-    {
-        return rc;
-    }
+    TRY(parse_builder_fields(&writer->builder, fields, JOURNAL_EVENT_MAX_FIELDS, &field_count));
 
     if (fputc('{', fp) == EOF)
     {
@@ -828,20 +798,12 @@ static int emit_json(event_writer_t *writer)
         {
             return X12_ERR_IO;
         }
-        rc = event_writer_write_json_string(fp, fields[i].name, strlen(fields[i].name));
-        if (rc != X12_OK)
-        {
-            return rc;
-        }
+        TRY(event_writer_write_json_string(fp, fields[i].name, strlen(fields[i].name)));
         if (fputc(':', fp) == EOF)
         {
             return X12_ERR_IO;
         }
-        rc = emit_json_value(fp, fields[i].type, fields[i].data, fields[i].len);
-        if (rc != X12_OK)
-        {
-            return rc;
-        }
+        TRY(emit_json_value(fp, fields[i].type, fields[i].data, fields[i].len));
         wrote_any = 1;
     }
 
@@ -869,20 +831,12 @@ static int emit_json(event_writer_t *writer)
         {
             return X12_ERR_IO;
         }
-        rc = event_writer_write_json_string(fp, fields[i].name, strlen(fields[i].name));
-        if (rc != X12_OK)
-        {
-            return rc;
-        }
+        TRY(event_writer_write_json_string(fp, fields[i].name, strlen(fields[i].name)));
         if (fputc(':', fp) == EOF)
         {
             return X12_ERR_IO;
         }
-        rc = emit_json_value(fp, fields[i].type, fields[i].data, fields[i].len);
-        if (rc != X12_OK)
-        {
-            return rc;
-        }
+        TRY(emit_json_value(fp, fields[i].type, fields[i].data, fields[i].len));
     }
     if (control_open && fputc('}', fp) == EOF)
     {
@@ -912,20 +866,12 @@ static int emit_json(event_writer_t *writer)
         {
             return X12_ERR_IO;
         }
-        rc = event_writer_write_json_string(fp, fields[i].name, strlen(fields[i].name));
-        if (rc != X12_OK)
-        {
-            return rc;
-        }
+        TRY(event_writer_write_json_string(fp, fields[i].name, strlen(fields[i].name)));
         if (fputc(':', fp) == EOF)
         {
             return X12_ERR_IO;
         }
-        rc = emit_json_value(fp, fields[i].type, fields[i].data, fields[i].len);
-        if (rc != X12_OK)
-        {
-            return rc;
-        }
+        TRY(emit_json_value(fp, fields[i].type, fields[i].data, fields[i].len));
     }
     if (payload_open && fputc('}', fp) == EOF)
     {
