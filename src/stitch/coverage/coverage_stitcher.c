@@ -511,35 +511,6 @@ static member_coverage_t *find_coverage(coverage_state_t *state, const char *key
     return NULL;
 }
 
-static int hydrate_get_string(yyjson_val *obj, const char *key, char *out, size_t out_len)
-{
-    yyjson_val *value;
-    const char *str;
-    size_t len;
-
-    if (out == NULL || out_len == 0u) {
-        return X12_ERR_INVALID_ARGUMENT;
-    }
-    out[0] = '\0';
-    if (obj == NULL || key == NULL) {
-        return X12_OK;
-    }
-
-    value = yyjson_obj_get(obj, key);
-    if (value == NULL || !yyjson_is_str(value)) {
-        return X12_OK;
-    }
-
-    str = yyjson_get_str(value);
-    len = yyjson_get_len(value);
-    if (len >= out_len) {
-        len = out_len - 1u;
-    }
-    memcpy(out, str, len);
-    out[len] = '\0';
-    return X12_OK;
-}
-
 static void hydrate_get_size(yyjson_val *obj, const char *key, size_t *out)
 {
     yyjson_val *value;
@@ -582,11 +553,11 @@ static int hydrate_service_requests(member_coverage_t *coverage, yyjson_val *sta
         }
 
         request = &coverage->service_requests[coverage->service_request_count++];
-        (void)hydrate_get_string(item, "eligibility_id", request->eligibility_id, sizeof(request->eligibility_id));
-        (void)hydrate_get_string(item, "payer_id", request->payer_id, sizeof(request->payer_id));
-        (void)hydrate_get_string(item, "payer_id_token", request->payer_id_token, sizeof(request->payer_id_token));
-        (void)hydrate_get_string(item, "service_type_code", request->service_type_code, sizeof(request->service_type_code));
-        (void)hydrate_get_string(item, "inquiry_date", request->inquiry_date, sizeof(request->inquiry_date));
+        (void)json_read_string(item, "eligibility_id", request->eligibility_id, sizeof(request->eligibility_id));
+        (void)json_read_string(item, "payer_id", request->payer_id, sizeof(request->payer_id));
+        (void)json_read_string(item, "payer_id_token", request->payer_id_token, sizeof(request->payer_id_token));
+        (void)json_read_string(item, "service_type_code", request->service_type_code, sizeof(request->service_type_code));
+        (void)json_read_string(item, "inquiry_date", request->inquiry_date, sizeof(request->inquiry_date));
     }
 
     return X12_OK;
@@ -620,24 +591,24 @@ static int hydrate_benefits(member_coverage_t *coverage, yyjson_val *state_obj)
         }
 
         benefit = &coverage->benefits[coverage->benefit_count++];
-        (void)hydrate_get_string(item, "eligibility_id", benefit->eligibility_id, sizeof(benefit->eligibility_id));
-        (void)hydrate_get_string(item, "payer_id", benefit->payer_id, sizeof(benefit->payer_id));
-        (void)hydrate_get_string(item, "payer_id_token", benefit->payer_id_token, sizeof(benefit->payer_id_token));
-        (void)hydrate_get_string(item, "service_type_code", benefit->service_type_code, sizeof(benefit->service_type_code));
-        (void)hydrate_get_string(item, "eligibility_or_benefit_information_code", benefit->eligibility_or_benefit_information_code, sizeof(benefit->eligibility_or_benefit_information_code));
-        (void)hydrate_get_string(item, "coverage_level_code", benefit->coverage_level_code, sizeof(benefit->coverage_level_code));
-        (void)hydrate_get_string(item, "insurance_type_code", benefit->insurance_type_code, sizeof(benefit->insurance_type_code));
-        (void)hydrate_get_string(item, "plan_coverage_description", benefit->plan_coverage_description, sizeof(benefit->plan_coverage_description));
-        (void)hydrate_get_string(item, "time_period_qualifier", benefit->time_period_qualifier, sizeof(benefit->time_period_qualifier));
-        (void)hydrate_get_string(item, "monetary_amount", benefit->monetary_amount, sizeof(benefit->monetary_amount));
-        (void)hydrate_get_string(item, "percent", benefit->percent, sizeof(benefit->percent));
-        (void)hydrate_get_string(item, "quantity_qualifier", benefit->quantity_qualifier, sizeof(benefit->quantity_qualifier));
-        (void)hydrate_get_string(item, "quantity", benefit->quantity, sizeof(benefit->quantity));
-        (void)hydrate_get_string(item, "authorization_or_certification_indicator", benefit->authorization_or_certification_indicator, sizeof(benefit->authorization_or_certification_indicator));
-        (void)hydrate_get_string(item, "in_plan_network_indicator", benefit->in_plan_network_indicator, sizeof(benefit->in_plan_network_indicator));
-        (void)hydrate_get_string(item, "response_as_of_date", benefit->response_as_of_date, sizeof(benefit->response_as_of_date));
-        (void)hydrate_get_string(item, "effective_date", benefit->effective_date, sizeof(benefit->effective_date));
-        (void)hydrate_get_string(item, "termination_date", benefit->termination_date, sizeof(benefit->termination_date));
+        (void)json_read_string(item, "eligibility_id", benefit->eligibility_id, sizeof(benefit->eligibility_id));
+        (void)json_read_string(item, "payer_id", benefit->payer_id, sizeof(benefit->payer_id));
+        (void)json_read_string(item, "payer_id_token", benefit->payer_id_token, sizeof(benefit->payer_id_token));
+        (void)json_read_string(item, "service_type_code", benefit->service_type_code, sizeof(benefit->service_type_code));
+        (void)json_read_string(item, "eligibility_or_benefit_information_code", benefit->eligibility_or_benefit_information_code, sizeof(benefit->eligibility_or_benefit_information_code));
+        (void)json_read_string(item, "coverage_level_code", benefit->coverage_level_code, sizeof(benefit->coverage_level_code));
+        (void)json_read_string(item, "insurance_type_code", benefit->insurance_type_code, sizeof(benefit->insurance_type_code));
+        (void)json_read_string(item, "plan_coverage_description", benefit->plan_coverage_description, sizeof(benefit->plan_coverage_description));
+        (void)json_read_string(item, "time_period_qualifier", benefit->time_period_qualifier, sizeof(benefit->time_period_qualifier));
+        (void)json_read_string(item, "monetary_amount", benefit->monetary_amount, sizeof(benefit->monetary_amount));
+        (void)json_read_string(item, "percent", benefit->percent, sizeof(benefit->percent));
+        (void)json_read_string(item, "quantity_qualifier", benefit->quantity_qualifier, sizeof(benefit->quantity_qualifier));
+        (void)json_read_string(item, "quantity", benefit->quantity, sizeof(benefit->quantity));
+        (void)json_read_string(item, "authorization_or_certification_indicator", benefit->authorization_or_certification_indicator, sizeof(benefit->authorization_or_certification_indicator));
+        (void)json_read_string(item, "in_plan_network_indicator", benefit->in_plan_network_indicator, sizeof(benefit->in_plan_network_indicator));
+        (void)json_read_string(item, "response_as_of_date", benefit->response_as_of_date, sizeof(benefit->response_as_of_date));
+        (void)json_read_string(item, "effective_date", benefit->effective_date, sizeof(benefit->effective_date));
+        (void)json_read_string(item, "termination_date", benefit->termination_date, sizeof(benefit->termination_date));
     }
 
     return X12_OK;
@@ -732,11 +703,11 @@ static int hydrate_member_coverage_snapshot(
     hydrate_get_size(root, "version", &coverage->version);
     keys = yyjson_obj_get(root, "keys");
     if (keys != NULL && yyjson_is_obj(keys)) {
-        (void)hydrate_get_string(keys, "member_id", coverage->member_id, sizeof(coverage->member_id));
-        (void)hydrate_get_string(keys, "member_id_token", coverage->member_id_token, sizeof(coverage->member_id_token));
-        (void)hydrate_get_string(keys, "payer_id", coverage->payer_id, sizeof(coverage->payer_id));
-        (void)hydrate_get_string(keys, "payer_id_token", coverage->payer_id_token, sizeof(coverage->payer_id_token));
-        (void)hydrate_get_string(keys, "member_name_token", coverage->member_name_token, sizeof(coverage->member_name_token));
+        (void)json_read_string(keys, "member_id", coverage->member_id, sizeof(coverage->member_id));
+        (void)json_read_string(keys, "member_id_token", coverage->member_id_token, sizeof(coverage->member_id_token));
+        (void)json_read_string(keys, "payer_id", coverage->payer_id, sizeof(coverage->payer_id));
+        (void)json_read_string(keys, "payer_id_token", coverage->payer_id_token, sizeof(coverage->payer_id_token));
+        (void)json_read_string(keys, "member_name_token", coverage->member_name_token, sizeof(coverage->member_name_token));
     }
     if (coverage->member_id_token[0] == '\0') {
         scribe_copy_cstr(coverage->member_id_token, sizeof(coverage->member_id_token), coverage->key);
@@ -746,26 +717,26 @@ static int hydrate_member_coverage_snapshot(
     if (state_obj != NULL && yyjson_is_obj(state_obj)) {
         obj = yyjson_obj_get(state_obj, "enrollment");
         if (obj != NULL && yyjson_is_obj(obj)) {
-            (void)hydrate_get_string(obj, "relationship_code", coverage->relationship_code, sizeof(coverage->relationship_code));
-            (void)hydrate_get_string(obj, "maintenance_type_code", coverage->enrollment_maintenance_type_code, sizeof(coverage->enrollment_maintenance_type_code));
-            (void)hydrate_get_string(obj, "benefit_status_code", coverage->benefit_status_code, sizeof(coverage->benefit_status_code));
-            (void)hydrate_get_string(obj, "coverage_effective_date", coverage->coverage_effective_date, sizeof(coverage->coverage_effective_date));
-            (void)hydrate_get_string(obj, "coverage_termination_date", coverage->coverage_termination_date, sizeof(coverage->coverage_termination_date));
-            (void)hydrate_get_string(obj, "last_coverage_date_qualifier", coverage->last_coverage_date_qualifier, sizeof(coverage->last_coverage_date_qualifier));
-            (void)hydrate_get_string(obj, "last_coverage_date", coverage->last_coverage_date, sizeof(coverage->last_coverage_date));
+            (void)json_read_string(obj, "relationship_code", coverage->relationship_code, sizeof(coverage->relationship_code));
+            (void)json_read_string(obj, "maintenance_type_code", coverage->enrollment_maintenance_type_code, sizeof(coverage->enrollment_maintenance_type_code));
+            (void)json_read_string(obj, "benefit_status_code", coverage->benefit_status_code, sizeof(coverage->benefit_status_code));
+            (void)json_read_string(obj, "coverage_effective_date", coverage->coverage_effective_date, sizeof(coverage->coverage_effective_date));
+            (void)json_read_string(obj, "coverage_termination_date", coverage->coverage_termination_date, sizeof(coverage->coverage_termination_date));
+            (void)json_read_string(obj, "last_coverage_date_qualifier", coverage->last_coverage_date_qualifier, sizeof(coverage->last_coverage_date_qualifier));
+            (void)json_read_string(obj, "last_coverage_date", coverage->last_coverage_date, sizeof(coverage->last_coverage_date));
         }
         obj = yyjson_obj_get(state_obj, "demographics");
         if (obj != NULL && yyjson_is_obj(obj)) {
-            (void)hydrate_get_string(obj, "date_of_birth", coverage->date_of_birth, sizeof(coverage->date_of_birth));
-            (void)hydrate_get_string(obj, "date_of_birth_token", coverage->date_of_birth_token, sizeof(coverage->date_of_birth_token));
-            (void)hydrate_get_string(obj, "gender_code", coverage->gender_code, sizeof(coverage->gender_code));
+            (void)json_read_string(obj, "date_of_birth", coverage->date_of_birth, sizeof(coverage->date_of_birth));
+            (void)json_read_string(obj, "date_of_birth_token", coverage->date_of_birth_token, sizeof(coverage->date_of_birth_token));
+            (void)json_read_string(obj, "gender_code", coverage->gender_code, sizeof(coverage->gender_code));
         }
         obj = yyjson_obj_get(state_obj, "health_coverage");
         if (obj != NULL && yyjson_is_obj(obj)) {
-            (void)hydrate_get_string(obj, "maintenance_type_code", coverage->health_coverage_maintenance_type_code, sizeof(coverage->health_coverage_maintenance_type_code));
-            (void)hydrate_get_string(obj, "insurance_line_code", coverage->insurance_line_code, sizeof(coverage->insurance_line_code));
-            (void)hydrate_get_string(obj, "plan_coverage_description", coverage->plan_coverage_description, sizeof(coverage->plan_coverage_description));
-            (void)hydrate_get_string(obj, "coverage_level_code", coverage->coverage_level_code, sizeof(coverage->coverage_level_code));
+            (void)json_read_string(obj, "maintenance_type_code", coverage->health_coverage_maintenance_type_code, sizeof(coverage->health_coverage_maintenance_type_code));
+            (void)json_read_string(obj, "insurance_line_code", coverage->insurance_line_code, sizeof(coverage->insurance_line_code));
+            (void)json_read_string(obj, "plan_coverage_description", coverage->plan_coverage_description, sizeof(coverage->plan_coverage_description));
+            (void)json_read_string(obj, "coverage_level_code", coverage->coverage_level_code, sizeof(coverage->coverage_level_code));
         }
         rc = hydrate_service_requests(coverage, state_obj);
         if (rc == X12_OK) {
