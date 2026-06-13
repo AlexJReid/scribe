@@ -1,6 +1,7 @@
 #include "coverage_stitcher.h"
 
 #include "journal.h"
+#include "json_read.h"
 #include "json_write.h"
 #include "phi_vault.h"
 #include "run_id.h"
@@ -511,36 +512,28 @@ static member_coverage_t *find_coverage(coverage_state_t *state, const char *key
     return NULL;
 }
 
-static void hydrate_get_size(yyjson_val *obj, const char *key, size_t *out)
+static void hydrate_get_size(json_value_t obj, const char *key, size_t *out)
 {
-    yyjson_val *value;
-
     if (out == NULL || obj == NULL || key == NULL) {
         return;
     }
-
-    value = yyjson_obj_get(obj, key);
-    if (value != NULL && yyjson_is_uint(value)) {
-        *out = (size_t)yyjson_get_uint(value);
-    }
+    *out = json_object_get_size(obj, key, *out);
 }
 
-static int hydrate_service_requests(member_coverage_t *coverage, yyjson_val *state_obj)
+static int hydrate_service_requests(member_coverage_t *coverage, json_value_t state_obj)
 {
-    yyjson_val *arr;
-    yyjson_val *item;
+    json_value_t arr;
     size_t idx;
-    size_t max;
+    size_t count;
 
-    arr = yyjson_obj_get(state_obj, "service_requests");
-    if (arr == NULL || !yyjson_is_arr(arr)) {
-        return X12_OK;
-    }
+    arr = json_object_get(state_obj, "service_requests");
+    count = json_array_count(arr);
 
-    yyjson_arr_foreach(arr, idx, max, item) {
+    for (idx = 0u; idx < count; idx++) {
+        json_value_t item = json_array_get(arr, idx);
         coverage_service_request_t *request;
 
-        if (!yyjson_is_obj(item)) {
+        if (!json_is_object(item)) {
             continue;
         }
         if (coverage->service_request_count >= COVERAGE_MAX_SERVICE_REQUESTS) {
@@ -553,32 +546,30 @@ static int hydrate_service_requests(member_coverage_t *coverage, yyjson_val *sta
         }
 
         request = &coverage->service_requests[coverage->service_request_count++];
-        (void)json_read_string(item, "eligibility_id", request->eligibility_id, sizeof(request->eligibility_id));
-        (void)json_read_string(item, "payer_id", request->payer_id, sizeof(request->payer_id));
-        (void)json_read_string(item, "payer_id_token", request->payer_id_token, sizeof(request->payer_id_token));
-        (void)json_read_string(item, "service_type_code", request->service_type_code, sizeof(request->service_type_code));
-        (void)json_read_string(item, "inquiry_date", request->inquiry_date, sizeof(request->inquiry_date));
+        (void)JSON_GET_FIELD(item, "eligibility_id", request->eligibility_id);
+        (void)JSON_GET_FIELD(item, "payer_id", request->payer_id);
+        (void)JSON_GET_FIELD(item, "payer_id_token", request->payer_id_token);
+        (void)JSON_GET_FIELD(item, "service_type_code", request->service_type_code);
+        (void)JSON_GET_FIELD(item, "inquiry_date", request->inquiry_date);
     }
 
     return X12_OK;
 }
 
-static int hydrate_benefits(member_coverage_t *coverage, yyjson_val *state_obj)
+static int hydrate_benefits(member_coverage_t *coverage, json_value_t state_obj)
 {
-    yyjson_val *arr;
-    yyjson_val *item;
+    json_value_t arr;
     size_t idx;
-    size_t max;
+    size_t count;
 
-    arr = yyjson_obj_get(state_obj, "benefits");
-    if (arr == NULL || !yyjson_is_arr(arr)) {
-        return X12_OK;
-    }
+    arr = json_object_get(state_obj, "benefits");
+    count = json_array_count(arr);
 
-    yyjson_arr_foreach(arr, idx, max, item) {
+    for (idx = 0u; idx < count; idx++) {
+        json_value_t item = json_array_get(arr, idx);
         coverage_benefit_t *benefit;
 
-        if (!yyjson_is_obj(item)) {
+        if (!json_is_object(item)) {
             continue;
         }
         if (coverage->benefit_count >= COVERAGE_MAX_BENEFITS) {
@@ -591,64 +582,24 @@ static int hydrate_benefits(member_coverage_t *coverage, yyjson_val *state_obj)
         }
 
         benefit = &coverage->benefits[coverage->benefit_count++];
-        (void)json_read_string(item, "eligibility_id", benefit->eligibility_id, sizeof(benefit->eligibility_id));
-        (void)json_read_string(item, "payer_id", benefit->payer_id, sizeof(benefit->payer_id));
-        (void)json_read_string(item, "payer_id_token", benefit->payer_id_token, sizeof(benefit->payer_id_token));
-        (void)json_read_string(item, "service_type_code", benefit->service_type_code, sizeof(benefit->service_type_code));
-        (void)json_read_string(item, "eligibility_or_benefit_information_code", benefit->eligibility_or_benefit_information_code, sizeof(benefit->eligibility_or_benefit_information_code));
-        (void)json_read_string(item, "coverage_level_code", benefit->coverage_level_code, sizeof(benefit->coverage_level_code));
-        (void)json_read_string(item, "insurance_type_code", benefit->insurance_type_code, sizeof(benefit->insurance_type_code));
-        (void)json_read_string(item, "plan_coverage_description", benefit->plan_coverage_description, sizeof(benefit->plan_coverage_description));
-        (void)json_read_string(item, "time_period_qualifier", benefit->time_period_qualifier, sizeof(benefit->time_period_qualifier));
-        (void)json_read_string(item, "monetary_amount", benefit->monetary_amount, sizeof(benefit->monetary_amount));
-        (void)json_read_string(item, "percent", benefit->percent, sizeof(benefit->percent));
-        (void)json_read_string(item, "quantity_qualifier", benefit->quantity_qualifier, sizeof(benefit->quantity_qualifier));
-        (void)json_read_string(item, "quantity", benefit->quantity, sizeof(benefit->quantity));
-        (void)json_read_string(item, "authorization_or_certification_indicator", benefit->authorization_or_certification_indicator, sizeof(benefit->authorization_or_certification_indicator));
-        (void)json_read_string(item, "in_plan_network_indicator", benefit->in_plan_network_indicator, sizeof(benefit->in_plan_network_indicator));
-        (void)json_read_string(item, "response_as_of_date", benefit->response_as_of_date, sizeof(benefit->response_as_of_date));
-        (void)json_read_string(item, "effective_date", benefit->effective_date, sizeof(benefit->effective_date));
-        (void)json_read_string(item, "termination_date", benefit->termination_date, sizeof(benefit->termination_date));
-    }
-
-    return X12_OK;
-}
-
-static int hydrate_applied_event_ids(member_coverage_t *coverage, yyjson_val *root)
-{
-    yyjson_val *arr;
-    yyjson_val *item;
-    size_t idx;
-    size_t max;
-
-    if (coverage == NULL || root == NULL) {
-        return X12_ERR_INVALID_ARGUMENT;
-    }
-
-    arr = yyjson_obj_get(root, "applied_event_ids");
-    if (arr == NULL || !yyjson_is_arr(arr)) {
-        return X12_OK;
-    }
-
-    coverage->source_event_count = 0u;
-    yyjson_arr_foreach(arr, idx, max, item) {
-        coverage_source_event_t *source_event;
-
-        if (!yyjson_is_uint(item)) {
-            continue;
-        }
-        if (coverage->source_event_count >= COVERAGE_MAX_SOURCE_EVENTS) {
-            return report_capacity_exceeded(
-                "source_events",
-                COVERAGE_MAX_SOURCE_EVENTS,
-                coverage->key,
-                NULL
-            );
-        }
-
-        source_event = &coverage->source_events[coverage->source_event_count++];
-        memset(source_event, 0, sizeof(*source_event));
-        source_event->event_id = (size_t)yyjson_get_uint(item);
+        (void)JSON_GET_FIELD(item, "eligibility_id", benefit->eligibility_id);
+        (void)JSON_GET_FIELD(item, "payer_id", benefit->payer_id);
+        (void)JSON_GET_FIELD(item, "payer_id_token", benefit->payer_id_token);
+        (void)JSON_GET_FIELD(item, "service_type_code", benefit->service_type_code);
+        (void)JSON_GET_FIELD(item, "eligibility_or_benefit_information_code", benefit->eligibility_or_benefit_information_code);
+        (void)JSON_GET_FIELD(item, "coverage_level_code", benefit->coverage_level_code);
+        (void)JSON_GET_FIELD(item, "insurance_type_code", benefit->insurance_type_code);
+        (void)JSON_GET_FIELD(item, "plan_coverage_description", benefit->plan_coverage_description);
+        (void)JSON_GET_FIELD(item, "time_period_qualifier", benefit->time_period_qualifier);
+        (void)JSON_GET_FIELD(item, "monetary_amount", benefit->monetary_amount);
+        (void)JSON_GET_FIELD(item, "percent", benefit->percent);
+        (void)JSON_GET_FIELD(item, "quantity_qualifier", benefit->quantity_qualifier);
+        (void)JSON_GET_FIELD(item, "quantity", benefit->quantity);
+        (void)JSON_GET_FIELD(item, "authorization_or_certification_indicator", benefit->authorization_or_certification_indicator);
+        (void)JSON_GET_FIELD(item, "in_plan_network_indicator", benefit->in_plan_network_indicator);
+        (void)JSON_GET_FIELD(item, "response_as_of_date", benefit->response_as_of_date);
+        (void)JSON_GET_FIELD(item, "effective_date", benefit->effective_date);
+        (void)JSON_GET_FIELD(item, "termination_date", benefit->termination_date);
     }
 
     return X12_OK;
@@ -660,11 +611,11 @@ static int hydrate_member_coverage_snapshot(
     const char *state_json
 )
 {
-    yyjson_doc *doc;
-    yyjson_val *root;
-    yyjson_val *keys;
-    yyjson_val *state_obj;
-    yyjson_val *obj;
+    json_reader_t *reader;
+    json_value_t root;
+    json_value_t keys;
+    json_value_t state_obj;
+    json_value_t obj;
     member_coverage_t *coverage;
     const char *key;
     int rc = X12_OK;
@@ -688,66 +639,73 @@ static int hydrate_member_coverage_snapshot(
     memset(coverage, 0, sizeof(*coverage));
     scribe_copy_cstr(coverage->key, sizeof(coverage->key), key);
 
-    doc = yyjson_read(state_json, strlen(state_json), 0);
-    if (doc == NULL) {
+    rc = json_reader_open(&reader, state_json, strlen(state_json), &root);
+    if (rc != X12_OK) {
         state->aggregate_count--;
-        return X12_ERR_INVALID_ARGUMENT;
+        return rc;
     }
-    root = yyjson_doc_get_root(doc);
-    if (root == NULL || !yyjson_is_obj(root)) {
-        yyjson_doc_free(doc);
+    if (!json_is_object(root)) {
+        json_reader_close(reader);
         state->aggregate_count--;
         return X12_ERR_INVALID_ARGUMENT;
     }
 
     hydrate_get_size(root, "version", &coverage->version);
-    keys = yyjson_obj_get(root, "keys");
-    if (keys != NULL && yyjson_is_obj(keys)) {
-        (void)json_read_string(keys, "member_id", coverage->member_id, sizeof(coverage->member_id));
-        (void)json_read_string(keys, "member_id_token", coverage->member_id_token, sizeof(coverage->member_id_token));
-        (void)json_read_string(keys, "payer_id", coverage->payer_id, sizeof(coverage->payer_id));
-        (void)json_read_string(keys, "payer_id_token", coverage->payer_id_token, sizeof(coverage->payer_id_token));
-        (void)json_read_string(keys, "member_name_token", coverage->member_name_token, sizeof(coverage->member_name_token));
+    keys = json_object_get(root, "keys");
+    if (json_is_object(keys)) {
+        (void)JSON_GET_FIELD(keys, "member_id", coverage->member_id);
+        (void)JSON_GET_FIELD(keys, "member_id_token", coverage->member_id_token);
+        (void)JSON_GET_FIELD(keys, "payer_id", coverage->payer_id);
+        (void)JSON_GET_FIELD(keys, "payer_id_token", coverage->payer_id_token);
+        (void)JSON_GET_FIELD(keys, "member_name_token", coverage->member_name_token);
     }
     if (coverage->member_id_token[0] == '\0') {
         scribe_copy_cstr(coverage->member_id_token, sizeof(coverage->member_id_token), coverage->key);
     }
 
-    state_obj = yyjson_obj_get(root, "state");
-    if (state_obj != NULL && yyjson_is_obj(state_obj)) {
-        obj = yyjson_obj_get(state_obj, "enrollment");
-        if (obj != NULL && yyjson_is_obj(obj)) {
-            (void)json_read_string(obj, "relationship_code", coverage->relationship_code, sizeof(coverage->relationship_code));
-            (void)json_read_string(obj, "maintenance_type_code", coverage->enrollment_maintenance_type_code, sizeof(coverage->enrollment_maintenance_type_code));
-            (void)json_read_string(obj, "benefit_status_code", coverage->benefit_status_code, sizeof(coverage->benefit_status_code));
-            (void)json_read_string(obj, "coverage_effective_date", coverage->coverage_effective_date, sizeof(coverage->coverage_effective_date));
-            (void)json_read_string(obj, "coverage_termination_date", coverage->coverage_termination_date, sizeof(coverage->coverage_termination_date));
-            (void)json_read_string(obj, "last_coverage_date_qualifier", coverage->last_coverage_date_qualifier, sizeof(coverage->last_coverage_date_qualifier));
-            (void)json_read_string(obj, "last_coverage_date", coverage->last_coverage_date, sizeof(coverage->last_coverage_date));
+    state_obj = json_object_get(root, "state");
+    if (json_is_object(state_obj)) {
+        /* Carry the running source-event count across incremental runs. This
+         * replaces the old applied_event_ids array, whose only load-bearing
+         * role was restoring this count; the source_events slots stay zeroed
+         * (event_id 0) from the hydrate-time memset, which nothing reads back. */
+        size_t restored = 0u;
+        hydrate_get_size(state_obj, "source_event_count", &restored);
+        if (restored > COVERAGE_MAX_SOURCE_EVENTS) {
+            restored = COVERAGE_MAX_SOURCE_EVENTS;
         }
-        obj = yyjson_obj_get(state_obj, "demographics");
-        if (obj != NULL && yyjson_is_obj(obj)) {
-            (void)json_read_string(obj, "date_of_birth", coverage->date_of_birth, sizeof(coverage->date_of_birth));
-            (void)json_read_string(obj, "date_of_birth_token", coverage->date_of_birth_token, sizeof(coverage->date_of_birth_token));
-            (void)json_read_string(obj, "gender_code", coverage->gender_code, sizeof(coverage->gender_code));
+        coverage->source_event_count = restored;
+
+        obj = json_object_get(state_obj, "enrollment");
+        if (json_is_object(obj)) {
+            (void)JSON_GET_FIELD(obj, "relationship_code", coverage->relationship_code);
+            (void)JSON_GET_FIELD(obj, "maintenance_type_code", coverage->enrollment_maintenance_type_code);
+            (void)JSON_GET_FIELD(obj, "benefit_status_code", coverage->benefit_status_code);
+            (void)JSON_GET_FIELD(obj, "coverage_effective_date", coverage->coverage_effective_date);
+            (void)JSON_GET_FIELD(obj, "coverage_termination_date", coverage->coverage_termination_date);
+            (void)JSON_GET_FIELD(obj, "last_coverage_date_qualifier", coverage->last_coverage_date_qualifier);
+            (void)JSON_GET_FIELD(obj, "last_coverage_date", coverage->last_coverage_date);
         }
-        obj = yyjson_obj_get(state_obj, "health_coverage");
-        if (obj != NULL && yyjson_is_obj(obj)) {
-            (void)json_read_string(obj, "maintenance_type_code", coverage->health_coverage_maintenance_type_code, sizeof(coverage->health_coverage_maintenance_type_code));
-            (void)json_read_string(obj, "insurance_line_code", coverage->insurance_line_code, sizeof(coverage->insurance_line_code));
-            (void)json_read_string(obj, "plan_coverage_description", coverage->plan_coverage_description, sizeof(coverage->plan_coverage_description));
-            (void)json_read_string(obj, "coverage_level_code", coverage->coverage_level_code, sizeof(coverage->coverage_level_code));
+        obj = json_object_get(state_obj, "demographics");
+        if (json_is_object(obj)) {
+            (void)JSON_GET_FIELD(obj, "date_of_birth", coverage->date_of_birth);
+            (void)JSON_GET_FIELD(obj, "date_of_birth_token", coverage->date_of_birth_token);
+            (void)JSON_GET_FIELD(obj, "gender_code", coverage->gender_code);
+        }
+        obj = json_object_get(state_obj, "health_coverage");
+        if (json_is_object(obj)) {
+            (void)JSON_GET_FIELD(obj, "maintenance_type_code", coverage->health_coverage_maintenance_type_code);
+            (void)JSON_GET_FIELD(obj, "insurance_line_code", coverage->insurance_line_code);
+            (void)JSON_GET_FIELD(obj, "plan_coverage_description", coverage->plan_coverage_description);
+            (void)JSON_GET_FIELD(obj, "coverage_level_code", coverage->coverage_level_code);
         }
         rc = hydrate_service_requests(coverage, state_obj);
         if (rc == X12_OK) {
             rc = hydrate_benefits(coverage, state_obj);
         }
     }
-    if (rc == X12_OK) {
-        rc = hydrate_applied_event_ids(coverage, root);
-    }
 
-    yyjson_doc_free(doc);
+    json_reader_close(reader);
     if (rc != X12_OK) {
         state->aggregate_count--;
     }
@@ -1130,27 +1088,6 @@ static int snapshot_add_benefits(
     return X12_OK;
 }
 
-static int snapshot_add_applied_event_ids(
-    json_writer_t *writer,
-    yyjson_mut_val *root,
-    const member_coverage_t *coverage
-)
-{
-    yyjson_mut_val *arr;
-    size_t i;
-
-    arr = json_writer_add_array(writer, root, "applied_event_ids");
-    if (arr == NULL) {
-        return X12_ERR_NO_MEMORY;
-    }
-
-    for (i = 0u; i < coverage->source_event_count; i++) {
-        TRY(json_writer_array_add_size(writer, arr, coverage->source_events[i].event_id));
-    }
-
-    return X12_OK;
-}
-
 static int build_snapshot_doc(
     const coverage_state_t *state,
     const coverage_update_batch_t *batch,
@@ -1410,9 +1347,6 @@ static int build_snapshot_doc(
             "updated_by_journal_length",
             (size_t)updated_by->journal_length
         );
-    }
-    if (rc == X12_OK) {
-        rc = snapshot_add_applied_event_ids(writer, root, coverage);
     }
 
     return rc;

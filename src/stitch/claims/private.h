@@ -259,6 +259,15 @@ stitched_service_line_t *claim_aggregate_add_service_line(claim_aggregate_t *agg
  * NULL on allocation failure or at the cap. */
 stitched_source_event_t *claim_aggregate_add_source_event(claim_aggregate_t *aggregate);
 
+/* Restore the source-event running count to `count` by seeding that many inert
+ * placeholder events (event_id 0, empty fingerprint). Used on incremental
+ * hydrate to carry the count across runs without persisting the id list, since
+ * the ids themselves are never read back. */
+int claim_aggregate_restore_source_event_count(
+    claim_aggregate_t *aggregate,
+    size_t count
+);
+
 /* Source event at index i (no bounds check; guard with the count below). */
 stitched_source_event_t *claim_aggregate_source_event(
     const claim_aggregate_t *aggregate,

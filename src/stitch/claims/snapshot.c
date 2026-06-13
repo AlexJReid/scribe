@@ -1,5 +1,6 @@
 #include "private.h"
 
+#include "json_read.h"
 #include "json_write.h"
 #include "money.h"
 #include "str_util.h"
@@ -910,28 +911,6 @@ static int snapshot_add_institutional_claim(
     return rc;
 }
 
-static int snapshot_add_source_event_ids(
-    json_writer_t *writer,
-    yyjson_mut_val *root,
-    const claim_aggregate_t *aggregate
-)
-{
-    yyjson_mut_val *arr;
-    size_t i;
-
-    arr = json_writer_add_array(writer, root, "applied_event_ids");
-    if (arr == NULL) {
-        return X12_ERR_NO_MEMORY;
-    }
-
-    for (i = 0u; i < claim_aggregate_source_event_count(aggregate); i++) {
-        TRY(json_writer_array_add_size(
-            writer, arr, claim_aggregate_source_event(aggregate, i)->event_id));
-    }
-
-    return X12_OK;
-}
-
 static int snapshot_add_update_event_ids(
     json_writer_t *writer,
     yyjson_mut_val *root,
@@ -1278,10 +1257,7 @@ static int build_snapshot_doc(
         }
     }
     if (include_event_ids) {
-        rc = snapshot_add_source_event_ids(writer, root, aggregate);
-        if (rc == X12_OK) {
-            rc = snapshot_add_update_event_ids(writer, root, batch);
-        }
+        rc = snapshot_add_update_event_ids(writer, root, batch);
     }
 
     return rc;
@@ -1605,110 +1581,35 @@ static int write_snapshot(
 }
 
 
-static void snapshot_get_bool(yyjson_val *obj, const char *key, int *out)
+static void snapshot_get_bool(json_value_t obj, const char *key, int *out)
 {
-    yyjson_val *value;
-
     if (out == NULL || obj == NULL || key == NULL) {
         return;
     }
-
-    value = yyjson_obj_get(obj, key);
-    if (value != NULL && yyjson_is_bool(value)) {
-        *out = yyjson_get_bool(value) ? 1 : 0;
-    }
+    *out = json_object_get_bool(obj, key, *out);
 }
 
-static void snapshot_get_size(yyjson_val *obj, const char *key, size_t *out)
+static void snapshot_get_size(json_value_t obj, const char *key, size_t *out)
 {
-    yyjson_val *value;
-
     if (out == NULL || obj == NULL || key == NULL) {
         return;
     }
-
-    value = yyjson_obj_get(obj, key);
-    if (value != NULL && yyjson_is_uint(value)) {
-        *out = (size_t)yyjson_get_uint(value);
-    }
+    *out = json_object_get_size(obj, key, *out);
 }
 
-static int hydrate_applied_event_ids(claim_aggregate_t *aggregate, yyjson_val *root)
+static int hydrate_reference(stitched_claim_reference_t *reference, json_value_t obj)
 {
-    yyjson_val *arr;
-    yyjson_val *item;
-    size_t idx;
-    size_t max;
-
-    if (aggregate == NULL || root == NULL) {
+    if (reference == NULL || !json_is_object(obj)) {
         return X12_ERR_INVALID_ARGUMENT;
     }
 
-    arr = yyjson_obj_get(root, "applied_event_ids");
-    if (arr == NULL || !yyjson_is_arr(arr)) {
-        return X12_OK;
-    }
+    TRY(JSON_GET_FIELD(obj, "reference_scope", reference->reference_scope));
+    TRY(JSON_GET_FIELD(obj, "service_line_number", reference->service_line_number));
+    TRY(JSON_GET_FIELD(obj, "reference_qualifier", reference->reference_qualifier));
+    TRY(JSON_GET_FIELD(obj, "reference_identification", reference->reference_identification));
+    TRY(JSON_GET_FIELD(obj, "reference_identification_token", reference->reference_identification_token));
 
-    scribe_grow_vec_clear(&aggregate->source_events);
-    yyjson_arr_foreach(arr, idx, max, item) {
-        stitched_source_event_t *source_event;
-
-        if (!yyjson_is_uint(item)) {
-            continue;
-        }
-
-        source_event = claim_aggregate_add_source_event(aggregate);
-        if (source_event == NULL) {
-            return X12_ERR_NO_MEMORY;
-        }
-        source_event->event_id = (size_t)yyjson_get_uint(item);
-    }
-
-    return X12_OK;
-}
-
-static int hydrate_reference(stitched_claim_reference_t *reference, yyjson_val *obj)
-{
-    int rc;
-
-    if (reference == NULL || obj == NULL || !yyjson_is_obj(obj)) {
-        return X12_ERR_INVALID_ARGUMENT;
-    }
-
-    rc = json_read_string(obj, "reference_scope", reference->reference_scope, sizeof(reference->reference_scope));
-    if (rc == X12_OK) {
-        rc = json_read_string(
-            obj,
-            "service_line_number",
-            reference->service_line_number,
-            sizeof(reference->service_line_number)
-        );
-    }
-    if (rc == X12_OK) {
-        rc = json_read_string(
-            obj,
-            "reference_qualifier",
-            reference->reference_qualifier,
-            sizeof(reference->reference_qualifier)
-        );
-    }
-    if (rc == X12_OK) {
-        rc = json_read_string(
-            obj,
-            "reference_identification",
-            reference->reference_identification,
-            sizeof(reference->reference_identification)
-        );
-    }
-    if (rc == X12_OK) {
-        rc = json_read_string(
-            obj,
-            "reference_identification_token",
-            reference->reference_identification_token,
-            sizeof(reference->reference_identification_token)
-        );
-    }
-    if (rc == X12_OK && reference->reference_identification_token[0] == '\0') {
+    if (reference->reference_identification_token[0] == '\0') {
         scribe_copy_cstr(
             reference->reference_identification_token,
             sizeof(reference->reference_identification_token),
@@ -1717,34 +1618,33 @@ static int hydrate_reference(stitched_claim_reference_t *reference, yyjson_val *
         reference->reference_identification[0] = '\0';
     }
 
-    return rc;
+    return X12_OK;
 }
 
 static int hydrate_reference_array(
     stitched_claim_reference_t *references,
     size_t reference_cap,
     size_t *reference_count,
-    yyjson_val *parent,
+    json_value_t parent,
     const char *key
 )
 {
-    yyjson_val *arr;
-    yyjson_val *item;
+    json_value_t arr;
     size_t idx;
-    size_t max;
+    size_t count;
 
     if (references == NULL || reference_count == NULL || parent == NULL || key == NULL) {
         return X12_ERR_INVALID_ARGUMENT;
     }
 
-    arr = yyjson_obj_get(parent, key);
-    if (arr == NULL || !yyjson_is_arr(arr)) {
-        return X12_OK;
-    }
+    arr = json_object_get(parent, key);
+    count = json_array_count(arr);
 
     *reference_count = 0u;
-    yyjson_arr_foreach(arr, idx, max, item) {
-        if (!yyjson_is_obj(item)) {
+    for (idx = 0u; idx < count; idx++) {
+        json_value_t item = json_array_get(arr, idx);
+
+        if (!json_is_object(item)) {
             continue;
         }
         if (*reference_count >= reference_cap) {
@@ -1757,41 +1657,41 @@ static int hydrate_reference_array(
     return X12_OK;
 }
 
-static int hydrate_claim_envelope(claim_aggregate_t *aggregate, yyjson_val *state_obj)
+static int hydrate_claim_envelope(claim_aggregate_t *aggregate, json_value_t state_obj)
 {
-    yyjson_val *obj;
+    json_value_t obj;
 
-    obj = yyjson_obj_get(state_obj, "claim_envelope");
-    if (obj == NULL || !yyjson_is_obj(obj)) {
+    obj = json_object_get(state_obj, "claim_envelope");
+    if (!json_is_object(obj)) {
         return X12_OK;
     }
 
-    (void)json_read_string(obj, "total_charge_amount", aggregate->claim_envelope.total_charge_amount, sizeof(aggregate->claim_envelope.total_charge_amount));
-    (void)json_read_string(obj, "facility_type_code", aggregate->claim_envelope.facility_type_code, sizeof(aggregate->claim_envelope.facility_type_code));
-    (void)json_read_string(obj, "facility_code_qualifier", aggregate->claim_envelope.facility_code_qualifier, sizeof(aggregate->claim_envelope.facility_code_qualifier));
-    (void)json_read_string(obj, "claim_frequency_type_code", aggregate->claim_envelope.claim_frequency_type_code, sizeof(aggregate->claim_envelope.claim_frequency_type_code));
-    (void)json_read_string(obj, "provider_signature_indicator", aggregate->claim_envelope.provider_signature_indicator, sizeof(aggregate->claim_envelope.provider_signature_indicator));
-    (void)json_read_string(obj, "assignment_or_plan_participation_code", aggregate->claim_envelope.assignment_or_plan_participation_code, sizeof(aggregate->claim_envelope.assignment_or_plan_participation_code));
-    (void)json_read_string(obj, "benefits_assignment_certification_indicator", aggregate->claim_envelope.benefits_assignment_certification_indicator, sizeof(aggregate->claim_envelope.benefits_assignment_certification_indicator));
-    (void)json_read_string(obj, "release_of_information_code", aggregate->claim_envelope.release_of_information_code, sizeof(aggregate->claim_envelope.release_of_information_code));
-    (void)json_read_string(obj, "patient_signature_source_code", aggregate->claim_envelope.patient_signature_source_code, sizeof(aggregate->claim_envelope.patient_signature_source_code));
+    (void)JSON_GET_FIELD(obj, "total_charge_amount", aggregate->claim_envelope.total_charge_amount);
+    (void)JSON_GET_FIELD(obj, "facility_type_code", aggregate->claim_envelope.facility_type_code);
+    (void)JSON_GET_FIELD(obj, "facility_code_qualifier", aggregate->claim_envelope.facility_code_qualifier);
+    (void)JSON_GET_FIELD(obj, "claim_frequency_type_code", aggregate->claim_envelope.claim_frequency_type_code);
+    (void)JSON_GET_FIELD(obj, "provider_signature_indicator", aggregate->claim_envelope.provider_signature_indicator);
+    (void)JSON_GET_FIELD(obj, "assignment_or_plan_participation_code", aggregate->claim_envelope.assignment_or_plan_participation_code);
+    (void)JSON_GET_FIELD(obj, "benefits_assignment_certification_indicator", aggregate->claim_envelope.benefits_assignment_certification_indicator);
+    (void)JSON_GET_FIELD(obj, "release_of_information_code", aggregate->claim_envelope.release_of_information_code);
+    (void)JSON_GET_FIELD(obj, "patient_signature_source_code", aggregate->claim_envelope.patient_signature_source_code);
 
     return X12_OK;
 }
 
-static int hydrate_party_context(stitched_party_context_t *party, yyjson_val *state_obj, const char *key)
+static int hydrate_party_context(stitched_party_context_t *party, json_value_t state_obj, const char *key)
 {
-    yyjson_val *obj;
+    json_value_t obj;
 
-    obj = yyjson_obj_get(state_obj, key);
-    if (obj == NULL || !yyjson_is_obj(obj)) {
+    obj = json_object_get(state_obj, key);
+    if (!json_is_object(obj)) {
         return X12_OK;
     }
 
-    (void)json_read_string(obj, "payer_responsibility_sequence_number_code", party->payer_responsibility_sequence_number_code, sizeof(party->payer_responsibility_sequence_number_code));
-    (void)json_read_string(obj, "individual_relationship_code", party->individual_relationship_code, sizeof(party->individual_relationship_code));
-    (void)json_read_string(obj, "insured_group_or_policy_number", party->insured_group_or_policy_number, sizeof(party->insured_group_or_policy_number));
-    (void)json_read_string(obj, "insured_group_or_policy_number_token", party->insured_group_or_policy_number_token, sizeof(party->insured_group_or_policy_number_token));
+    (void)JSON_GET_FIELD(obj, "payer_responsibility_sequence_number_code", party->payer_responsibility_sequence_number_code);
+    (void)JSON_GET_FIELD(obj, "individual_relationship_code", party->individual_relationship_code);
+    (void)JSON_GET_FIELD(obj, "insured_group_or_policy_number", party->insured_group_or_policy_number);
+    (void)JSON_GET_FIELD(obj, "insured_group_or_policy_number_token", party->insured_group_or_policy_number_token);
     if (party->insured_group_or_policy_number_token[0] == '\0') {
         scribe_copy_cstr(
             party->insured_group_or_policy_number_token,
@@ -1800,10 +1700,10 @@ static int hydrate_party_context(stitched_party_context_t *party, yyjson_val *st
         );
         party->insured_group_or_policy_number[0] = '\0';
     }
-    (void)json_read_string(obj, "claim_filing_indicator_code", party->claim_filing_indicator_code, sizeof(party->claim_filing_indicator_code));
-    (void)json_read_string(obj, "date_format", party->date_format, sizeof(party->date_format));
-    (void)json_read_string(obj, "date_of_birth", party->date_of_birth, sizeof(party->date_of_birth));
-    (void)json_read_string(obj, "date_of_birth_token", party->date_of_birth_token, sizeof(party->date_of_birth_token));
+    (void)JSON_GET_FIELD(obj, "claim_filing_indicator_code", party->claim_filing_indicator_code);
+    (void)JSON_GET_FIELD(obj, "date_format", party->date_format);
+    (void)JSON_GET_FIELD(obj, "date_of_birth", party->date_of_birth);
+    (void)JSON_GET_FIELD(obj, "date_of_birth_token", party->date_of_birth_token);
     if (party->date_of_birth_token[0] == '\0') {
         scribe_copy_cstr(
             party->date_of_birth_token,
@@ -1812,106 +1712,94 @@ static int hydrate_party_context(stitched_party_context_t *party, yyjson_val *st
         );
         party->date_of_birth[0] = '\0';
     }
-    (void)json_read_string(obj, "gender_code", party->gender_code, sizeof(party->gender_code));
+    (void)JSON_GET_FIELD(obj, "gender_code", party->gender_code);
 
     return X12_OK;
 }
 
-static int hydrate_claim_dates(claim_aggregate_t *aggregate, yyjson_val *state_obj)
+static int hydrate_claim_dates(claim_aggregate_t *aggregate, json_value_t state_obj)
 {
-    yyjson_val *arr;
-    yyjson_val *item;
+    json_value_t arr;
     size_t idx;
-    size_t max;
+    size_t count;
 
-    arr = yyjson_obj_get(state_obj, "claim_dates");
-    if (arr == NULL || !yyjson_is_arr(arr)) {
-        return X12_OK;
-    }
+    arr = json_object_get(state_obj, "claim_dates");
+    count = json_array_count(arr);
 
     aggregate->claim_date_count = 0u;
-    yyjson_arr_foreach(arr, idx, max, item) {
+    for (idx = 0u; idx < count; idx++) {
+        json_value_t item = json_array_get(arr, idx);
         stitched_claim_date_t *date;
 
-        if (!yyjson_is_obj(item)) {
+        if (!json_is_object(item)) {
             continue;
         }
         if (aggregate->claim_date_count >= STITCH_MAX_CLAIM_DATES) {
             return X12_ERR_NO_MEMORY;
         }
         date = &aggregate->claim_dates[aggregate->claim_date_count++];
-        (void)json_read_string(item, "date_qualifier", date->date_qualifier, sizeof(date->date_qualifier));
-        (void)json_read_string(item, "date_format", date->date_format, sizeof(date->date_format));
-        (void)json_read_string(item, "date_value", date->date_value, sizeof(date->date_value));
+        (void)JSON_GET_FIELD(item, "date_qualifier", date->date_qualifier);
+        (void)JSON_GET_FIELD(item, "date_format", date->date_format);
+        (void)JSON_GET_FIELD(item, "date_value", date->date_value);
     }
 
     return X12_OK;
 }
 
-static int hydrate_diagnoses(claim_aggregate_t *aggregate, yyjson_val *state_obj)
+static int hydrate_diagnoses(claim_aggregate_t *aggregate, json_value_t state_obj)
 {
-    yyjson_val *obj;
-    yyjson_val *arr;
-    yyjson_val *item;
+    json_value_t obj;
+    json_value_t arr;
     size_t idx;
-    size_t max;
+    size_t count;
 
-    obj = yyjson_obj_get(state_obj, "diagnoses");
-    if (obj == NULL || !yyjson_is_obj(obj)) {
+    obj = json_object_get(state_obj, "diagnoses");
+    if (!json_is_object(obj)) {
         return X12_OK;
     }
 
-    (void)json_read_string(
-        obj,
-        "principal_diagnosis_code",
-        aggregate->principal_diagnosis_code,
-        sizeof(aggregate->principal_diagnosis_code)
-    );
-    arr = yyjson_obj_get(obj, "other_diagnosis_codes");
-    if (arr == NULL || !yyjson_is_arr(arr)) {
-        return X12_OK;
-    }
+    (void)JSON_GET_FIELD(obj, "principal_diagnosis_code", aggregate->principal_diagnosis_code);
+    arr = json_object_get(obj, "other_diagnosis_codes");
+    count = json_array_count(arr);
 
     aggregate->other_diagnosis_count = 0u;
-    yyjson_arr_foreach(arr, idx, max, item) {
-        if (!yyjson_is_str(item)) {
-            continue;
-        }
+    for (idx = 0u; idx < count; idx++) {
+        json_value_t item = json_array_get(arr, idx);
+
         if (aggregate->other_diagnosis_count >= STITCH_MAX_DIAGNOSES) {
             return X12_ERR_NO_MEMORY;
         }
-        scribe_copy_cstr(
+        (void)json_value_as_string(
+            item,
             aggregate->other_diagnosis_codes[aggregate->other_diagnosis_count],
-            sizeof(aggregate->other_diagnosis_codes[aggregate->other_diagnosis_count]),
-            yyjson_get_str(item)
+            sizeof(aggregate->other_diagnosis_codes[aggregate->other_diagnosis_count])
         );
-        aggregate->other_diagnosis_count++;
+        if (aggregate->other_diagnosis_codes[aggregate->other_diagnosis_count][0] != '\0') {
+            aggregate->other_diagnosis_count++;
+        }
     }
 
     return X12_OK;
 }
 
-static int hydrate_healthcare_codes(claim_aggregate_t *aggregate, yyjson_val *state_obj)
+static int hydrate_healthcare_codes(claim_aggregate_t *aggregate, json_value_t state_obj)
 {
-    yyjson_val *arr;
-    yyjson_val *item;
+    json_value_t arr;
     size_t idx;
-    size_t max;
+    size_t count;
 
-    arr = yyjson_obj_get(state_obj, "healthcare_codes");
-    if (arr == NULL || !yyjson_is_arr(arr)) {
-        return X12_OK;
-    }
+    arr = json_object_get(state_obj, "healthcare_codes");
+    count = json_array_count(arr);
 
     aggregate->healthcare_code_count = 0u;
-    yyjson_arr_foreach(arr, idx, max, item) {
+    for (idx = 0u; idx < count; idx++) {
+        json_value_t item = json_array_get(arr, idx);
         stitched_healthcare_code_t *code;
-        yyjson_val *components;
-        yyjson_val *component;
+        json_value_t components;
         size_t component_idx;
-        size_t component_max;
+        size_t component_count;
 
-        if (!yyjson_is_obj(item)) {
+        if (!json_is_object(item)) {
             continue;
         }
         if (aggregate->healthcare_code_count >= STITCH_MAX_HEALTHCARE_CODES) {
@@ -1919,27 +1807,27 @@ static int hydrate_healthcare_codes(claim_aggregate_t *aggregate, yyjson_val *st
         }
 
         code = &aggregate->healthcare_codes[aggregate->healthcare_code_count++];
-        (void)json_read_string(item, "healthcare_code_kind", code->healthcare_code_kind, sizeof(code->healthcare_code_kind));
-        (void)json_read_string(item, "healthcare_code_qualifier", code->healthcare_code_qualifier, sizeof(code->healthcare_code_qualifier));
-        (void)json_read_string(item, "healthcare_code", code->healthcare_code, sizeof(code->healthcare_code));
-        (void)json_read_string(item, "healthcare_code_date_format", code->healthcare_code_date_format, sizeof(code->healthcare_code_date_format));
-        (void)json_read_string(item, "healthcare_code_date_value", code->healthcare_code_date_value, sizeof(code->healthcare_code_date_value));
-        (void)json_read_string(item, "healthcare_code_amount", code->healthcare_code_amount, sizeof(code->healthcare_code_amount));
+        (void)JSON_GET_FIELD(item, "healthcare_code_kind", code->healthcare_code_kind);
+        (void)JSON_GET_FIELD(item, "healthcare_code_qualifier", code->healthcare_code_qualifier);
+        (void)JSON_GET_FIELD(item, "healthcare_code", code->healthcare_code);
+        (void)JSON_GET_FIELD(item, "healthcare_code_date_format", code->healthcare_code_date_format);
+        (void)JSON_GET_FIELD(item, "healthcare_code_date_value", code->healthcare_code_date_value);
+        (void)JSON_GET_FIELD(item, "healthcare_code_amount", code->healthcare_code_amount);
 
-        components = yyjson_obj_get(item, "healthcare_code_components");
-        if (components != NULL && yyjson_is_arr(components)) {
-            yyjson_arr_foreach(components, component_idx, component_max, component) {
-                if (!yyjson_is_str(component)) {
-                    continue;
-                }
-                if (code->healthcare_code_component_count >= STITCH_MAX_HEALTHCARE_CODE_COMPONENTS) {
-                    break;
-                }
-                scribe_copy_cstr(
-                    code->healthcare_code_components[code->healthcare_code_component_count],
-                    sizeof(code->healthcare_code_components[code->healthcare_code_component_count]),
-                    yyjson_get_str(component)
-                );
+        components = json_object_get(item, "healthcare_code_components");
+        component_count = json_array_count(components);
+        for (component_idx = 0u; component_idx < component_count; component_idx++) {
+            json_value_t component = json_array_get(components, component_idx);
+
+            if (code->healthcare_code_component_count >= STITCH_MAX_HEALTHCARE_CODE_COMPONENTS) {
+                break;
+            }
+            (void)json_value_as_string(
+                component,
+                code->healthcare_code_components[code->healthcare_code_component_count],
+                sizeof(code->healthcare_code_components[code->healthcare_code_component_count])
+            );
+            if (code->healthcare_code_components[code->healthcare_code_component_count][0] != '\0') {
                 code->healthcare_code_component_count++;
             }
         }
@@ -1948,23 +1836,21 @@ static int hydrate_healthcare_codes(claim_aggregate_t *aggregate, yyjson_val *st
     return X12_OK;
 }
 
-static int hydrate_provider_taxonomies(claim_aggregate_t *aggregate, yyjson_val *state_obj)
+static int hydrate_provider_taxonomies(claim_aggregate_t *aggregate, json_value_t state_obj)
 {
-    yyjson_val *arr;
-    yyjson_val *item;
+    json_value_t arr;
     size_t idx;
-    size_t max;
+    size_t count;
 
-    arr = yyjson_obj_get(state_obj, "provider_taxonomies");
-    if (arr == NULL || !yyjson_is_arr(arr)) {
-        return X12_OK;
-    }
+    arr = json_object_get(state_obj, "provider_taxonomies");
+    count = json_array_count(arr);
 
     aggregate->provider_taxonomy_count = 0u;
-    yyjson_arr_foreach(arr, idx, max, item) {
+    for (idx = 0u; idx < count; idx++) {
+        json_value_t item = json_array_get(arr, idx);
         stitched_provider_taxonomy_t *taxonomy;
 
-        if (!yyjson_is_obj(item)) {
+        if (!json_is_object(item)) {
             continue;
         }
         if (aggregate->provider_taxonomy_count >= STITCH_MAX_PROVIDER_TAXONOMIES) {
@@ -1972,59 +1858,56 @@ static int hydrate_provider_taxonomies(claim_aggregate_t *aggregate, yyjson_val 
         }
 
         taxonomy = &aggregate->provider_taxonomies[aggregate->provider_taxonomy_count++];
-        (void)json_read_string(item, "reference_scope", taxonomy->reference_scope, sizeof(taxonomy->reference_scope));
-        (void)json_read_string(item, "service_line_number", taxonomy->service_line_number, sizeof(taxonomy->service_line_number));
-        (void)json_read_string(item, "provider_context", taxonomy->provider_context, sizeof(taxonomy->provider_context));
-        (void)json_read_string(item, "provider_role_code", taxonomy->provider_role_code, sizeof(taxonomy->provider_role_code));
-        (void)json_read_string(item, "reference_identification_qualifier", taxonomy->reference_identification_qualifier, sizeof(taxonomy->reference_identification_qualifier));
-        (void)json_read_string(item, "provider_taxonomy_code", taxonomy->provider_taxonomy_code, sizeof(taxonomy->provider_taxonomy_code));
+        (void)JSON_GET_FIELD(item, "reference_scope", taxonomy->reference_scope);
+        (void)JSON_GET_FIELD(item, "service_line_number", taxonomy->service_line_number);
+        (void)JSON_GET_FIELD(item, "provider_context", taxonomy->provider_context);
+        (void)JSON_GET_FIELD(item, "provider_role_code", taxonomy->provider_role_code);
+        (void)JSON_GET_FIELD(item, "reference_identification_qualifier", taxonomy->reference_identification_qualifier);
+        (void)JSON_GET_FIELD(item, "provider_taxonomy_code", taxonomy->provider_taxonomy_code);
     }
 
     return X12_OK;
 }
 
-static int hydrate_institutional_claim(claim_aggregate_t *aggregate, yyjson_val *state_obj)
+static int hydrate_institutional_claim(claim_aggregate_t *aggregate, json_value_t state_obj)
 {
-    yyjson_val *obj;
+    json_value_t obj;
 
-    obj = yyjson_obj_get(state_obj, "institutional_claim");
-    if (obj == NULL || !yyjson_is_obj(obj)) {
+    obj = json_object_get(state_obj, "institutional_claim");
+    if (!json_is_object(obj)) {
         return X12_OK;
     }
 
-    (void)json_read_string(obj, "admission_type_code", aggregate->institutional_claim.admission_type_code, sizeof(aggregate->institutional_claim.admission_type_code));
-    (void)json_read_string(obj, "admission_source_code", aggregate->institutional_claim.admission_source_code, sizeof(aggregate->institutional_claim.admission_source_code));
-    (void)json_read_string(obj, "patient_status_code", aggregate->institutional_claim.patient_status_code, sizeof(aggregate->institutional_claim.patient_status_code));
-    (void)json_read_string(obj, "admission_date", aggregate->institutional_claim.admission_date, sizeof(aggregate->institutional_claim.admission_date));
-    (void)json_read_string(obj, "discharge_date", aggregate->institutional_claim.discharge_date, sizeof(aggregate->institutional_claim.discharge_date));
-    (void)json_read_string(obj, "diagnosis_related_group_code", aggregate->institutional_claim.diagnosis_related_group_code, sizeof(aggregate->institutional_claim.diagnosis_related_group_code));
+    (void)JSON_GET_FIELD(obj, "admission_type_code", aggregate->institutional_claim.admission_type_code);
+    (void)JSON_GET_FIELD(obj, "admission_source_code", aggregate->institutional_claim.admission_source_code);
+    (void)JSON_GET_FIELD(obj, "patient_status_code", aggregate->institutional_claim.patient_status_code);
+    (void)JSON_GET_FIELD(obj, "admission_date", aggregate->institutional_claim.admission_date);
+    (void)JSON_GET_FIELD(obj, "discharge_date", aggregate->institutional_claim.discharge_date);
+    (void)JSON_GET_FIELD(obj, "diagnosis_related_group_code", aggregate->institutional_claim.diagnosis_related_group_code);
 
     return X12_OK;
 }
 
 static int hydrate_adjustments(
     stitched_service_line_t *line,
-    yyjson_val *line_obj
+    json_value_t line_obj
 )
 {
-    yyjson_val *arr;
-    yyjson_val *item;
-    yyjson_val *values;
-    yyjson_val *value;
+    json_value_t arr;
+    json_value_t values;
     size_t idx;
-    size_t max;
+    size_t count;
     size_t value_idx;
-    size_t value_max;
+    size_t value_count;
 
-    arr = yyjson_obj_get(line_obj, "adjustments");
-    if (arr == NULL || !yyjson_is_arr(arr)) {
-        return X12_OK;
-    }
+    arr = json_object_get(line_obj, "adjustments");
+    count = json_array_count(arr);
 
-    yyjson_arr_foreach(arr, idx, max, item) {
+    for (idx = 0u; idx < count; idx++) {
+        json_value_t item = json_array_get(arr, idx);
         stitched_line_adjustment_t *adjustment;
 
-        if (!yyjson_is_obj(item)) {
+        if (!json_is_object(item)) {
             continue;
         }
         if (line->adjustment_count >= STITCH_MAX_ADJUSTMENTS_PER_LINE) {
@@ -2032,65 +1915,55 @@ static int hydrate_adjustments(
         }
 
         adjustment = &line->adjustments[line->adjustment_count++];
-        (void)json_read_string(
-            item,
-            "adjustment_group_code",
-            adjustment->adjustment_group_code,
-            sizeof(adjustment->adjustment_group_code)
-        );
+        (void)JSON_GET_FIELD(item, "adjustment_group_code", adjustment->adjustment_group_code);
 
-        values = yyjson_obj_get(item, "reason_codes");
-        if (values != NULL && yyjson_is_arr(values)) {
-            yyjson_arr_foreach(values, value_idx, value_max, value) {
-                if (adjustment->value_count >= STITCH_MAX_ADJUSTMENT_VALUES) {
-                    break;
-                }
-                if (yyjson_is_str(value)) {
-                    scribe_copy_cstr(
-                        adjustment->reason_codes[adjustment->value_count],
-                        sizeof(adjustment->reason_codes[adjustment->value_count]),
-                        yyjson_get_str(value)
-                    );
-                    adjustment->value_count++;
-                }
+        values = json_object_get(item, "reason_codes");
+        value_count = json_array_count(values);
+        for (value_idx = 0u; value_idx < value_count; value_idx++) {
+            if (adjustment->value_count >= STITCH_MAX_ADJUSTMENT_VALUES) {
+                break;
+            }
+            (void)json_value_as_string(
+                json_array_get(values, value_idx),
+                adjustment->reason_codes[adjustment->value_count],
+                sizeof(adjustment->reason_codes[adjustment->value_count])
+            );
+            if (adjustment->reason_codes[adjustment->value_count][0] != '\0') {
+                adjustment->value_count++;
             }
         }
 
-        values = yyjson_obj_get(item, "amounts");
-        if (values != NULL && yyjson_is_arr(values)) {
-            yyjson_arr_foreach(values, value_idx, value_max, value) {
-                if (value_idx >= STITCH_MAX_ADJUSTMENT_VALUES) {
-                    break;
-                }
-                if (yyjson_is_str(value)) {
-                    scribe_copy_cstr(
-                        adjustment->amounts[value_idx],
-                        sizeof(adjustment->amounts[value_idx]),
-                        yyjson_get_str(value)
-                    );
-                    if (value_idx >= adjustment->value_count) {
-                        adjustment->value_count = value_idx + 1u;
-                    }
-                }
+        values = json_object_get(item, "amounts");
+        value_count = json_array_count(values);
+        for (value_idx = 0u; value_idx < value_count; value_idx++) {
+            if (value_idx >= STITCH_MAX_ADJUSTMENT_VALUES) {
+                break;
+            }
+            (void)json_value_as_string(
+                json_array_get(values, value_idx),
+                adjustment->amounts[value_idx],
+                sizeof(adjustment->amounts[value_idx])
+            );
+            if (adjustment->amounts[value_idx][0] != '\0' &&
+                value_idx >= adjustment->value_count) {
+                adjustment->value_count = value_idx + 1u;
             }
         }
 
-        values = yyjson_obj_get(item, "quantities");
-        if (values != NULL && yyjson_is_arr(values)) {
-            yyjson_arr_foreach(values, value_idx, value_max, value) {
-                if (value_idx >= STITCH_MAX_ADJUSTMENT_VALUES) {
-                    break;
-                }
-                if (yyjson_is_str(value)) {
-                    scribe_copy_cstr(
-                        adjustment->quantities[value_idx],
-                        sizeof(adjustment->quantities[value_idx]),
-                        yyjson_get_str(value)
-                    );
-                    if (value_idx >= adjustment->value_count) {
-                        adjustment->value_count = value_idx + 1u;
-                    }
-                }
+        values = json_object_get(item, "quantities");
+        value_count = json_array_count(values);
+        for (value_idx = 0u; value_idx < value_count; value_idx++) {
+            if (value_idx >= STITCH_MAX_ADJUSTMENT_VALUES) {
+                break;
+            }
+            (void)json_value_as_string(
+                json_array_get(values, value_idx),
+                adjustment->quantities[value_idx],
+                sizeof(adjustment->quantities[value_idx])
+            );
+            if (adjustment->quantities[value_idx][0] != '\0' &&
+                value_idx >= adjustment->value_count) {
+                adjustment->value_count = value_idx + 1u;
             }
         }
     }
@@ -2098,25 +1971,23 @@ static int hydrate_adjustments(
     return X12_OK;
 }
 
-static int hydrate_service_lines(claim_aggregate_t *aggregate, yyjson_val *root)
+static int hydrate_service_lines(claim_aggregate_t *aggregate, json_value_t root)
 {
-    yyjson_val *arr;
-    yyjson_val *item;
+    json_value_t arr;
     size_t idx;
-    size_t max;
+    size_t count;
     int rc;
 
-    arr = yyjson_obj_get(root, "service_lines");
-    if (arr == NULL || !yyjson_is_arr(arr)) {
-        return X12_OK;
-    }
+    arr = json_object_get(root, "service_lines");
+    count = json_array_count(arr);
 
-    yyjson_arr_foreach(arr, idx, max, item) {
+    for (idx = 0u; idx < count; idx++) {
+        json_value_t item = json_array_get(arr, idx);
         stitched_service_line_t *line;
-        yyjson_val *submitted;
-        yyjson_val *remittance;
+        json_value_t submitted;
+        json_value_t remittance;
 
-        if (!yyjson_is_obj(item)) {
+        if (!json_is_object(item)) {
             continue;
         }
 
@@ -2124,57 +1995,34 @@ static int hydrate_service_lines(claim_aggregate_t *aggregate, yyjson_val *root)
         if (line == NULL) {
             return X12_ERR_NO_MEMORY;
         }
-        rc = json_read_string(
-            item,
-            "service_line_number",
-            line->service_line_number,
-            sizeof(line->service_line_number)
-        );
-        if (rc == X12_OK) {
-            rc = json_read_string(
-                item,
-                "remittance_service_line_number",
-                line->remit_service_line_number,
-                sizeof(line->remit_service_line_number)
-            );
-        }
-        if (rc == X12_OK) {
-            rc = json_read_string(item, "procedure_code", line->procedure_code, sizeof(line->procedure_code));
-        }
-        if (rc == X12_OK) {
-            rc = json_read_string(item, "description", line->description, sizeof(line->description));
-        }
-        if (rc == X12_OK) {
-            rc = json_read_string(item, "service_date", line->service_date, sizeof(line->service_date));
-        }
-        if (rc == X12_OK) {
-            rc = json_read_string(item, "match_method", line->match_method, sizeof(line->match_method));
-        }
-        if (rc != X12_OK) {
-            return rc;
-        }
+        TRY(JSON_GET_FIELD(item, "service_line_number", line->service_line_number));
+        TRY(JSON_GET_FIELD(item, "remittance_service_line_number", line->remit_service_line_number));
+        TRY(JSON_GET_FIELD(item, "procedure_code", line->procedure_code));
+        TRY(JSON_GET_FIELD(item, "description", line->description));
+        TRY(JSON_GET_FIELD(item, "service_date", line->service_date));
+        TRY(JSON_GET_FIELD(item, "match_method", line->match_method));
 
-        submitted = yyjson_obj_get(item, "submitted");
-        if (submitted != NULL && yyjson_is_obj(submitted)) {
+        submitted = json_object_get(item, "submitted");
+        if (json_is_object(submitted)) {
             line->has_submitted = 1;
-            (void)json_read_string(submitted, "line_type", line->submitted_line_type, sizeof(line->submitted_line_type));
-            (void)json_read_string(submitted, "procedure_code_qualifier", line->submitted_procedure_code_qualifier, sizeof(line->submitted_procedure_code_qualifier));
-            (void)json_read_string(submitted, "procedure_code_set", line->submitted_procedure_code_set, sizeof(line->submitted_procedure_code_set));
-            (void)json_read_string(submitted, "charge_amount", line->submitted_charge_amount, sizeof(line->submitted_charge_amount));
-            (void)json_read_string(submitted, "unit_measure_code", line->submitted_unit_measure_code, sizeof(line->submitted_unit_measure_code));
-            (void)json_read_string(submitted, "unit_count", line->submitted_unit_count, sizeof(line->submitted_unit_count));
-            (void)json_read_string(submitted, "service_date", line->submitted_service_date, sizeof(line->submitted_service_date));
+            (void)JSON_GET_FIELD(submitted, "line_type", line->submitted_line_type);
+            (void)JSON_GET_FIELD(submitted, "procedure_code_qualifier", line->submitted_procedure_code_qualifier);
+            (void)JSON_GET_FIELD(submitted, "procedure_code_set", line->submitted_procedure_code_set);
+            (void)JSON_GET_FIELD(submitted, "charge_amount", line->submitted_charge_amount);
+            (void)JSON_GET_FIELD(submitted, "unit_measure_code", line->submitted_unit_measure_code);
+            (void)JSON_GET_FIELD(submitted, "unit_count", line->submitted_unit_count);
+            (void)JSON_GET_FIELD(submitted, "service_date", line->submitted_service_date);
         }
 
-        remittance = yyjson_obj_get(item, "remittance");
-        if (remittance != NULL && yyjson_is_obj(remittance)) {
+        remittance = json_object_get(item, "remittance");
+        if (json_is_object(remittance)) {
             line->has_remittance = 1;
-            (void)json_read_string(remittance, "procedure_code_qualifier", line->remittance_procedure_code_qualifier, sizeof(line->remittance_procedure_code_qualifier));
-            (void)json_read_string(remittance, "procedure_code_set", line->remittance_procedure_code_set, sizeof(line->remittance_procedure_code_set));
-            (void)json_read_string(remittance, "line_charge_amount", line->remittance_line_charge_amount, sizeof(line->remittance_line_charge_amount));
-            (void)json_read_string(remittance, "line_paid_amount", line->remittance_line_paid_amount, sizeof(line->remittance_line_paid_amount));
-            (void)json_read_string(remittance, "paid_service_unit_count", line->remittance_paid_unit_count, sizeof(line->remittance_paid_unit_count));
-            (void)json_read_string(remittance, "service_date", line->remittance_service_date, sizeof(line->remittance_service_date));
+            (void)JSON_GET_FIELD(remittance, "procedure_code_qualifier", line->remittance_procedure_code_qualifier);
+            (void)JSON_GET_FIELD(remittance, "procedure_code_set", line->remittance_procedure_code_set);
+            (void)JSON_GET_FIELD(remittance, "line_charge_amount", line->remittance_line_charge_amount);
+            (void)JSON_GET_FIELD(remittance, "line_paid_amount", line->remittance_line_paid_amount);
+            (void)JSON_GET_FIELD(remittance, "paid_service_unit_count", line->remittance_paid_unit_count);
+            (void)JSON_GET_FIELD(remittance, "service_date", line->remittance_service_date);
         }
 
         rc = hydrate_reference_array(
@@ -2201,10 +2049,10 @@ int claim_stitch_hydrate_snapshot(
     const char *state_json
 )
 {
-    yyjson_doc *doc;
-    yyjson_val *root;
-    yyjson_val *keys;
-    yyjson_val *snapshot_state;
+    json_reader_t *reader;
+    json_value_t root;
+    json_value_t keys;
+    json_value_t snapshot_state;
     claim_aggregate_t *aggregate;
     const char *key;
     int rc = X12_OK;
@@ -2222,43 +2070,52 @@ int claim_stitch_hydrate_snapshot(
     claim_aggregate_init(aggregate);
     scribe_copy_cstr(aggregate->key, sizeof(aggregate->key), key);
 
-    doc = yyjson_read(state_json, strlen(state_json), 0);
-    if (doc == NULL) {
+    rc = json_reader_open(&reader, state_json, strlen(state_json), &root);
+    if (rc != X12_OK) {
         state->aggregate_count--;
-        return X12_ERR_INVALID_ARGUMENT;
+        return rc;
     }
-    root = yyjson_doc_get_root(doc);
-    if (root == NULL || !yyjson_is_obj(root)) {
-        yyjson_doc_free(doc);
+    if (!json_is_object(root)) {
+        json_reader_close(reader);
         state->aggregate_count--;
         return X12_ERR_INVALID_ARGUMENT;
     }
 
     snapshot_get_size(root, "version", &aggregate->version);
-    keys = yyjson_obj_get(root, "keys");
-    if (keys != NULL && yyjson_is_obj(keys)) {
-        (void)json_read_string(keys, "claim_id", aggregate->claim_id, sizeof(aggregate->claim_id));
-        (void)json_read_string(keys, "claim_id_token", aggregate->claim_id_token, sizeof(aggregate->claim_id_token));
-        (void)json_read_string(keys, "payer_claim_control_number", aggregate->payer_claim_control_number, sizeof(aggregate->payer_claim_control_number));
-        (void)json_read_string(keys, "payer_claim_control_number_token", aggregate->payer_claim_control_number_token, sizeof(aggregate->payer_claim_control_number_token));
-        (void)json_read_string(keys, "patient_id", aggregate->patient_id, sizeof(aggregate->patient_id));
-        (void)json_read_string(keys, "patient_id_token", aggregate->patient_id_token, sizeof(aggregate->patient_id_token));
-        (void)json_read_string(keys, "patient_name_token", aggregate->patient_name_token, sizeof(aggregate->patient_name_token));
+    keys = json_object_get(root, "keys");
+    if (json_is_object(keys)) {
+        (void)JSON_GET_FIELD(keys, "claim_id", aggregate->claim_id);
+        (void)JSON_GET_FIELD(keys, "claim_id_token", aggregate->claim_id_token);
+        (void)JSON_GET_FIELD(keys, "payer_claim_control_number", aggregate->payer_claim_control_number);
+        (void)JSON_GET_FIELD(keys, "payer_claim_control_number_token", aggregate->payer_claim_control_number_token);
+        (void)JSON_GET_FIELD(keys, "patient_id", aggregate->patient_id);
+        (void)JSON_GET_FIELD(keys, "patient_id_token", aggregate->patient_id_token);
+        (void)JSON_GET_FIELD(keys, "patient_name_token", aggregate->patient_name_token);
     }
     if (aggregate->claim_id_token[0] == '\0') {
         scribe_copy_cstr(aggregate->claim_id_token, sizeof(aggregate->claim_id_token), aggregate->key);
     }
 
-    snapshot_state = yyjson_obj_get(root, "state");
-    if (snapshot_state != NULL && yyjson_is_obj(snapshot_state)) {
+    snapshot_state = json_object_get(root, "state");
+    if (json_is_object(snapshot_state)) {
         snapshot_get_bool(snapshot_state, "has_837", &aggregate->has_837);
         snapshot_get_bool(snapshot_state, "has_835", &aggregate->has_835);
-        (void)json_read_string(snapshot_state, "claim_type", aggregate->claim_type, sizeof(aggregate->claim_type));
-        (void)json_read_string(snapshot_state, "claim_status_code", aggregate->claim_status_code, sizeof(aggregate->claim_status_code));
+        (void)JSON_GET_FIELD(snapshot_state, "claim_type", aggregate->claim_type);
+        (void)JSON_GET_FIELD(snapshot_state, "claim_status_code", aggregate->claim_status_code);
         snapshot_get_size(snapshot_state, "submitted_service_line_count", &aggregate->submitted_service_line_count);
         snapshot_get_size(snapshot_state, "remittance_service_line_count", &aggregate->remittance_service_line_count);
         snapshot_get_size(snapshot_state, "adjustment_count", &aggregate->adjustment_count);
-        rc = hydrate_claim_envelope(aggregate, snapshot_state);
+        /* Carry the running source-event count across incremental runs. The
+         * persisted "source_event_count" replaces the old applied_event_ids
+         * array, whose only load-bearing role was restoring this count. */
+        {
+            size_t restored = 0u;
+            snapshot_get_size(snapshot_state, "source_event_count", &restored);
+            rc = claim_aggregate_restore_source_event_count(aggregate, restored);
+        }
+        if (rc == X12_OK) {
+            rc = hydrate_claim_envelope(aggregate, snapshot_state);
+        }
         if (rc == X12_OK) {
             rc = hydrate_party_context(&aggregate->subscriber, snapshot_state, "subscriber");
         }
@@ -2290,17 +2147,14 @@ int claim_stitch_hydrate_snapshot(
             rc = hydrate_institutional_claim(aggregate, snapshot_state);
         }
         if (rc != X12_OK) {
-            yyjson_doc_free(doc);
+            json_reader_close(reader);
             state->aggregate_count--;
             return rc;
         }
     }
 
-    rc = hydrate_applied_event_ids(aggregate, root);
-    if (rc == X12_OK) {
-        rc = hydrate_service_lines(aggregate, root);
-    }
-    yyjson_doc_free(doc);
+    rc = hydrate_service_lines(aggregate, root);
+    json_reader_close(reader);
     if (rc != X12_OK) {
         state->aggregate_count--;
     }

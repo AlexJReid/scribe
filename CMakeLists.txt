@@ -70,6 +70,7 @@ add_library(scribe_core
     src/journal/event_writer.c
     src/journal/journal.c
     src/journal/journal_builder.c
+    src/json/json_read.c
     src/json/json_write.c
     src/phi/phi_vault.c
     src/phi/tokenise.c

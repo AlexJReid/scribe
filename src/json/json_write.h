@@ -63,14 +63,4 @@ int json_writer_write_fp(
     FILE *fp,
     int newline);
 
-/* Copy a string field from an immutable object into a fixed-size buffer,
- * truncating if necessary. out is always NUL-terminated (when out_len > 0).
- * A missing key or non-string value leaves out as the empty string and
- * returns X12_OK; only a NULL/zero-length out is an error. */
-int json_read_string(
-    yyjson_val *obj,
-    const char *key,
-    char *out,
-    size_t out_len);
-
 #endif

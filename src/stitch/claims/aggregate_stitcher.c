@@ -693,6 +693,33 @@ stitched_source_event_t *claim_aggregate_add_source_event(claim_aggregate_t *agg
         &aggregate->source_events, STITCH_MAX_SOURCE_EVENTS);
 }
 
+int claim_aggregate_restore_source_event_count(
+    claim_aggregate_t *aggregate,
+    size_t count
+)
+{
+    if (aggregate == NULL) {
+        return X12_ERR_INVALID_ARGUMENT;
+    }
+    if (count > STITCH_MAX_SOURCE_EVENTS) {
+        return X12_ERR_NO_MEMORY;
+    }
+
+    scribe_grow_vec_clear(&aggregate->source_events);
+    while (aggregate->source_events.count < count) {
+        /* Seed inert placeholders (event_id 0, empty fingerprint) so the
+         * running source-event count survives an incremental reload. The
+         * actual ids are not persisted -- nothing reads them back: dedup keys
+         * on fingerprints (empty here, as on a fresh load) and the per-batch
+         * update_event_ids only covers events appended after this point. */
+        if (claim_aggregate_add_source_event(aggregate) == NULL) {
+            return X12_ERR_NO_MEMORY;
+        }
+    }
+
+    return X12_OK;
+}
+
 stitched_source_event_t *claim_aggregate_source_event(
     const claim_aggregate_t *aggregate,
     size_t i

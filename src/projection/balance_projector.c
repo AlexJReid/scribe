@@ -1,12 +1,12 @@
 #include "balance_projector.h"
 
+#include "json_read.h"
 #include "json_write.h"
 #include "money.h"
 #include "store.h"
 #include "str_util.h"
 #include "try.h"
 #include "tokenise.h"
-#include "yyjson.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -66,19 +66,18 @@ static const char *aggregate_key_from_id(const char *aggregate_id)
     return aggregate_id == NULL ? "" : aggregate_id;
 }
 
-static int snapshot_money_field(yyjson_val *obj, const char *key, long long *out)
+static int snapshot_money_field(json_value_t obj, const char *key, long long *out)
 {
-    yyjson_val *value;
+    char text[32];
 
-    if (obj == NULL || !yyjson_is_obj(obj)) {
+    if (!json_is_object(obj)) {
         return X12_OK;
     }
 
-    value = yyjson_obj_get(obj, key);
-    if (value == NULL || !yyjson_is_str(value)) {
-        return X12_OK;
-    }
-    return scribe_money_parse(yyjson_get_str(value), out);
+    /* A money field is stored as a formatted string; an absent or non-string
+     * member leaves text empty, which scribe_money_parse maps to 0 + X12_OK. */
+    (void)JSON_GET_FIELD(obj, key, text);
+    return scribe_money_parse(text, out);
 }
 
 static balance_claim_t *add_claim(balance_state_t *state, const char *aggregate_id)
@@ -131,12 +130,12 @@ static balance_service_line_t *add_line(balance_claim_t *claim)
     return line;
 }
 
-static int apply_snapshot_line(balance_claim_t *claim, yyjson_val *line_obj)
+static int apply_snapshot_line(balance_claim_t *claim, json_value_t line_obj)
 {
     balance_service_line_t *line;
-    yyjson_val *balance;
+    json_value_t balance;
 
-    if (claim == NULL || line_obj == NULL || !yyjson_is_obj(line_obj)) {
+    if (claim == NULL || !json_is_object(line_obj)) {
         return X12_OK;
     }
 
@@ -146,22 +145,12 @@ static int apply_snapshot_line(balance_claim_t *claim, yyjson_val *line_obj)
         return X12_OK;
     }
 
-    (void)json_read_string(
-        line_obj,
-        "service_line_number",
-        line->service_line_number,
-        sizeof(line->service_line_number)
-    );
-    (void)json_read_string(
-        line_obj,
-        "remittance_service_line_number",
-        line->remit_service_line_number,
-        sizeof(line->remit_service_line_number)
-    );
-    (void)json_read_string(line_obj, "procedure_code", line->procedure_code, sizeof(line->procedure_code));
-    (void)json_read_string(line_obj, "description", line->description, sizeof(line->description));
-    (void)json_read_string(line_obj, "service_date", line->service_date, sizeof(line->service_date));
-    (void)json_read_string(line_obj, "match_method", line->match_method, sizeof(line->match_method));
+    (void)JSON_GET_FIELD(line_obj, "service_line_number", line->service_line_number);
+    (void)JSON_GET_FIELD(line_obj, "remittance_service_line_number", line->remit_service_line_number);
+    (void)JSON_GET_FIELD(line_obj, "procedure_code", line->procedure_code);
+    (void)JSON_GET_FIELD(line_obj, "description", line->description);
+    (void)JSON_GET_FIELD(line_obj, "service_date", line->service_date);
+    (void)JSON_GET_FIELD(line_obj, "match_method", line->match_method);
     if (line->match_method[0] == '\0') {
         scribe_copy_cstr(line->match_method, sizeof(line->match_method), "unmatched");
     }
@@ -171,7 +160,7 @@ static int apply_snapshot_line(balance_claim_t *claim, yyjson_val *line_obj)
      * claim aggregate owns the CO/PR bucketing and the billed/paid derivation;
      * the projection only reshapes those numbers.
      */
-    balance = yyjson_obj_get(line_obj, "balance");
+    balance = json_object_get(line_obj, "balance");
     TRY(snapshot_money_field(balance, "billed", &line->billed));
     TRY(snapshot_money_field(balance, "payer_paid", &line->payer_paid));
     TRY(snapshot_money_field(balance, "contractual_adjustments", &line->contractual_adjustments));
@@ -186,29 +175,27 @@ static int apply_claim_snapshot(
     const char *state_json
 )
 {
-    yyjson_doc *doc;
-    yyjson_val *root;
-    yyjson_val *keys;
-    yyjson_val *snapshot_state;
-    yyjson_val *claim_balance;
-    yyjson_val *service_lines;
-    yyjson_val *line_obj;
+    json_reader_t *reader;
+    json_value_t root;
+    json_value_t keys;
+    json_value_t snapshot_state;
+    json_value_t claim_balance;
+    json_value_t service_lines;
     balance_claim_t *claim;
+    size_t count;
     size_t idx;
-    size_t max;
     int rc = X12_OK;
 
     if (state == NULL || aggregate_id == NULL || state_json == NULL) {
         return X12_ERR_INVALID_ARGUMENT;
     }
 
-    doc = yyjson_read(state_json, strlen(state_json), 0);
-    if (doc == NULL) {
-        return X12_ERR_INVALID_ARGUMENT;
+    rc = json_reader_open(&reader, state_json, strlen(state_json), &root);
+    if (rc != X12_OK) {
+        return rc;
     }
-    root = yyjson_doc_get_root(doc);
-    if (root == NULL || !yyjson_is_obj(root)) {
-        yyjson_doc_free(doc);
+    if (!json_is_object(root)) {
+        json_reader_close(reader);
         return X12_ERR_INVALID_ARGUMENT;
     }
 
@@ -219,55 +206,30 @@ static int apply_claim_snapshot(
          * this aggregate and keep iterating the remaining ones rather than
          * aborting the whole projection.
          */
-        yyjson_doc_free(doc);
+        json_reader_close(reader);
         return X12_OK;
     }
 
-    keys = yyjson_obj_get(root, "keys");
-    if (keys != NULL && yyjson_is_obj(keys)) {
-        (void)json_read_string(keys, "claim_id", claim->claim_id, sizeof(claim->claim_id));
-        (void)json_read_string(
-            keys,
-            "claim_id_token",
-            claim->claim_id_token,
-            sizeof(claim->claim_id_token)
-        );
-        (void)json_read_string(
-            keys,
-            "payer_claim_control_number",
-            claim->payer_claim_control_number,
-            sizeof(claim->payer_claim_control_number)
-        );
-        (void)json_read_string(
-            keys,
-            "payer_claim_control_number_token",
-            claim->payer_claim_control_number_token,
-            sizeof(claim->payer_claim_control_number_token)
-        );
+    keys = json_object_get(root, "keys");
+    if (json_is_object(keys)) {
+        (void)JSON_GET_FIELD(keys, "claim_id", claim->claim_id);
+        (void)JSON_GET_FIELD(keys, "claim_id_token", claim->claim_id_token);
+        (void)JSON_GET_FIELD(keys, "payer_claim_control_number", claim->payer_claim_control_number);
+        (void)JSON_GET_FIELD(keys, "payer_claim_control_number_token", claim->payer_claim_control_number_token);
     }
     if (claim->claim_id[0] == '\0') {
         scribe_copy_cstr(claim->claim_id, sizeof(claim->claim_id), claim->key);
     }
 
-    snapshot_state = yyjson_obj_get(root, "state");
-    if (snapshot_state != NULL && yyjson_is_obj(snapshot_state)) {
-        (void)json_read_string(
-            snapshot_state,
-            "claim_type",
-            claim->claim_type,
-            sizeof(claim->claim_type)
-        );
-        (void)json_read_string(
-            snapshot_state,
-            "claim_status_code",
-            claim->claim_status_code,
-            sizeof(claim->claim_status_code)
-        );
+    snapshot_state = json_object_get(root, "state");
+    if (json_is_object(snapshot_state)) {
+        (void)JSON_GET_FIELD(snapshot_state, "claim_type", claim->claim_type);
+        (void)JSON_GET_FIELD(snapshot_state, "claim_status_code", claim->claim_status_code);
         /*
          * Claim-level totals come from the aggregate-computed balance block,
          * which already applies the no-service-line envelope fallback.
          */
-        claim_balance = yyjson_obj_get(snapshot_state, "balance");
+        claim_balance = json_object_get(snapshot_state, "balance");
         if (rc == X12_OK) {
             rc = snapshot_money_field(claim_balance, "total_billed", &claim->claim_total_billed);
         }
@@ -280,18 +242,17 @@ static int apply_claim_snapshot(
         }
     }
     if (rc == X12_OK) {
-        service_lines = yyjson_obj_get(root, "service_lines");
-        if (service_lines != NULL && yyjson_is_arr(service_lines)) {
-            yyjson_arr_foreach(service_lines, idx, max, line_obj) {
-                rc = apply_snapshot_line(claim, line_obj);
-                if (rc != X12_OK) {
-                    break;
-                }
+        service_lines = json_object_get(root, "service_lines");
+        count = json_array_count(service_lines);
+        for (idx = 0u; idx < count; idx++) {
+            rc = apply_snapshot_line(claim, json_array_get(service_lines, idx));
+            if (rc != X12_OK) {
+                break;
             }
         }
     }
 
-    yyjson_doc_free(doc);
+    json_reader_close(reader);
     return rc;
 }
 

@@ -1536,7 +1536,7 @@ static int test_stroke_balance_projection_from_journal(void)
     REQUIRE(strstr(aggregates, "\"source_drop_id\":\"837:000000101:101:0001\"") != NULL);
     REQUIRE(strstr(aggregates, "\"source_drop_id\":\"835:000000102:102:0001\"") != NULL);
     REQUIRE(strstr(aggregates, "\"compacted_source_event_count\":14") != NULL);
-    REQUIRE(strstr(aggregates, "\"applied_event_ids\":[") != NULL);
+    REQUIRE(strstr(aggregates, "\"applied_event_ids\":[") == NULL);
     REQUIRE(strstr(aggregates, "\"update_event_ids\":[") != NULL);
     REQUIRE(strstr(aggregates, "\"source_event_ids\":[") == NULL);
     REQUIRE(strstr(aggregates, "\"updated_source_event_ids\":[") == NULL);
