@@ -1,94 +1,10 @@
 #include "x12_mapper_270_271.h"
 
 #include "tokenise.h"
+#include "x12_mapper_phi.h"
 
 #include <stdio.h>
 #include <string.h>
-
-#define TRY(expr)           \
-    do                      \
-    {                       \
-        int rc__ = (expr);  \
-        if (rc__ != X12_OK) \
-        {                   \
-            return rc__;    \
-        }                   \
-    } while (0)
-
-static x12_str_t empty_str(void)
-{
-    x12_str_t value;
-
-    value.ptr = "";
-    value.len = 0;
-    return value;
-}
-
-static x12_str_t element_or_empty(const x12_segment_t *seg, size_t index)
-{
-    return seg->element_count <= index ? empty_str() : seg->elements[index];
-}
-
-static int add_phi_str(event_writer_t *w, const char *name, x12_str_t value)
-{
-    if (!event_writer_include_phi(w))
-    {
-        return X12_OK;
-    }
-    return event_writer_add_str(w, name, value);
-}
-
-static int add_tokenized_or_phi(
-    event_writer_t *w,
-    const char *name,
-    token_type_t type,
-    x12_str_t raw)
-{
-    char token[TOKENISE_MAX_TOKEN_LEN];
-    x12_str_t token_value;
-
-    if (event_writer_include_phi(w))
-    {
-        TRY(event_writer_record_phi_mapping(w, type, raw));
-        return event_writer_add_str(w, name, raw);
-    }
-
-    if (raw.len == 0u)
-    {
-        return event_writer_add_str(w, name, empty_str());
-    }
-
-    TRY(tokenise_value(type, raw, token, sizeof(token)));
-    TRY(event_writer_record_phi_mapping(w, type, raw));
-
-    token_value.ptr = token;
-    token_value.len = strlen(token);
-    return event_writer_add_str(w, name, token_value);
-}
-
-static int add_phi_token(
-    event_writer_t *w,
-    const char *name,
-    token_type_t type,
-    x12_str_t raw)
-{
-    char token[TOKENISE_MAX_TOKEN_LEN];
-    x12_str_t token_value;
-
-    if (!event_writer_include_phi(w))
-    {
-        return X12_OK;
-    }
-    if (raw.len == 0u)
-    {
-        return event_writer_add_str(w, name, empty_str());
-    }
-
-    TRY(tokenise_value(type, raw, token, sizeof(token)));
-    token_value.ptr = token;
-    token_value.len = strlen(token);
-    return event_writer_add_str(w, name, token_value);
-}
 
 static token_type_t name_token_type_for_id(token_type_t id_token_type)
 {
@@ -172,14 +88,14 @@ static int add_context_ids(x12_mapper_270_271_t *mapper)
 
     if (mapper->current_payer_id.len > 0u)
     {
-        TRY(add_tokenized_or_phi(w, "payer_id", TOK_PAYER_ID, mapper->current_payer_id));
-        TRY(add_phi_token(w, "payer_id_token", TOK_PAYER_ID, mapper->current_payer_id));
+        TRY(x12_mapper_add_tokenized_or_phi(w, "payer_id", TOK_PAYER_ID, mapper->current_payer_id));
+        TRY(x12_mapper_add_phi_token(w, "payer_id_token", TOK_PAYER_ID, mapper->current_payer_id));
     }
 
     if (mapper->current_member_id.len > 0u)
     {
-        TRY(add_tokenized_or_phi(w, "member_id", TOK_MEMBER_ID, mapper->current_member_id));
-        TRY(add_phi_token(w, "member_id_token", TOK_MEMBER_ID, mapper->current_member_id));
+        TRY(x12_mapper_add_tokenized_or_phi(w, "member_id", TOK_MEMBER_ID, mapper->current_member_id));
+        TRY(x12_mapper_add_phi_token(w, "member_id_token", TOK_MEMBER_ID, mapper->current_member_id));
     }
 
     return X12_OK;
@@ -191,17 +107,17 @@ static int write_eligibility_observed(
 {
     event_writer_t *w = mapper->writer;
 
-    mapper->eligibility_id = element_or_empty(seg, 2);
-    mapper->current_member_id = empty_str();
-    mapper->current_payer_id = empty_str();
-    mapper->current_service_type_code = empty_str();
+    mapper->eligibility_id = x12_mapper_element_or_empty(seg, 2);
+    mapper->current_member_id = x12_mapper_empty_str();
+    mapper->current_payer_id = x12_mapper_empty_str();
+    mapper->current_service_type_code = x12_mapper_empty_str();
 
     TRY(event_writer_begin_event(w, observed_event_type(mapper), seg));
     TRY(event_writer_add_str(w, "eligibility_id", mapper->eligibility_id));
-    TRY(event_writer_add_str(w, "transaction_set_purpose_code", element_or_empty(seg, 1)));
-    TRY(event_writer_add_str(w, "transaction_date", element_or_empty(seg, 3)));
-    TRY(event_writer_add_str(w, "transaction_time", element_or_empty(seg, 4)));
-    TRY(event_writer_add_str(w, "transaction_type_code", element_or_empty(seg, 5)));
+    TRY(event_writer_add_str(w, "transaction_set_purpose_code", x12_mapper_element_or_empty(seg, 1)));
+    TRY(event_writer_add_str(w, "transaction_date", x12_mapper_element_or_empty(seg, 3)));
+    TRY(event_writer_add_str(w, "transaction_time", x12_mapper_element_or_empty(seg, 4)));
+    TRY(event_writer_add_str(w, "transaction_type_code", x12_mapper_element_or_empty(seg, 5)));
     TRY(event_writer_add_str_array(w, "raw_elements", seg->elements, seg->element_count));
     return event_writer_end_event(w);
 }
@@ -238,8 +154,8 @@ static int add_party_key_fields(
         return X12_OK;
     }
 
-    TRY(add_tokenized_or_phi(w, field_name, id_token_type, id_value));
-    TRY(add_phi_token(w, token_field_name, id_token_type, id_value));
+    TRY(x12_mapper_add_tokenized_or_phi(w, field_name, id_token_type, id_value));
+    TRY(x12_mapper_add_phi_token(w, token_field_name, id_token_type, id_value));
 
     return X12_OK;
 }
@@ -249,8 +165,8 @@ static int write_party_referenced(
     const x12_segment_t *seg)
 {
     event_writer_t *w = mapper->writer;
-    x12_str_t entity_identifier_code = element_or_empty(seg, 0);
-    x12_str_t id_value = element_or_empty(seg, 8);
+    x12_str_t entity_identifier_code = x12_mapper_element_or_empty(seg, 0);
+    x12_str_t id_value = x12_mapper_element_or_empty(seg, 8);
     token_type_t id_token_type = id_token_type_for_entity(entity_identifier_code);
 
     if (id_token_type == TOK_PAYER_ID)
@@ -260,30 +176,30 @@ static int write_party_referenced(
     else if (id_token_type == TOK_MEMBER_ID)
     {
         mapper->current_member_id = id_value;
-        mapper->current_service_type_code = empty_str();
+        mapper->current_service_type_code = x12_mapper_empty_str();
     }
 
     TRY(event_writer_begin_event(w, party_event_type(mapper), seg));
     TRY(event_writer_add_str(w, "eligibility_id", mapper->eligibility_id));
     TRY(event_writer_add_str(w, "entity_identifier_code", entity_identifier_code));
-    TRY(event_writer_add_str(w, "entity_type", element_or_empty(seg, 1)));
-    TRY(add_phi_str(w, "last_name_or_org", element_or_empty(seg, 2)));
-    TRY(add_phi_str(w, "first_name", element_or_empty(seg, 3)));
+    TRY(event_writer_add_str(w, "entity_type", x12_mapper_element_or_empty(seg, 1)));
+    TRY(x12_mapper_add_phi_str(w, "last_name_or_org", x12_mapper_element_or_empty(seg, 2)));
+    TRY(x12_mapper_add_phi_str(w, "first_name", x12_mapper_element_or_empty(seg, 3)));
     if (id_token_type != TOK_UNKNOWN)
     {
         TRY(event_writer_record_phi_name(
             w,
             name_token_type_for_id(id_token_type),
-            element_or_empty(seg, 2),
-            element_or_empty(seg, 3),
+            x12_mapper_element_or_empty(seg, 2),
+            x12_mapper_element_or_empty(seg, 3),
             id_token_type,
             id_value));
     }
-    TRY(event_writer_add_str(w, "id_qualifier", element_or_empty(seg, 7)));
+    TRY(event_writer_add_str(w, "id_qualifier", x12_mapper_element_or_empty(seg, 7)));
     if (id_token_type != TOK_UNKNOWN)
     {
-        TRY(add_tokenized_or_phi(w, "id_value", id_token_type, id_value));
-        TRY(add_phi_token(w, "id_value_token", id_token_type, id_value));
+        TRY(x12_mapper_add_tokenized_or_phi(w, "id_value", id_token_type, id_value));
+        TRY(x12_mapper_add_phi_token(w, "id_value_token", id_token_type, id_value));
     }
     else if (event_writer_include_phi(w))
     {
@@ -302,9 +218,9 @@ static int write_trace_recorded(
     TRY(event_writer_begin_event(w, trace_event_type(mapper), seg));
     TRY(event_writer_add_str(w, "eligibility_id", mapper->eligibility_id));
     TRY(add_context_ids(mapper));
-    TRY(event_writer_add_str(w, "trace_type_code", element_or_empty(seg, 0)));
-    TRY(event_writer_add_str(w, "trace_number", element_or_empty(seg, 1)));
-    TRY(event_writer_add_str(w, "originating_company_id", element_or_empty(seg, 2)));
+    TRY(event_writer_add_str(w, "trace_type_code", x12_mapper_element_or_empty(seg, 0)));
+    TRY(event_writer_add_str(w, "trace_number", x12_mapper_element_or_empty(seg, 1)));
+    TRY(event_writer_add_str(w, "originating_company_id", x12_mapper_element_or_empty(seg, 2)));
     TRY(event_writer_add_str_array(w, "raw_elements", seg->elements, seg->element_count));
     return event_writer_end_event(w);
 }
@@ -323,9 +239,9 @@ static int write_date_recorded(
     {
         TRY(event_writer_add_str(w, "service_type_code", mapper->current_service_type_code));
     }
-    TRY(event_writer_add_str(w, "date_qualifier", element_or_empty(seg, 0)));
-    TRY(event_writer_add_str(w, "date_format", element_or_empty(seg, 1)));
-    TRY(event_writer_add_str(w, "date_value", element_or_empty(seg, 2)));
+    TRY(event_writer_add_str(w, "date_qualifier", x12_mapper_element_or_empty(seg, 0)));
+    TRY(event_writer_add_str(w, "date_format", x12_mapper_element_or_empty(seg, 1)));
+    TRY(event_writer_add_str(w, "date_value", x12_mapper_element_or_empty(seg, 2)));
     return event_writer_end_event(w);
 }
 
@@ -338,10 +254,10 @@ static int write_demographics_observed(
     TRY(event_writer_begin_event(w, demographics_event_type(mapper), seg));
     TRY(event_writer_add_str(w, "eligibility_id", mapper->eligibility_id));
     TRY(add_context_ids(mapper));
-    TRY(event_writer_add_str(w, "date_format", element_or_empty(seg, 0)));
-    TRY(add_tokenized_or_phi(w, "date_of_birth", TOK_MEMBER_DOB, element_or_empty(seg, 1)));
-    TRY(add_phi_token(w, "date_of_birth_token", TOK_MEMBER_DOB, element_or_empty(seg, 1)));
-    TRY(add_phi_str(w, "gender_code", element_or_empty(seg, 2)));
+    TRY(event_writer_add_str(w, "date_format", x12_mapper_element_or_empty(seg, 0)));
+    TRY(x12_mapper_add_tokenized_or_phi(w, "date_of_birth", TOK_MEMBER_DOB, x12_mapper_element_or_empty(seg, 1)));
+    TRY(x12_mapper_add_phi_token(w, "date_of_birth_token", TOK_MEMBER_DOB, x12_mapper_element_or_empty(seg, 1)));
+    TRY(x12_mapper_add_phi_str(w, "gender_code", x12_mapper_element_or_empty(seg, 2)));
     return event_writer_end_event(w);
 }
 
@@ -351,7 +267,7 @@ static int write_service_type_requested(
 {
     event_writer_t *w = mapper->writer;
 
-    mapper->current_service_type_code = element_or_empty(seg, 0);
+    mapper->current_service_type_code = x12_mapper_element_or_empty(seg, 0);
 
     TRY(event_writer_begin_event(w, "EligibilityInquiryServiceTypeRequested", seg));
     TRY(event_writer_add_str(w, "eligibility_id", mapper->eligibility_id));
@@ -367,23 +283,23 @@ static int write_benefit_observed(
 {
     event_writer_t *w = mapper->writer;
 
-    mapper->current_service_type_code = element_or_empty(seg, 2);
+    mapper->current_service_type_code = x12_mapper_element_or_empty(seg, 2);
 
     TRY(event_writer_begin_event(w, "EligibilityBenefitObserved", seg));
     TRY(event_writer_add_str(w, "eligibility_id", mapper->eligibility_id));
     TRY(add_context_ids(mapper));
-    TRY(event_writer_add_str(w, "eligibility_or_benefit_information_code", element_or_empty(seg, 0)));
-    TRY(event_writer_add_str(w, "coverage_level_code", element_or_empty(seg, 1)));
+    TRY(event_writer_add_str(w, "eligibility_or_benefit_information_code", x12_mapper_element_or_empty(seg, 0)));
+    TRY(event_writer_add_str(w, "coverage_level_code", x12_mapper_element_or_empty(seg, 1)));
     TRY(event_writer_add_str(w, "service_type_code", mapper->current_service_type_code));
-    TRY(event_writer_add_str(w, "insurance_type_code", element_or_empty(seg, 3)));
-    TRY(event_writer_add_str(w, "plan_coverage_description", element_or_empty(seg, 4)));
-    TRY(event_writer_add_str(w, "time_period_qualifier", element_or_empty(seg, 5)));
-    TRY(event_writer_add_str(w, "monetary_amount", element_or_empty(seg, 6)));
-    TRY(event_writer_add_str(w, "percent", element_or_empty(seg, 7)));
-    TRY(event_writer_add_str(w, "quantity_qualifier", element_or_empty(seg, 8)));
-    TRY(event_writer_add_str(w, "quantity", element_or_empty(seg, 9)));
-    TRY(event_writer_add_str(w, "authorization_or_certification_indicator", element_or_empty(seg, 10)));
-    TRY(event_writer_add_str(w, "in_plan_network_indicator", element_or_empty(seg, 11)));
+    TRY(event_writer_add_str(w, "insurance_type_code", x12_mapper_element_or_empty(seg, 3)));
+    TRY(event_writer_add_str(w, "plan_coverage_description", x12_mapper_element_or_empty(seg, 4)));
+    TRY(event_writer_add_str(w, "time_period_qualifier", x12_mapper_element_or_empty(seg, 5)));
+    TRY(event_writer_add_str(w, "monetary_amount", x12_mapper_element_or_empty(seg, 6)));
+    TRY(event_writer_add_str(w, "percent", x12_mapper_element_or_empty(seg, 7)));
+    TRY(event_writer_add_str(w, "quantity_qualifier", x12_mapper_element_or_empty(seg, 8)));
+    TRY(event_writer_add_str(w, "quantity", x12_mapper_element_or_empty(seg, 9)));
+    TRY(event_writer_add_str(w, "authorization_or_certification_indicator", x12_mapper_element_or_empty(seg, 10)));
+    TRY(event_writer_add_str(w, "in_plan_network_indicator", x12_mapper_element_or_empty(seg, 11)));
     TRY(event_writer_add_str_array(w, "raw_elements", seg->elements, seg->element_count));
     return event_writer_end_event(w);
 }
@@ -403,10 +319,10 @@ static void x12_mapper_270_271_init(
     mapper->writer = writer;
     mapper->transaction_type = transaction_type;
     mapper->is_response = is_response;
-    mapper->eligibility_id = empty_str();
-    mapper->current_member_id = empty_str();
-    mapper->current_payer_id = empty_str();
-    mapper->current_service_type_code = empty_str();
+    mapper->eligibility_id = x12_mapper_empty_str();
+    mapper->current_member_id = x12_mapper_empty_str();
+    mapper->current_payer_id = x12_mapper_empty_str();
+    mapper->current_service_type_code = x12_mapper_empty_str();
     mapper->component_sep = ':';
 }
 
@@ -444,7 +360,7 @@ int x12_mapper_270_271_on_segment(const x12_segment_t *seg, void *user)
     }
     if (x12_str_eq_cstr(seg->tag, "HL"))
     {
-        mapper->current_service_type_code = empty_str();
+        mapper->current_service_type_code = x12_mapper_empty_str();
         return X12_OK;
     }
     if (x12_str_eq_cstr(seg->tag, "NM1"))
