@@ -21,6 +21,7 @@ typedef struct
     x12_mapper_837_buffered_segment_t rendering_provider;
     x12_mapper_837_buffered_segment_t billing_provider_taxonomy;
     x12_mapper_837_buffered_segment_t rendering_provider_taxonomy;
+    int billing_provider_taxonomy_pending_for_nm1;
     x12_mapper_837_buffered_segment_t subscriber_info;
     x12_mapper_837_buffered_segment_t subscriber_demographics;
     x12_mapper_837_buffered_segment_t patient_info;

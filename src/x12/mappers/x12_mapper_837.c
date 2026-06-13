@@ -347,6 +347,21 @@ static void clear_claim_position(x12_mapper_837_t *mapper)
     mapper->current_provider_context = "";
 }
 
+static void clear_billing_provider_context(x12_mapper_837_t *mapper)
+{
+    clear_claim_position(mapper);
+    mapper->billing_provider.present = 0;
+    mapper->billing_provider_taxonomy.present = 0;
+    mapper->billing_provider_taxonomy_pending_for_nm1 = 0;
+    mapper->subscriber.present = 0;
+    mapper->patient.present = 0;
+    mapper->subscriber_info.present = 0;
+    mapper->subscriber_demographics.present = 0;
+    mapper->patient_info.present = 0;
+    mapper->patient_demographics.present = 0;
+    mapper->current_party = X12_837_PARTY_NONE;
+}
+
 static void buffer_segment(
     x12_mapper_837_buffered_segment_t *buffer,
     const x12_segment_t *seg)
@@ -948,6 +963,14 @@ int x12_mapper_837_on_segment(const x12_segment_t *seg, void *user)
         mapper->component_sep = seg->elements[15].ptr[0];
     }
 
+    if (x12_str_eq_cstr(seg->tag, "HL") &&
+        seg->element_count > 2u &&
+        x12_str_eq_cstr(seg->elements[2], "20"))
+    {
+        clear_billing_provider_context(mapper);
+        return X12_OK;
+    }
+
     if (x12_str_eq_cstr(seg->tag, "CLM"))
     {
         return write_claim_observed(mapper, seg);
@@ -983,7 +1006,14 @@ int x12_mapper_837_on_segment(const x12_segment_t *seg, void *user)
         }
         if (x12_str_eq_cstr(seg->elements[0], "85"))
         {
+            int keep_pending_taxonomy = mapper->billing_provider_taxonomy_pending_for_nm1;
+
             clear_claim_position(mapper);
+            if (!keep_pending_taxonomy)
+            {
+                mapper->billing_provider_taxonomy.present = 0;
+            }
+            mapper->billing_provider_taxonomy_pending_for_nm1 = 0;
             buffer_segment(&mapper->billing_provider, seg);
             mapper->subscriber.present = 0;
             mapper->patient.present = 0;
@@ -1064,13 +1094,20 @@ int x12_mapper_837_on_segment(const x12_segment_t *seg, void *user)
     {
         const char *provider_context = provider_context_for_prv(mapper, x12_mapper_element_or_empty(seg, 0));
 
+        if (strcmp(provider_context, "billing_provider") == 0)
+        {
+            if (!mapper->billing_provider.present || mapper->current_claim_id.len > 0u)
+            {
+                mapper->billing_provider_taxonomy_pending_for_nm1 = 1;
+            }
+            buffer_segment(&mapper->billing_provider_taxonomy, seg);
+            mapper->current_provider_context = provider_context;
+            return X12_OK;
+        }
+
         if (mapper->current_claim_id.len == 0u)
         {
-            if (strcmp(provider_context, "billing_provider") == 0)
-            {
-                buffer_segment(&mapper->billing_provider_taxonomy, seg);
-            }
-            else if (strcmp(provider_context, "rendering_provider") == 0)
+            if (strcmp(provider_context, "rendering_provider") == 0)
             {
                 buffer_segment(&mapper->rendering_provider_taxonomy, seg);
             }

@@ -200,6 +200,31 @@ static int test_claim_envelope_and_party_context_in_ndjson(void)
     return 0;
 }
 
+static int test_billing_provider_taxonomy_does_not_carry_to_next_provider(void)
+{
+    char out_path[512];
+    char output[30000];
+
+    REQUIRE(map_fixture(
+                "sample_837_billing_provider_switch.edi",
+                "test_837_mapper_billing_provider_switch.ndjson",
+                0
+            ) == 0);
+    REQUIRE(make_path(
+                out_path,
+                sizeof(out_path),
+                TEST_OUTPUT_DIR,
+                "test_837_mapper_billing_provider_switch.ndjson"
+            ) == 0);
+    REQUIRE(read_file_text(out_path, output, sizeof(output)) == 0);
+
+    REQUIRE(count_substring(output, "\"event_type\":\"ClaimObserved\"") == 2u);
+    REQUIRE(count_substring(output, "\"event_type\":\"ClaimProviderTaxonomyRecorded\"") == 1u);
+    REQUIRE(count_substring(output, "\"provider_taxonomy_code\":\"TAXONOMY1\"") == 1u);
+    REQUIRE(strstr(output, "\"total_charge_amount\":\"225.50\"") != NULL);
+    return 0;
+}
+
 static int test_institutional_hi_components_in_ndjson(void)
 {
     char out_path[512];
@@ -326,6 +351,7 @@ int main(void)
     REQUIRE(test_revenue_line_fields_in_ndjson() == 0);
     REQUIRE(test_modifiers_and_provider_roles_in_ndjson() == 0);
     REQUIRE(test_claim_envelope_and_party_context_in_ndjson() == 0);
+    REQUIRE(test_billing_provider_taxonomy_does_not_carry_to_next_provider() == 0);
     REQUIRE(test_institutional_hi_components_in_ndjson() == 0);
     REQUIRE(test_service_line_fields_in_binary_journal() == 0);
     return 0;
