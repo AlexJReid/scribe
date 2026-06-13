@@ -143,8 +143,13 @@ it belongs in aggregate code. If code reshapes known state for a query, report,
 notification, or export, it belongs in projection code.
 
 Claim balance is a projection over claim aggregate state. The claim aggregate
-owns 837/835 matching and adjustment capture; the balance projection turns the
-latest matched claim state into ledger-style totals and line balances.
+owns 837/835 matching, adjustment capture, and the balance arithmetic itself:
+each snapshot carries a computed `balance` block per service line and per claim
+(billed, payer paid, contractual adjustments, patient responsibility, current
+balance), with CO/PR bucketing and the no-service-line envelope fallback applied
+once at snapshot time. The balance projection is a thin reshaper that reads those
+precomputed numbers and emits ledger-style entries and totals; it does not
+re-parse charge amounts or re-bucket CAS adjustments.
 
 ### Incremental shuffle/reduce
 

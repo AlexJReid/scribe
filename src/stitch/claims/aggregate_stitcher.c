@@ -598,6 +598,7 @@ static claim_aggregate_t *find_or_add_aggregate(
 
     aggregate = &state->aggregates[state->aggregate_count++];
     memset(aggregate, 0, sizeof(*aggregate));
+    claim_aggregate_init(aggregate);
     scribe_copy_cstr(aggregate->key, sizeof(aggregate->key), key);
     scribe_copy_cstr(aggregate->claim_id, sizeof(aggregate->claim_id), claim_id);
     scribe_copy_cstr(aggregate->claim_id_token, sizeof(aggregate->claim_id_token), claim_id_token);
@@ -612,8 +613,8 @@ static int aggregate_has_fingerprint(
 {
     size_t i;
 
-    for (i = 0u; i < aggregate->source_event_count; i++) {
-        if (strcmp(aggregate->source_events[i].fingerprint, fingerprint) == 0) {
+    for (i = 0u; i < claim_aggregate_source_event_count(aggregate); i++) {
+        if (strcmp(claim_aggregate_source_event(aggregate, i)->fingerprint, fingerprint) == 0) {
             return 1;
         }
     }
@@ -632,18 +633,26 @@ static int append_source_event(
     if (aggregate == NULL || fingerprint == NULL) {
         return X12_ERR_INVALID_ARGUMENT;
     }
-    if (aggregate->source_event_count >= STITCH_MAX_SOURCE_EVENTS) {
+
+    source_event = claim_aggregate_add_source_event(aggregate);
+    if (source_event == NULL) {
         return X12_ERR_NO_MEMORY;
     }
-
-    source_event = &aggregate->source_events[aggregate->source_event_count++];
     source_event->event_id = event_id;
     scribe_copy_cstr(source_event->fingerprint, sizeof(source_event->fingerprint), fingerprint);
 
     return X12_OK;
 }
 
-static stitched_service_line_t *add_service_line(claim_aggregate_t *aggregate)
+void claim_aggregate_init(claim_aggregate_t *aggregate)
+{
+    if (aggregate == NULL) {
+        return;
+    }
+    scribe_grow_vec_init(&aggregate->source_events, sizeof(stitched_source_event_t));
+}
+
+stitched_service_line_t *claim_aggregate_add_service_line(claim_aggregate_t *aggregate)
 {
     stitched_service_line_t *line;
 
@@ -651,10 +660,70 @@ static stitched_service_line_t *add_service_line(claim_aggregate_t *aggregate)
         return NULL;
     }
 
+    if (aggregate->service_line_count >= aggregate->service_line_capacity) {
+        size_t new_capacity = aggregate->service_line_capacity == 0u
+                                  ? 8u
+                                  : aggregate->service_line_capacity * 2u;
+        stitched_service_line_t *grown;
+
+        if (new_capacity > STITCH_MAX_LINES_PER_CLAIM) {
+            new_capacity = STITCH_MAX_LINES_PER_CLAIM;
+        }
+        grown = (stitched_service_line_t *)realloc(
+            aggregate->service_lines, new_capacity * sizeof(*grown));
+        if (grown == NULL) {
+            return NULL;
+        }
+        aggregate->service_lines = grown;
+        aggregate->service_line_capacity = new_capacity;
+    }
+
     line = &aggregate->service_lines[aggregate->service_line_count++];
     memset(line, 0, sizeof(*line));
     scribe_copy_cstr(line->match_method, sizeof(line->match_method), "unmatched");
     return line;
+}
+
+stitched_source_event_t *claim_aggregate_add_source_event(claim_aggregate_t *aggregate)
+{
+    if (aggregate == NULL) {
+        return NULL;
+    }
+    return (stitched_source_event_t *)scribe_grow_vec_append(
+        &aggregate->source_events, STITCH_MAX_SOURCE_EVENTS);
+}
+
+stitched_source_event_t *claim_aggregate_source_event(
+    const claim_aggregate_t *aggregate,
+    size_t i
+)
+{
+    if (aggregate == NULL) {
+        return NULL;
+    }
+    return (stitched_source_event_t *)scribe_grow_vec_at(&aggregate->source_events, i);
+}
+
+size_t claim_aggregate_source_event_count(const claim_aggregate_t *aggregate)
+{
+    return aggregate == NULL ? 0u : aggregate->source_events.count;
+}
+
+void claim_aggregate_free_lines(claim_aggregate_t *aggregate)
+{
+    if (aggregate == NULL) {
+        return;
+    }
+    free(aggregate->service_lines);
+    aggregate->service_lines = NULL;
+    aggregate->service_line_count = 0u;
+    aggregate->service_line_capacity = 0u;
+    scribe_grow_vec_free(&aggregate->source_events);
+}
+
+static stitched_service_line_t *add_service_line(claim_aggregate_t *aggregate)
+{
+    return claim_aggregate_add_service_line(aggregate);
 }
 
 static stitched_service_line_t *find_service_line_by_number(
@@ -1549,7 +1618,7 @@ static int record_batch_update(
     if (state == NULL || aggregate == NULL || drop_key == NULL || fingerprint == NULL) {
         return X12_ERR_INVALID_ARGUMENT;
     }
-    if (aggregate->source_event_count >= STITCH_MAX_SOURCE_EVENTS) {
+    if (claim_aggregate_source_event_count(aggregate) >= STITCH_MAX_SOURCE_EVENTS) {
         return X12_ERR_NO_MEMORY;
     }
 
@@ -1571,7 +1640,7 @@ static int record_batch_update(
         scribe_copy_cstr(batch->drop_key, sizeof(batch->drop_key), drop_key);
         scribe_copy_cstr(batch->source_drop_id, sizeof(batch->source_drop_id), state->current_source_drop_id);
         scribe_copy_cstr(batch->source_run_id, sizeof(batch->source_run_id), state->current_source_run_id);
-        batch->first_source_event_index = aggregate->source_event_count;
+        batch->first_source_event_index = claim_aggregate_source_event_count(aggregate);
         aggregate->version++;
         is_new_batch = 1;
     }
@@ -2321,6 +2390,9 @@ int aggregate_stitcher_stitch(const aggregate_stitcher_input_t *input)
         state->aggregate_count,
         x12_error_message(rc)
     );
+    for (size_t i = 0u; i < state->aggregate_count; i++) {
+        claim_aggregate_free_lines(&state->aggregates[i]);
+    }
     free(state);
     return rc;
 }

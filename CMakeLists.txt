@@ -76,6 +76,8 @@ add_library(scribe_core
     src/projection/balance_projector.c
     src/read_store/delta_exporter.c
     src/read_store/sqlite_store.c
+    src/util/grow_vec.c
+    src/util/money.c
     src/util/run_id.c
     src/util/str_util.c
     src/stitch/coverage/coverage_stitcher.c

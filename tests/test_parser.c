@@ -1231,6 +1231,17 @@ static int test_837_claim_context_aggregate_state(void)
     REQUIRE(strstr(aggregates, "\"healthcare_code_qualifier\":\"BF\"") != NULL);
     REQUIRE(strstr(aggregates, "\"provider_taxonomies\":[{\"reference_scope\":\"claim\",\"service_line_number\":\"\",\"provider_context\":\"billing_provider\",\"provider_role_code\":\"BI\"") != NULL);
     REQUIRE(strstr(aggregates, "\"provider_taxonomy_code\":\"203BF0100Y\"") != NULL);
+    /*
+     * The snapshot carries the aggregate-computed balance: this 837-only claim
+     * (total charge 100, no remittance) has billed 100.00 and that full amount
+     * outstanding. Pins the balance contract the projection reshapes.
+     */
+    REQUIRE(strstr(
+                aggregates,
+                "\"balance\":{\"total_billed\":\"100.00\",\"payer_paid\":\"0.00\","
+                "\"contractual_adjustments\":\"0.00\",\"patient_responsibility\":\"0.00\","
+                "\"current_balance\":\"100.00\"}"
+            ) != NULL);
     REQUIRE(strstr(aggregates, "GROUP-837P") == NULL);
     REQUIRE(strstr(aggregates, "SYNTHCLEARING001") == NULL);
     REQUIRE(strstr(aggregates, "LINECTRL1") == NULL);

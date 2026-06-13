@@ -1,6 +1,7 @@
 #include "balance_projector.h"
 
 #include "json_write.h"
+#include "money.h"
 #include "store.h"
 #include "str_util.h"
 #include "try.h"
@@ -12,7 +13,15 @@
 
 #define BALANCE_ID_MAX 128u
 #define BALANCE_DESC_MAX 256u
-#define BALANCE_MAX_CLAIMS 64u
+/*
+ * Kept in step with the claim stitcher's capacities (STITCH_MAX_AGGREGATES and
+ * STITCH_MAX_LINES_PER_CLAIM in src/stitch/claims/private.h). The projector can
+ * never receive more claims or lines than the stitcher stored, so with these
+ * values the projection-side caps only ever fire on a genuine stitcher overflow
+ * (already warned upstream), never silently dropping data the stitcher kept. If
+ * the stitcher caps grow, grow these to match.
+ */
+#define BALANCE_MAX_CLAIMS 128u
 #define BALANCE_MAX_LINES_PER_CLAIM 64u
 
 typedef struct {
@@ -57,65 +66,6 @@ static const char *aggregate_key_from_id(const char *aggregate_id)
     return aggregate_id == NULL ? "" : aggregate_id;
 }
 
-static int parse_money(const char *value, long long *out)
-{
-    long long dollars = 0;
-    long long cents = 0;
-    int negative = 0;
-    int cent_digits = 0;
-    const char *cursor;
-
-    if (out == NULL) {
-        return X12_ERR_INVALID_ARGUMENT;
-    }
-    *out = 0;
-    if (value == NULL || value[0] == '\0') {
-        return X12_OK;
-    }
-
-    cursor = value;
-    if (*cursor == '-') {
-        negative = 1;
-        cursor++;
-    }
-
-    while (*cursor >= '0' && *cursor <= '9') {
-        dollars = dollars * 10 + (long long)(*cursor - '0');
-        cursor++;
-    }
-    if (*cursor == '.') {
-        cursor++;
-        while (*cursor >= '0' && *cursor <= '9' && cent_digits < 2) {
-            cents = cents * 10 + (long long)(*cursor - '0');
-            cent_digits++;
-            cursor++;
-        }
-    }
-    while (cent_digits < 2) {
-        cents *= 10;
-        cent_digits++;
-    }
-
-    *out = dollars * 100 + cents;
-    if (negative) {
-        *out = -*out;
-    }
-    return X12_OK;
-}
-
-static void format_money(long long cents, char *out, size_t out_len)
-{
-    long long abs_cents = cents;
-    const char *sign = "";
-
-    if (cents < 0) {
-        sign = "-";
-        abs_cents = -cents;
-    }
-
-    (void)snprintf(out, out_len, "%s%lld.%02lld", sign, abs_cents / 100, abs_cents % 100);
-}
-
 static int snapshot_money_field(yyjson_val *obj, const char *key, long long *out)
 {
     yyjson_val *value;
@@ -128,32 +78,7 @@ static int snapshot_money_field(yyjson_val *obj, const char *key, long long *out
     if (value == NULL || !yyjson_is_str(value)) {
         return X12_OK;
     }
-    return parse_money(yyjson_get_str(value), out);
-}
-
-static int snapshot_money_array_sum(yyjson_val *arr, long long *out)
-{
-    yyjson_val *value;
-    size_t idx;
-    size_t max;
-    long long amount;
-
-    if (out == NULL) {
-        return X12_ERR_INVALID_ARGUMENT;
-    }
-    *out = 0;
-    if (arr == NULL || !yyjson_is_arr(arr)) {
-        return X12_OK;
-    }
-
-    yyjson_arr_foreach(arr, idx, max, value) {
-        if (yyjson_is_str(value)) {
-            TRY(parse_money(yyjson_get_str(value), &amount));
-            *out += amount;
-        }
-    }
-
-    return X12_OK;
+    return scribe_money_parse(yyjson_get_str(value), out);
 }
 
 static balance_claim_t *add_claim(balance_state_t *state, const char *aggregate_id)
@@ -161,7 +86,16 @@ static balance_claim_t *add_claim(balance_state_t *state, const char *aggregate_
     balance_claim_t *claim;
     const char *key;
 
-    if (state == NULL || state->claim_count >= BALANCE_MAX_CLAIMS) {
+    if (state == NULL) {
+        return NULL;
+    }
+    if (state->claim_count >= BALANCE_MAX_CLAIMS) {
+        fprintf(
+            stderr,
+            "balance projection: claim cap of %u reached; "
+            "remaining claims not projected\n",
+            BALANCE_MAX_CLAIMS
+        );
         return NULL;
     }
 
@@ -177,7 +111,17 @@ static balance_service_line_t *add_line(balance_claim_t *claim)
 {
     balance_service_line_t *line;
 
-    if (claim == NULL || claim->line_count >= BALANCE_MAX_LINES_PER_CLAIM) {
+    if (claim == NULL) {
+        return NULL;
+    }
+    if (claim->line_count >= BALANCE_MAX_LINES_PER_CLAIM) {
+        fprintf(
+            stderr,
+            "balance projection: service-line cap of %u reached for claim "
+            "'%s'; remaining lines not projected\n",
+            BALANCE_MAX_LINES_PER_CLAIM,
+            claim->key
+        );
         return NULL;
     }
 
@@ -187,50 +131,10 @@ static balance_service_line_t *add_line(balance_claim_t *claim)
     return line;
 }
 
-static int apply_snapshot_adjustments(balance_service_line_t *line, yyjson_val *line_obj)
-{
-    yyjson_val *adjustments;
-    yyjson_val *adjustment;
-    yyjson_val *amounts;
-    char group_code[32];
-    size_t idx;
-    size_t max;
-    long long amount;
-
-    adjustments = yyjson_obj_get(line_obj, "adjustments");
-    if (adjustments == NULL || !yyjson_is_arr(adjustments)) {
-        return X12_OK;
-    }
-
-    yyjson_arr_foreach(adjustments, idx, max, adjustment) {
-        if (!yyjson_is_obj(adjustment)) {
-            continue;
-        }
-        (void)json_read_string(
-            adjustment,
-            "adjustment_group_code",
-            group_code,
-            sizeof(group_code)
-        );
-        amounts = yyjson_obj_get(adjustment, "amounts");
-        TRY(snapshot_money_array_sum(amounts, &amount));
-
-        if (strcmp(group_code, "CO") == 0) {
-            line->contractual_adjustments += amount;
-        } else if (strcmp(group_code, "PR") == 0) {
-            line->patient_responsibility += amount;
-        }
-    }
-
-    return X12_OK;
-}
-
 static int apply_snapshot_line(balance_claim_t *claim, yyjson_val *line_obj)
 {
     balance_service_line_t *line;
-    yyjson_val *submitted;
-    yyjson_val *remittance;
-    long long amount = 0;
+    yyjson_val *balance;
 
     if (claim == NULL || line_obj == NULL || !yyjson_is_obj(line_obj)) {
         return X12_OK;
@@ -238,7 +142,8 @@ static int apply_snapshot_line(balance_claim_t *claim, yyjson_val *line_obj)
 
     line = add_line(claim);
     if (line == NULL) {
-        return X12_ERR_NO_MEMORY;
+        /* Line cap reached (add_line has warned); skip the remaining lines. */
+        return X12_OK;
     }
 
     (void)json_read_string(
@@ -261,17 +166,18 @@ static int apply_snapshot_line(balance_claim_t *claim, yyjson_val *line_obj)
         scribe_copy_cstr(line->match_method, sizeof(line->match_method), "unmatched");
     }
 
-    submitted = yyjson_obj_get(line_obj, "submitted");
-    TRY(snapshot_money_field(submitted, "charge_amount", &line->billed));
+    /*
+     * Money comes straight from the aggregate-computed balance block. The
+     * claim aggregate owns the CO/PR bucketing and the billed/paid derivation;
+     * the projection only reshapes those numbers.
+     */
+    balance = yyjson_obj_get(line_obj, "balance");
+    TRY(snapshot_money_field(balance, "billed", &line->billed));
+    TRY(snapshot_money_field(balance, "payer_paid", &line->payer_paid));
+    TRY(snapshot_money_field(balance, "contractual_adjustments", &line->contractual_adjustments));
+    TRY(snapshot_money_field(balance, "patient_responsibility", &line->patient_responsibility));
 
-    remittance = yyjson_obj_get(line_obj, "remittance");
-    if (line->billed == 0) {
-        TRY(snapshot_money_field(remittance, "line_charge_amount", &amount));
-        line->billed = amount;
-    }
-    TRY(snapshot_money_field(remittance, "line_paid_amount", &line->payer_paid));
-
-    return apply_snapshot_adjustments(line, line_obj);
+    return X12_OK;
 }
 
 static int apply_claim_snapshot(
@@ -284,7 +190,7 @@ static int apply_claim_snapshot(
     yyjson_val *root;
     yyjson_val *keys;
     yyjson_val *snapshot_state;
-    yyjson_val *claim_envelope;
+    yyjson_val *claim_balance;
     yyjson_val *service_lines;
     yyjson_val *line_obj;
     balance_claim_t *claim;
@@ -308,8 +214,13 @@ static int apply_claim_snapshot(
 
     claim = add_claim(state, aggregate_id);
     if (claim == NULL) {
+        /*
+         * The claim cap has been reached (add_claim has already warned). Skip
+         * this aggregate and keep iterating the remaining ones rather than
+         * aborting the whole projection.
+         */
         yyjson_doc_free(doc);
-        return X12_ERR_NO_MEMORY;
+        return X12_OK;
     }
 
     keys = yyjson_obj_get(root, "keys");
@@ -352,12 +263,21 @@ static int apply_claim_snapshot(
             claim->claim_status_code,
             sizeof(claim->claim_status_code)
         );
-        claim_envelope = yyjson_obj_get(snapshot_state, "claim_envelope");
-        rc = snapshot_money_field(
-            claim_envelope,
-            "total_charge_amount",
-            &claim->claim_total_billed
-        );
+        /*
+         * Claim-level totals come from the aggregate-computed balance block,
+         * which already applies the no-service-line envelope fallback.
+         */
+        claim_balance = yyjson_obj_get(snapshot_state, "balance");
+        if (rc == X12_OK) {
+            rc = snapshot_money_field(claim_balance, "total_billed", &claim->claim_total_billed);
+        }
+        if (rc == X12_OK) {
+            rc = snapshot_money_field(claim_balance, "payer_paid", &claim->claim_paid);
+        }
+        if (rc == X12_OK) {
+            rc = snapshot_money_field(
+                claim_balance, "patient_responsibility", &claim->claim_patient_responsibility);
+        }
     }
     if (rc == X12_OK) {
         service_lines = yyjson_obj_get(root, "service_lines");
@@ -441,13 +361,14 @@ static void claim_totals(
         *patient_resp += claim->lines[i].patient_responsibility;
     }
 
-    if (*billed == 0) {
+    /*
+     * Only fall back to the claim-envelope totals when there are no service
+     * lines to sum. A claim whose lines legitimately net to zero must keep
+     * its zero rather than be overwritten by the envelope figure.
+     */
+    if (claim->line_count == 0u) {
         *billed = claim->claim_total_billed;
-    }
-    if (*paid == 0) {
         *paid = claim->claim_paid;
-    }
-    if (*patient_resp == 0) {
         *patient_resp = claim->claim_patient_responsibility;
     }
 }
@@ -461,7 +382,7 @@ static int add_money_field(
 {
     char formatted[32];
 
-    format_money(value, formatted, sizeof(formatted));
+    scribe_money_format(value, formatted, sizeof(formatted));
     return json_writer_add_string(writer, obj, name, formatted);
 }
 

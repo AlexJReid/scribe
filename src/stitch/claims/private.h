@@ -1,6 +1,7 @@
 #ifndef SCRIBE_STITCH_CLAIMS_PRIVATE_H
 #define SCRIBE_STITCH_CLAIMS_PRIVATE_H
 
+#include "grow_vec.h"
 #include "journal.h"
 #include "phi_vault.h"
 #include "store.h"
@@ -20,7 +21,7 @@
 #define STITCH_MAX_AGGREGATES 128u
 #define STITCH_MAX_SOURCE_EVENTS 512u
 #define STITCH_MAX_UPDATE_BATCHES 128u
-#define STITCH_MAX_LINES_PER_CLAIM 64u
+#define STITCH_MAX_LINES_PER_CLAIM 999u
 #define STITCH_MAX_REFERENCES_PER_CLAIM 32u
 #define STITCH_MAX_REFERENCES_PER_LINE 16u
 #define STITCH_MAX_CLAIM_DATES 16u
@@ -173,10 +174,18 @@ typedef struct {
     size_t submitted_service_line_count;
     size_t remittance_service_line_count;
     size_t adjustment_count;
-    stitched_service_line_t service_lines[STITCH_MAX_LINES_PER_CLAIM];
+    /* Heap-grown on demand up to STITCH_MAX_LINES_PER_CLAIM. Kept off the
+     * inline struct because a service line is ~11 KB; embedding 999 of them in
+     * every one of STITCH_MAX_AGGREGATES slots would make stitch_state_t
+     * gigabytes. NULL until the first line is added; freed via
+     * claim_aggregate_free_lines. */
+    stitched_service_line_t *service_lines;
     size_t service_line_count;
-    stitched_source_event_t source_events[STITCH_MAX_SOURCE_EVENTS];
-    size_t source_event_count;
+    size_t service_line_capacity;
+    /* Heap-grown up to STITCH_MAX_SOURCE_EVENTS; the dominant inline cost when
+     * embedded. Access elements via aggregate_source_event(); the count lives
+     * in source_events.count. Freed via claim_aggregate_free_lines. */
+    scribe_grow_vec_t source_events;
 } claim_aggregate_t;
 
 typedef struct {
@@ -235,5 +244,32 @@ int claim_stitch_hydrate_snapshot(
     const char *aggregate_id,
     const char *state_json
 );
+
+/* Prepare a freshly-zeroed aggregate slot for use: sets element sizes on its
+ * heap-grown vectors. Must be called once after the slot is memset to zero,
+ * before any line or source event is added. */
+void claim_aggregate_init(claim_aggregate_t *aggregate);
+
+/* Append a zeroed service line to the aggregate, growing the heap-backed
+ * service_lines buffer as needed. Returns NULL on allocation failure or when
+ * STITCH_MAX_LINES_PER_CLAIM is reached. */
+stitched_service_line_t *claim_aggregate_add_service_line(claim_aggregate_t *aggregate);
+
+/* Append a zeroed source event, growing up to STITCH_MAX_SOURCE_EVENTS. Returns
+ * NULL on allocation failure or at the cap. */
+stitched_source_event_t *claim_aggregate_add_source_event(claim_aggregate_t *aggregate);
+
+/* Source event at index i (no bounds check; guard with the count below). */
+stitched_source_event_t *claim_aggregate_source_event(
+    const claim_aggregate_t *aggregate,
+    size_t i
+);
+
+/* Number of source events recorded on the aggregate. */
+size_t claim_aggregate_source_event_count(const claim_aggregate_t *aggregate);
+
+/* Release all heap-backed buffers (service lines and source events) and reset
+ * their counts. Safe to call on a zeroed aggregate. */
+void claim_aggregate_free_lines(claim_aggregate_t *aggregate);
 
 #endif

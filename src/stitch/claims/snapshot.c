@@ -1,6 +1,7 @@
 #include "private.h"
 
 #include "json_write.h"
+#include "money.h"
 #include "str_util.h"
 #include "try.h"
 
@@ -312,18 +313,157 @@ static int snapshot_add_remittance_line(
     return rc;
 }
 
+/*
+ * A service line's balance, in signed cents. This is the canonical balance
+ * model: the claim aggregate owns how billed/paid/contractual/patient figures
+ * are derived from the matched 837/835 facts, so downstream projections can
+ * reshape these numbers without re-bucketing CAS adjustments themselves.
+ */
+typedef struct {
+    long long billed;
+    long long payer_paid;
+    long long contractual_adjustments;
+    long long patient_responsibility;
+    long long current_balance;
+} snapshot_line_balance_t;
+
+static int snapshot_sum_adjustment_amounts(
+    const stitched_line_adjustment_t *adjustment,
+    long long *out
+)
+{
+    long long amount;
+    size_t i;
+
+    *out = 0;
+    for (i = 0u; i < adjustment->value_count; i++) {
+        TRY(scribe_money_parse(adjustment->amounts[i], &amount));
+        *out += amount;
+    }
+    return X12_OK;
+}
+
+static int snapshot_compute_line_balance(
+    const stitched_service_line_t *line,
+    snapshot_line_balance_t *balance
+)
+{
+    long long amount;
+    size_t i;
+
+    memset(balance, 0, sizeof(*balance));
+
+    /* Billed comes from the submitted charge, falling back to the remittance
+     * line charge when only an 835 created the line. */
+    TRY(scribe_money_parse(line->submitted_charge_amount, &balance->billed));
+    if (balance->billed == 0) {
+        TRY(scribe_money_parse(line->remittance_line_charge_amount, &balance->billed));
+    }
+    TRY(scribe_money_parse(line->remittance_line_paid_amount, &balance->payer_paid));
+
+    for (i = 0u; i < line->adjustment_count; i++) {
+        const stitched_line_adjustment_t *adjustment = &line->adjustments[i];
+        TRY(snapshot_sum_adjustment_amounts(adjustment, &amount));
+        if (strcmp(adjustment->adjustment_group_code, "CO") == 0) {
+            balance->contractual_adjustments += amount;
+        } else if (strcmp(adjustment->adjustment_group_code, "PR") == 0) {
+            balance->patient_responsibility += amount;
+        }
+    }
+
+    balance->current_balance =
+        balance->billed - balance->payer_paid - balance->contractual_adjustments;
+    return X12_OK;
+}
+
+static int snapshot_add_money_field(
+    json_writer_t *writer,
+    yyjson_mut_val *obj,
+    const char *name,
+    long long cents
+)
+{
+    char formatted[32];
+
+    scribe_money_format(cents, formatted, sizeof(formatted));
+    return json_writer_add_string(writer, obj, name, formatted);
+}
+
+static int snapshot_add_line_balance(
+    json_writer_t *writer,
+    yyjson_mut_val *line_obj,
+    const snapshot_line_balance_t *balance
+)
+{
+    yyjson_mut_val *obj = json_writer_add_object(writer, line_obj, "balance");
+
+    if (obj == NULL) {
+        return X12_ERR_NO_MEMORY;
+    }
+    TRY(snapshot_add_money_field(writer, obj, "billed", balance->billed));
+    TRY(snapshot_add_money_field(writer, obj, "payer_paid", balance->payer_paid));
+    TRY(snapshot_add_money_field(
+        writer, obj, "contractual_adjustments", balance->contractual_adjustments));
+    TRY(snapshot_add_money_field(
+        writer, obj, "patient_responsibility", balance->patient_responsibility));
+    TRY(snapshot_add_money_field(writer, obj, "current_balance", balance->current_balance));
+    return X12_OK;
+}
+
+/*
+ * Emit the claim-level balance into the state object. When the claim has no
+ * service lines to sum, the envelope's total charge stands in for billed (a
+ * claim whose lines legitimately net to zero keeps its zero). Paid and
+ * patient responsibility have no claim-level fallback today, so they stay at
+ * the line-sum value.
+ */
+static int snapshot_add_claim_balance(
+    json_writer_t *writer,
+    yyjson_mut_val *state_obj,
+    const claim_aggregate_t *aggregate,
+    const snapshot_line_balance_t *line_sum
+)
+{
+    snapshot_line_balance_t balance = *line_sum;
+    yyjson_mut_val *obj;
+
+    if (aggregate->service_line_count == 0u) {
+        TRY(scribe_money_parse(
+            aggregate->claim_envelope.total_charge_amount, &balance.billed));
+        balance.current_balance =
+            balance.billed - balance.payer_paid - balance.contractual_adjustments;
+    }
+
+    obj = json_writer_add_object(writer, state_obj, "balance");
+    if (obj == NULL) {
+        return X12_ERR_NO_MEMORY;
+    }
+    TRY(snapshot_add_money_field(writer, obj, "total_billed", balance.billed));
+    TRY(snapshot_add_money_field(writer, obj, "payer_paid", balance.payer_paid));
+    TRY(snapshot_add_money_field(
+        writer, obj, "contractual_adjustments", balance.contractual_adjustments));
+    TRY(snapshot_add_money_field(
+        writer, obj, "patient_responsibility", balance.patient_responsibility));
+    TRY(snapshot_add_money_field(writer, obj, "current_balance", balance.current_balance));
+    return X12_OK;
+}
+
 static int snapshot_add_service_lines(
     json_writer_t *writer,
     yyjson_mut_val *root,
     const stitch_state_t *state,
-    const claim_aggregate_t *aggregate
+    const claim_aggregate_t *aggregate,
+    snapshot_line_balance_t *claim_balance
 )
 {
     yyjson_mut_val *arr;
     yyjson_mut_val *line_obj;
     const stitched_service_line_t *line;
+    snapshot_line_balance_t line_balance;
     size_t i;
     int rc;
+
+    memset(claim_balance, 0, sizeof(*claim_balance));
 
     arr = json_writer_add_array(writer, root, "service_lines");
     if (arr == NULL) {
@@ -377,11 +517,25 @@ static int snapshot_add_service_lines(
         if (rc == X12_OK) {
             rc = snapshot_add_adjustments(writer, line_obj, line);
         }
+        if (rc == X12_OK) {
+            rc = snapshot_compute_line_balance(line, &line_balance);
+        }
+        if (rc == X12_OK) {
+            rc = snapshot_add_line_balance(writer, line_obj, &line_balance);
+        }
         if (rc != X12_OK) {
             return rc;
         }
+
+        claim_balance->billed += line_balance.billed;
+        claim_balance->payer_paid += line_balance.payer_paid;
+        claim_balance->contractual_adjustments += line_balance.contractual_adjustments;
+        claim_balance->patient_responsibility += line_balance.patient_responsibility;
     }
 
+    claim_balance->current_balance =
+        claim_balance->billed - claim_balance->payer_paid -
+        claim_balance->contractual_adjustments;
     return X12_OK;
 }
 
@@ -770,8 +924,9 @@ static int snapshot_add_source_event_ids(
         return X12_ERR_NO_MEMORY;
     }
 
-    for (i = 0u; i < aggregate->source_event_count; i++) {
-        TRY(json_writer_array_add_size(writer, arr, aggregate->source_events[i].event_id));
+    for (i = 0u; i < claim_aggregate_source_event_count(aggregate); i++) {
+        TRY(json_writer_array_add_size(
+            writer, arr, claim_aggregate_source_event(aggregate, i)->event_id));
     }
 
     return X12_OK;
@@ -798,7 +953,8 @@ static int snapshot_add_update_event_ids(
 
     end = batch->first_source_event_index + batch->source_event_count;
     for (i = batch->first_source_event_index; i < end; i++) {
-        TRY(json_writer_array_add_size(writer, arr, batch->aggregate->source_events[i].event_id));
+        TRY(json_writer_array_add_size(
+            writer, arr, claim_aggregate_source_event(batch->aggregate, i)->event_id));
     }
 
     return X12_OK;
@@ -819,6 +975,7 @@ static int build_snapshot_doc(
     yyjson_mut_val *keys;
     yyjson_mut_val *snapshot_state;
     yyjson_mut_val *lineage;
+    snapshot_line_balance_t claim_balance;
     int include_phi;
     int rc;
     char claim_id[STITCH_ID_MAX];
@@ -1026,7 +1183,7 @@ static int build_snapshot_doc(
             writer,
             snapshot_state,
             "source_event_count",
-            aggregate->source_event_count
+            claim_aggregate_source_event_count(aggregate)
         );
     }
     if (rc == X12_OK) {
@@ -1088,7 +1245,10 @@ static int build_snapshot_doc(
         rc = snapshot_add_institutional_claim(writer, snapshot_state, aggregate);
     }
     if (rc == X12_OK) {
-        rc = snapshot_add_service_lines(writer, root, state, aggregate);
+        rc = snapshot_add_service_lines(writer, root, state, aggregate, &claim_balance);
+    }
+    if (rc == X12_OK) {
+        rc = snapshot_add_claim_balance(writer, snapshot_state, aggregate, &claim_balance);
     }
     if (rc != X12_OK) {
         return rc;
@@ -1103,7 +1263,7 @@ static int build_snapshot_doc(
             writer,
             lineage,
             "applied_event_count",
-            aggregate->source_event_count
+            claim_aggregate_source_event_count(aggregate)
         );
         if (rc == X12_OK) {
             rc = json_writer_add_size(
@@ -1489,19 +1649,18 @@ static int hydrate_applied_event_ids(claim_aggregate_t *aggregate, yyjson_val *r
         return X12_OK;
     }
 
-    aggregate->source_event_count = 0u;
+    scribe_grow_vec_clear(&aggregate->source_events);
     yyjson_arr_foreach(arr, idx, max, item) {
         stitched_source_event_t *source_event;
 
         if (!yyjson_is_uint(item)) {
             continue;
         }
-        if (aggregate->source_event_count >= STITCH_MAX_SOURCE_EVENTS) {
+
+        source_event = claim_aggregate_add_source_event(aggregate);
+        if (source_event == NULL) {
             return X12_ERR_NO_MEMORY;
         }
-
-        source_event = &aggregate->source_events[aggregate->source_event_count++];
-        memset(source_event, 0, sizeof(*source_event));
         source_event->event_id = (size_t)yyjson_get_uint(item);
     }
 
@@ -1960,11 +2119,11 @@ static int hydrate_service_lines(claim_aggregate_t *aggregate, yyjson_val *root)
         if (!yyjson_is_obj(item)) {
             continue;
         }
-        if (aggregate->service_line_count >= STITCH_MAX_LINES_PER_CLAIM) {
+
+        line = claim_aggregate_add_service_line(aggregate);
+        if (line == NULL) {
             return X12_ERR_NO_MEMORY;
         }
-
-        line = &aggregate->service_lines[aggregate->service_line_count++];
         rc = json_read_string(
             item,
             "service_line_number",
@@ -2060,6 +2219,7 @@ int claim_stitch_hydrate_snapshot(
     key = strncmp(aggregate_id, "claim:", 6u) == 0 ? aggregate_id + 6u : aggregate_id;
     aggregate = &state->aggregates[state->aggregate_count++];
     memset(aggregate, 0, sizeof(*aggregate));
+    claim_aggregate_init(aggregate);
     scribe_copy_cstr(aggregate->key, sizeof(aggregate->key), key);
 
     doc = yyjson_read(state_json, strlen(state_json), 0);
